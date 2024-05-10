@@ -77,13 +77,6 @@ public class App {
             parseLineage((PlainSelect) parenthesedSelect.getSelect(), fromAlias);
         }
 
-        // String tableName = fromItem.toString();
-        // if (null != fromItem.getAlias()) {
-        //     System.out.println("alias: table" + String.valueOf(tableNum) + " : " + fromItem.getAlias());
-        //     tableName = fromItem.getAlias().getName();
-        //     tableNum++;
-        // }
-
         for (SelectItem col : select.getSelectItems()) {
             System.out.println("from: " + fromAlias + "." + col.getExpression().toString() + " to: "
                     + targetAlias + "."

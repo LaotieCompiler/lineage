@@ -9,6 +9,7 @@
 3. select * from A,B
 4. select c1,c2 from A,B //c1 from A or B
 5. select c1+c2 from A //expressions
+6. select max(c1) from A
 
 ## lineage map
 

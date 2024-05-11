@@ -5,11 +5,11 @@
 ## select parser
 
 1. select c1,c2
-2. select * from A
+2. select * from A  //dependence on metadata
 3. select * from A,B
 4. select c1,c2 from A,B //c1 from A or B
-5. select c1+c2 from A //expressions
-6. select max(c1) from A
+5. ~~select c1+c2 from A~~
+6. ~~select max(c1) from A~~
 
 ## lineage map
 

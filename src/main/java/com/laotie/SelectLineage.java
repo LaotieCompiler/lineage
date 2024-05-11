@@ -14,6 +14,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Stack;
+
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.AllValue;
 import net.sf.jsqlparser.expression.AnalyticExpression;
@@ -154,6 +156,7 @@ import net.sf.jsqlparser.statement.merge.Merge;
 import net.sf.jsqlparser.statement.refresh.RefreshMaterializedViewStatement;
 import net.sf.jsqlparser.statement.select.AllColumns;
 import net.sf.jsqlparser.statement.select.AllTableColumns;
+import net.sf.jsqlparser.statement.select.FromItem;
 import net.sf.jsqlparser.statement.select.FromItemVisitor;
 import net.sf.jsqlparser.statement.select.Join;
 import net.sf.jsqlparser.statement.select.LateralSubSelect;
@@ -189,9 +192,25 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     private static final String NOT_SUPPORTED_YET = "Not supported yet.";
     private Set<String> tables;
+    private Stack<String> stackTargetTable;
+    private Stack<String> stackSourceTable;
+    private Stack<String> stackTargetColumn;
+    private int tempTableNum = 0;
     private boolean allowColumnProcessing = false;
 
     private List<String> otherItemNames;
+
+    public String getTempTableName(){
+        return String.format("temp_%d", ++tempTableNum);
+    }
+
+    public Set<String> getLineage(Statement statement, String targetTable) {
+        init(true);
+        stackTargetTable.push(targetTable);
+        statement.accept(this);
+        return tables;
+    }
+
 
     @Deprecated
     public List<String> getTableList(Statement statement) {
@@ -277,36 +296,46 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         selectBody.getSelect().accept((SelectVisitor) this);
     }
 
+    /**
+     * 查询 SELECT 语句的血缘信息
+     * 
+     * 采用后根法遍历语法树，先处理内层 FROM 语句（子节点），再处理 SELECT 语句（根节点）
+     */
     @Override
     public void visit(PlainSelect plainSelect) {
-        List<WithItem> withItemsList = plainSelect.getWithItemsList();
-        if (withItemsList != null && !withItemsList.isEmpty()) {
-            for (WithItem withItem : withItemsList) {
-                withItem.accept((SelectVisitor) this);
-            }
+        FromItem fromItem = plainSelect.getFromItem();
+
+        String fromAlias = fromItem.toString();
+        if (fromItem.getAlias() != null) {
+            fromAlias = fromItem.getAlias().getName();
+        }else if (fromItem instanceof Table){
+            fromAlias = ((Table) fromItem).getName();
+        }else{
+            fromAlias = getTempTableName();
         }
+
+        stackTargetTable.push(fromAlias);
+
+        // 处理子节点：FROM 子查询。(TODO: Join 子查询)
+        if (fromItem != null) {
+            fromItem.accept(this);
+        }
+
+        stackTargetTable.pop();
+
+        // visitJoins(plainSelect.getJoins());
+
+        // if (plainSelect.getWhere() != null) {
+        //     plainSelect.getWhere().accept(this);
+        // }
+
+        stackSourceTable.push(fromAlias);
         if (plainSelect.getSelectItems() != null) {
             for (SelectItem<?> item : plainSelect.getSelectItems()) {
                 item.accept(this);
             }
         }
-
-        if (plainSelect.getFromItem() != null) {
-            plainSelect.getFromItem().accept(this);
-        }
-
-        visitJoins(plainSelect.getJoins());
-        if (plainSelect.getWhere() != null) {
-            plainSelect.getWhere().accept(this);
-        }
-
-        if (plainSelect.getHaving() != null) {
-            plainSelect.getHaving().accept(this);
-        }
-
-        if (plainSelect.getOracleHierarchical() != null) {
-            plainSelect.getOracleHierarchical().accept(this);
-        }
+        stackSourceTable.pop();
     }
 
     /**
@@ -353,10 +382,19 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     @Override
     public void visit(Column tableColumn) {
-        if (allowColumnProcessing && tableColumn.getTable() != null
-                && tableColumn.getTable().getName() != null) {
-            visit(tableColumn.getTable());
-        }
+
+        String fromTable = stackSourceTable.peek();
+        String toTable = stackTargetTable.peek();
+        String toColumn = stackTargetColumn.peek();
+        System.out.println(
+            fromTable + "." + tableColumn.getColumnName() +
+            "==>" + toTable + "." + toColumn
+        );
+
+        // if (allowColumnProcessing && tableColumn.getTable() != null
+        //         && tableColumn.getTable().getName() != null) {
+        //     visit(tableColumn.getTable());
+        // }
     }
 
     @Override
@@ -702,6 +740,9 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         otherItemNames = new ArrayList<String>();
         tables = new HashSet<>();
         this.allowColumnProcessing = allowColumnProcessing;
+        stackSourceTable = new Stack<>();
+        stackTargetTable = new Stack<>();
+        stackTargetColumn = new Stack<>();
     }
 
     @Override
@@ -766,7 +807,14 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     @Override
     public void visit(SelectItem item) {
+        String targetColumn = item.getExpression().toString();
+        if (item.getAlias() != null) {
+            targetColumn = item.getAlias().getName();
+        }
+
+        stackTargetColumn.push(targetColumn);
         item.getExpression().accept(this);
+        stackTargetColumn.pop();
     }
 
     @Override

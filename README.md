@@ -15,3 +15,7 @@
 
 1. build lineage map by direct relations
 2. export global lineage for each target fields
+
+## 设计模式
+
+使用 visitor 模式来实现血缘关系的分析，参考 SelectLineage.java(代码来自 net.sf.jsqlparser.util.TablesNamesFinder，只实现了找表级血缘)。

@@ -35,9 +35,14 @@ public class App {
             statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
             if (statHandle instanceof Select) {
                 select = (Select) statHandle;
-                String alias = String.format("table%d", app.getTableNum());
-                app.incrementTableNum();
-                app.parseLineage((PlainSelect) select,alias);
+                app.parseLineage((PlainSelect) select, "target");
+
+                // SelectLineage selectLineage = new SelectLineage();
+                // Set<String> tableList = selectLineage.getTables((Statement) select);
+                // System.out.println("Source:");
+                // for (String table : tableList) {
+                //     System.out.println(table);
+                // }
             }
             System.out.println("well done.");
         } catch (JSQLParserException e) {
@@ -67,7 +72,7 @@ public class App {
         }else if (fromItem instanceof Table){
             fromAlias = ((Table) fromItem).getName();
         }else{
-            fromAlias = String.format("table%d", getTableNum());
+            fromAlias = String.format("tmp%d", getTableNum());
             incrementTableNum();
         }
 
@@ -78,9 +83,10 @@ public class App {
         }
 
         for (SelectItem col : select.getSelectItems()) {
-            System.out.println("from: " + fromAlias + "." + col.getExpression().toString() + " to: "
-                    + targetAlias + "."
-                    + (null == col.getAlias() ? col.getExpression().toString() : col.getAlias()));
+            System.out.println(
+                "from: " + fromAlias + "." + col.getExpression().toString() + 
+                " to: " + targetAlias + "." + (null == col.getAlias() ? col.getExpression().toString() : col.getAlias())
+            );
         }
     }
 

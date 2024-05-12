@@ -201,7 +201,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
     private List<String> otherItemNames;
 
     public String getTempTableName(){
-        return String.format("temp_%d", ++tempTableNum);
+        return String.format("temp%d", ++tempTableNum);
     }
 
     public Set<String> getLineage(Statement statement, String targetTable) {
@@ -388,7 +388,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         String toColumn = stackTargetColumn.peek();
         System.out.println(
             fromTable + "." + tableColumn.getColumnName() +
-            "==>" + toTable + "." + toColumn
+            " ==> " + toTable + "." + toColumn
         );
 
         // if (allowColumnProcessing && tableColumn.getTable() != null

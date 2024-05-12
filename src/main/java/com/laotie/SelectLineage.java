@@ -807,12 +807,33 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     @Override
     public void visit(AllColumns allColumns) {
+        if (!inTargetExpression){
+            return;
+        }
 
+        String fromTable = stackSourceTable.peek(); // TODO: multiple source tables
+        String toTable = stackTargetTable.peek();
+        instructions.add(
+            fromTable + "." + "*" +
+            " ==> " + toTable
+        );
     }
 
     @Override
     public void visit(AllTableColumns allTableColumns) {
+        if (!inTargetExpression){
+            return;
+        }
 
+        String fromTable = stackSourceTable.peek();
+        if (allTableColumns.getTable() != null && allTableColumns.getTable().getName() != null) {
+            fromTable = allTableColumns.getTable().getName();
+        }
+        String toTable = stackTargetTable.peek();
+        instructions.add(
+            fromTable + ".*" +
+            " ==> " + toTable
+        );
     }
 
     @Override

@@ -1,6 +1,10 @@
 package com.laotie;
 
 import static org.junit.Assert.assertTrue;
+
+import java.util.List;
+import java.util.Set;
+
 import org.junit.Test;
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
@@ -28,7 +32,11 @@ public class SelectLineageTest
                 select = (Select) statHandle;
 
                 SelectLineage selectLineage = new SelectLineage();
-                selectLineage.getLineage((Statement) select, "targetTable");
+                List<String> instructions = selectLineage.getLineage((Statement) select);
+                System.out.println("instructions:");
+                for (String instruct : instructions) {
+                    System.out.println(instruct);
+                }
             }
             System.out.println("well done.");
         } catch (JSQLParserException e) {
@@ -55,7 +63,11 @@ public class SelectLineageTest
                 select = (Select) statHandle;
 
                 SelectLineage selectLineage = new SelectLineage();
-                selectLineage.getLineage((Statement) select, "targetTable");
+                List<String> instructions = selectLineage.getLineage((Statement) select);
+                System.out.println("instructions:");
+                for (String instruct : instructions) {
+                    System.out.println(instruct);
+                }
             }
             System.out.println("well done.");
         } catch (JSQLParserException e) {

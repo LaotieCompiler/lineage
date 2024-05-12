@@ -193,6 +193,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     private static final String NOT_SUPPORTED_YET = "Not supported yet.";
     private Set<String> tables;
+    private List<String> instructions; //to store the direct relationship between fields
     private Stack<String> stackTargetTable;
     private Stack<String> stackSourceTable;
     private Stack<String> stackTargetColumn;
@@ -203,14 +204,15 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
     private List<String> otherItemNames;
 
     public String getTempTableName(){
-        return String.format("temp%d", ++tempTableNum);
+        return String.format("temp%d", tempTableNum++);
     }
 
-    public Set<String> getLineage(Statement statement, String targetTable) {
+    public List<String> getLineage(Statement statement) {
         init(true);
-        stackTargetTable.push(targetTable);
+        stackTargetTable.push(getTempTableName());
         statement.accept(this);
-        return tables;
+        stackTargetTable.pop();
+        return instructions;
     }
 
 
@@ -338,7 +340,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         }else{
             throw new UnsupportedOperationException("Unsupported table type: " + fromItem.toString());
         }
-        
+
         stackSourceTable.push(fromAlias);
         if (plainSelect.getSelectItems() != null) {
             for (SelectItem<?> item : plainSelect.getSelectItems()) {
@@ -403,7 +405,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         }
         String toTable = stackTargetTable.peek();
         String toColumn = stackTargetColumn.peek();
-        System.out.println(
+        instructions.add(
             fromTable + "." + tableColumn.getColumnName() +
             " ==> " + toTable + "." + toColumn
         );
@@ -756,6 +758,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
     protected void init(boolean allowColumnProcessing) {
         otherItemNames = new ArrayList<String>();
         tables = new HashSet<>();
+        instructions = new ArrayList<>();
         this.allowColumnProcessing = allowColumnProcessing;
         stackSourceTable = new Stack<>();
         stackTargetTable = new Stack<>();

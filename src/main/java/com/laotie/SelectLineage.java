@@ -17,6 +17,7 @@ import java.util.Set;
 import java.util.Stack;
 
 import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.expression.Alias;
 import net.sf.jsqlparser.expression.AllValue;
 import net.sf.jsqlparser.expression.AnalyticExpression;
 import net.sf.jsqlparser.expression.AnyComparisonExpression;
@@ -195,6 +196,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
     private Stack<String> stackTargetTable;
     private Stack<String> stackSourceTable;
     private Stack<String> stackTargetColumn;
+    private boolean inTargetExpression = false;
     private int tempTableNum = 0;
     private boolean allowColumnProcessing = false;
 
@@ -287,6 +289,14 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     @Override
     public void visit(ParenthesedSelect selectBody) {
+        String targetTable = selectBody.toString();
+        if (selectBody.getAlias()==null){
+            selectBody.setAlias(new Alias(getTempTableName()));
+        }
+        targetTable = selectBody.getAlias().getName();
+        
+        stackTargetTable.push(targetTable);
+
         List<WithItem> withItemsList = selectBody.getWithItemsList();
         if (withItemsList != null && !withItemsList.isEmpty()) {
             for (WithItem withItem : withItemsList) {
@@ -294,6 +304,8 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
             }
         }
         selectBody.getSelect().accept((SelectVisitor) this);
+
+        stackTargetTable.pop();
     }
 
     /**
@@ -309,26 +321,24 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
             return;
         }
 
+        fromItem.accept(this);
+
+        visitJoins(plainSelect.getJoins());
+
+        // TODO: WHERE subquery
+        // if (plainSelect.getWhere() != null) {
+        //     plainSelect.getWhere().accept(this);
+        // }
+
         String fromAlias = fromItem.toString();
         if (fromItem.getAlias() != null) {
             fromAlias = fromItem.getAlias().getName();
         }else if (fromItem instanceof Table){
             fromAlias = ((Table) fromItem).getName();
         }else{
-            fromAlias = getTempTableName();
+            throw new UnsupportedOperationException("Unsupported table type: " + fromItem.toString());
         }
-
-        // 处理子节点：FROM 子查询。(TODO: Join 子查询)
-        stackTargetTable.push(fromAlias);
-        fromItem.accept(this);
-        stackTargetTable.pop();
-
-        // visitJoins(plainSelect.getJoins());
-
-        // if (plainSelect.getWhere() != null) {
-        //     plainSelect.getWhere().accept(this);
-        // }
-
+        
         stackSourceTable.push(fromAlias);
         if (plainSelect.getSelectItems() != null) {
             for (SelectItem<?> item : plainSelect.getSelectItems()) {
@@ -355,6 +365,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
                 && !tables.contains(tableWholeName)) {
             tables.add(tableWholeName);
         }
+
     }
 
     @Override
@@ -382,8 +393,14 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     @Override
     public void visit(Column tableColumn) {
+        if (!inTargetExpression){
+            return;
+        }
 
         String fromTable = stackSourceTable.peek();
+        if (tableColumn.getTable() != null && tableColumn.getTable().getName() != null) {
+            fromTable = tableColumn.getTable().getName();
+        }
         String toTable = stackTargetTable.peek();
         String toColumn = stackTargetColumn.peek();
         System.out.println(
@@ -813,7 +830,9 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         }
 
         stackTargetColumn.push(targetColumn);
+        inTargetExpression = true;
         item.getExpression().accept(this);
+        inTargetExpression = false;
         stackTargetColumn.pop();
     }
 
@@ -1081,10 +1100,10 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         }
         for (Join join : parenthesis) {
             join.getFromItem().accept(this);
-            join.getRightItem().accept(this);
-            for (Expression expression : join.getOnExpressions()) {
-                expression.accept(this);
-            }
+            // join.getRightItem().accept(this);
+            // for (Expression expression : join.getOnExpressions()) {
+            //     expression.accept(this);
+            // }
         }
     }
 

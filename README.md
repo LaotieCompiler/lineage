@@ -11,15 +11,18 @@
 1. select c1+c2 from A
 2. select max(c1) from A
 3. select a1,a2 from (select b1, b2 from (select c1,c2 from C))
+4. SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id
 
 # TODO
 
 ## select parser
 
 3. select * from A  //dependence on metadata
-4. select * from A,B
-5. select c1,c2 from A,B //c1 from A or B
-5. select A.c1,B.c2 from A,B 
+4. select c1, c2 from A as TA
+5. select * from A,B
+6. select c1,c2 from A,B //c1 from A or B
+7. select A.c1,B.c2 from A,B 
+8. specify default database/schema
 
 
 ## lineage map

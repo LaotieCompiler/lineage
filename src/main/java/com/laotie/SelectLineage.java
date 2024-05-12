@@ -304,6 +304,10 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
     @Override
     public void visit(PlainSelect plainSelect) {
         FromItem fromItem = plainSelect.getFromItem();
+        // 无子节点，直接返回
+        if (fromItem == null) {
+            return;
+        }
 
         String fromAlias = fromItem.toString();
         if (fromItem.getAlias() != null) {
@@ -314,13 +318,9 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
             fromAlias = getTempTableName();
         }
 
-        stackTargetTable.push(fromAlias);
-
         // 处理子节点：FROM 子查询。(TODO: Join 子查询)
-        if (fromItem != null) {
-            fromItem.accept(this);
-        }
-
+        stackTargetTable.push(fromAlias);
+        fromItem.accept(this);
         stackTargetTable.pop();
 
         // visitJoins(plainSelect.getJoins());

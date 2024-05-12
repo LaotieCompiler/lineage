@@ -6,6 +6,8 @@
 
 ## Feature
 
+1. select 1,2  //ignore constants
+2. select 1 as c1 from A  //ignore constnts
 1. select c1+c2 from A
 2. select max(c1) from A
 3. select a1,a2 from (select b1, b2 from (select c1,c2 from C))
@@ -14,8 +16,6 @@
 
 ## select parser
 
-1. select c1,c2
-2. select 1 as c1 from A
 3. select * from A  //dependence on metadata
 4. select * from A,B
 5. select c1,c2 from A,B //c1 from A or B

@@ -21,7 +21,7 @@ public class SelectLineageTest
     @Test
     public void allColumnTest()
     {
-        String sqlStr = "SELECT A.*, * FROM A AS TA;";
+        String sqlStr = "SELECT TA.* FROM A AS TA;";
 
         Statement statHandle;
         Select select;
@@ -88,7 +88,7 @@ public class SelectLineageTest
                         "                        SELECT 1 B1, 2 B2, 3 B3\n" + //
                         "                    )\n" + //
                         "            )\n" + //
-                        "    )\n" + //
+                        "    ) TA \n" + //
                         "WHERE\n" + //
                         "    condition;";
 

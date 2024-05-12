@@ -366,6 +366,9 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         if (!otherItemNames.contains(tableWholeName.toLowerCase())
                 && !tables.contains(tableWholeName)) {
             tables.add(tableWholeName);
+            if(tableName.getAlias()!=null && tableName.getAlias().getName()!=null ){
+                instructions.add(tableWholeName + ".* ==> " + tableName.getAlias().getName() + ".*");
+            }
         }
 
     }

@@ -8,6 +8,7 @@ Postorder traversal the AST (Abstract Syntax Tree) of the SQL query and collect 
 
 The code from `net.sf.jsqlparser.util.TablesNamesFinder` that can parse lineage in table level.
 
+## Order of Execution in SQL
 
 | Clause         | Function                                                                                                          |
 | -------------- | ----------------------------------------------------------------------------------------------------------------- |

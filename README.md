@@ -8,6 +8,18 @@ Postorder traversal the AST (Abstract Syntax Tree) of the SQL query and collect 
 
 The code from `net.sf.jsqlparser.util.TablesNamesFinder` that can parse lineage in table level.
 
+
+| Clause         | Function                                                                                                          |
+| -------------- | ----------------------------------------------------------------------------------------------------------------- |
+| FROM / JOIN    | When you write any query, SQL starts by identifying the tables for the data retrieval and how they are connected. |
+| WHERE          | It acts as a filter; it filters the record based on the conditions specified by the users.                        |
+| GROUP BY       | The filtered data is grouped based on the specified condition.                                                    |
+| HAVING         | It is similar to the WHERE clause but applied after grouping the data.                                            |
+| SELECT         | The clause selects the columns to be included in the final result.                                                |
+| DISTINCT       | Remove the duplicate rows from the result. Once you apply this clause, you are only left with distinct records.   |
+| ORDER BY       | It sorts (increasing/decreasing/A->Z/Z->A) the results based on the specified condition.                          |
+| LIMIT / OFFSET | It determines the number of records to return and from where to start.                                            |
+
 ## Tests
 
 All the features and test cases in `SelectLineageTest.java`.

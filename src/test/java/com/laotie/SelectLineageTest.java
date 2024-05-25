@@ -3,8 +3,14 @@ package com.laotie;
 import static org.junit.Assert.assertTrue;
 
 import java.util.List;
+import java.util.Set;
 
 import org.junit.Test;
+
+import com.laotie.model.Instruction;
+import com.laotie.model.LineageGraph;
+import com.laotie.model.metadata.Column;
+
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.statement.select.Select;
@@ -21,7 +27,7 @@ public class SelectLineageTest
     @Test
     public void allColumnTest()
     {
-        String sqlStr = "SELECT TA.* FROM A AS TA;";
+        String sqlStr = "SELECT TA.* FROM DB.A AS TA;";
 
         Statement statHandle;
         Select select;
@@ -31,9 +37,9 @@ public class SelectLineageTest
                 select = (Select) statHandle;
 
                 SelectLineage selectLineage = new SelectLineage();
-                List<String> instructions = selectLineage.getLineage((Statement) select);
+                List<Instruction> instructions = selectLineage.getLineage((Statement) select);
                 System.out.println("instructions:");
-                for (String instruct : instructions) {
+                for (Instruction instruct : instructions) {
                     System.out.println(instruct);
                 }
             }
@@ -64,9 +70,9 @@ public class SelectLineageTest
                 select = (Select) statHandle;
 
                 SelectLineage selectLineage = new SelectLineage();
-                List<String> instructions = selectLineage.getLineage((Statement) select);
+                List<Instruction> instructions = selectLineage.getLineage((Statement) select);
                 System.out.println("instructions:");
-                for (String instruct : instructions) {
+                for (Instruction instruct : instructions) {
                     System.out.println(instruct);
                 }
             }
@@ -100,10 +106,18 @@ public class SelectLineageTest
                 select = (Select) statHandle;
 
                 SelectLineage selectLineage = new SelectLineage();
-                List<String> instructions = selectLineage.getLineage((Statement) select);
+                List<Instruction> instructions = selectLineage.getLineage((Statement) select);
                 System.out.println("instructions:");
-                for (String instruct : instructions) {
+                for (Instruction instruct : instructions) {
                     System.out.println(instruct);
+                }
+
+                LineageGraph lineageGraph = new LineageGraph();
+                lineageGraph.buildByInstructions(instructions);
+                Set<Column> sources = lineageGraph.getSources(new Column("temp0.Mcol1"));
+                System.out.println("sources:");
+                for (Column source : sources) {
+                    System.out.println(source);
                 }
             }
             System.out.println("well done.");

@@ -2,13 +2,17 @@ package com.laotie.model.metadata;
 
 import java.util.HashSet;
 import java.util.Set;
+import lombok.Getter;
+import lombok.Setter;
 
+@Getter
+@Setter
 public class Table {
-    Schema schema;
-    String name = "_";
-    Set<String> columns = new HashSet<>();
+    private String schema;
+    private String name = "_";
+    private Set<String> columns = new HashSet<>();
 
-    public Table(Schema schema, String name, Set<String> columns) {
+    public Table(String schema, String name, Set<String> columns) {
         this.schema = schema;
         this.name = name;
         this.columns = columns;
@@ -19,7 +23,4 @@ public class Table {
         this.name = name;
     }
 
-    public String getName() {
-        return name;
-    }
 }

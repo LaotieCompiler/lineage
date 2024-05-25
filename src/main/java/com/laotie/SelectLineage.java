@@ -16,6 +16,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 
+import com.laotie.model.Instruction;
+import com.laotie.model.Instruction.OperationType;
+
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.Alias;
 import net.sf.jsqlparser.expression.AllValue;
@@ -193,7 +196,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     private static final String NOT_SUPPORTED_YET = "Not supported yet.";
     private Set<String> tables;
-    private List<String> instructions; //to store the direct relationship between fields
+    private List<Instruction> instructions; //to store the direct relationship between fields
     private Stack<String> stackTargetTable;
     private Stack<String> stackSourceTable;
     private Stack<String> stackTargetColumn;
@@ -207,7 +210,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         return String.format("temp%d", tempTableNum++);
     }
 
-    public List<String> getLineage(Statement statement) {
+    public List<Instruction> getLineage(Statement statement) {
         init(true);
         stackTargetTable.push(getTempTableName());
         statement.accept(this);
@@ -367,7 +370,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
                 && !tables.contains(tableWholeName)) {
             tables.add(tableWholeName);
             if(tableName.getAlias()!=null && tableName.getAlias().getName()!=null ){
-                instructions.add(tableWholeName + ".* ==> " + tableName.getAlias().getName() + ".*");
+                instructions.add(new Instruction(OperationType.TABLE_MAPPING, tableWholeName, tableName.getAlias().getName()));
             }
         }
 
@@ -409,8 +412,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         String toTable = stackTargetTable.peek();
         String toColumn = stackTargetColumn.peek();
         instructions.add(
-            fromTable + "." + tableColumn.getColumnName() +
-            " ==> " + toTable + "." + toColumn
+            new Instruction(OperationType.COLUMN_MAPPING, fromTable + "." + tableColumn.getColumnName(), toTable + "." + toColumn)
         );
 
         // if (allowColumnProcessing && tableColumn.getTable() != null
@@ -817,8 +819,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         String fromTable = stackSourceTable.peek(); // TODO: multiple source tables
         String toTable = stackTargetTable.peek();
         instructions.add(
-            fromTable + "." + "*" +
-            " ==> " + toTable
+            new Instruction(OperationType.COLUMNS_INJECT, fromTable, toTable)
         );
     }
 
@@ -834,8 +835,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         }
         String toTable = stackTargetTable.peek();
         instructions.add(
-            fromTable + ".*" +
-            " ==> " + toTable
+            new Instruction(OperationType.COLUMNS_INJECT, fromTable, toTable)
         );
     }
 

@@ -29,12 +29,13 @@ All the features and test cases in `SelectLineageTest.java`.
 
 ### select parser
 
-1. `select 1,2`  //ignore constants
-2. `select 1 as c1 from A`  //ignore constnts
-1. `select c1+c2 from A`
-2. `select max(c1) from A`
-3. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
-4. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
+1. `insert into A (c1, c2) from select c1, c2`
+2. `select 1,2`  //ignore constants
+3. `select 1 as c1 from A`  //ignore constnts
+4. `select c1+c2 from A`
+5. `select max(c1) from A`
+6. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
+7. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
 
 ### lineage map
 

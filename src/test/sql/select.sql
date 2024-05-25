@@ -1,13 +1,13 @@
 SELECT max(Col1) as Mcol1, Col2, Col3, 1 as Col4
 FROM (
-    SELECT A1 Col1, A2 Col2, A3 Col3
-    FROM (
-        SELECT B1 + B2 as A1, B1 + B2 * B3 as A2, B3 A3
+        SELECT A1 Col1, A2 Col2, A3 Col3
         FROM (
-            SELECT 1 B1, 2 B2, 3 B3
-        )
+                SELECT B1 + B2 as A1, B1 + B2 * B3 as A2, B3 A3
+                FROM (
+                        SELECT 1 B1, 2 B2, 3 B3
+                    )
+            )
     )
-)
 WHERE
     condition;
 
@@ -22,3 +22,9 @@ WHERE
     condition;
 
 SELECT * FROM A AS TA;
+
+SELECT C + D as A, D as B
+From (
+    SELECT E as C, F as D
+    From T
+)

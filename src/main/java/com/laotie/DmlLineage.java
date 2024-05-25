@@ -201,7 +201,8 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
     private Stack<String> stackTargetTable;
     private Stack<String> stackSourceTable;
     private Stack<String> stackTargetColumn;
-    private List<String> insertColumns;
+    // TODO: 为了解决 insert 与 select 中列名对应的问题。未来支持元数据解析之后，可以去掉这个变量，交给元数据解析器处理。
+    private List<String> insertColumns; 
     private boolean inTargetExpression = false;
     private int tempTableNum = 0;
 

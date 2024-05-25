@@ -205,6 +205,7 @@ public class SelectLineageTest {
     public void insertTest() throws JSQLParserException {
         String sqlStr = "INSERT INTO\n" + //
                         "    TTT (col1, col2, col3, col4)\n" + //
+                        // "    TTT\n" + //
                         "SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1\n" + //
                         "From (\n" + //
                         "        SELECT E as C, F as D\n" + //

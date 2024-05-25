@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
+import java.util.stream.Collectors;
 
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
@@ -955,12 +956,22 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
                 withItem.accept((SelectVisitor) this);
             }
         }
+        stackTargetTable.push(getTempTableName());
         Select select = insert.getSelect();
         if (select != null) {
             visit(select);
-            
         }
-
+        if(insert.getColumns()!= null) {
+            List<String> columns = insert.getColumns().stream().map(col -> col.getColumnName()).collect(Collectors.toList());
+            instructions.add(
+                new Instruction(OperationType.TABLE_MAPPING, stackTargetTable.peek(), String.format("%s(%s)",tableName, String.join(",", columns)))
+            );
+        }else{
+            instructions.add(
+                new Instruction(OperationType.TABLE_MAPPING, stackTargetTable.peek(), tableName)
+            );
+        }
+        stackTargetTable.pop();
     }
 
     public void visit(Analyze analyze) {

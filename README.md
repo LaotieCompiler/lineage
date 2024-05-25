@@ -52,6 +52,7 @@ All the features and test cases in `SelectLineageTest.java`.
 6. select c1,c2 from A,B //c1 from A or B
 7. select A.c1,B.c2 from A,B  
 7. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column or strict string pattern.
+8. select c1,c2,c3 from A where ci in (select ...)
 9. specify default database/schema
 8. update ...
 

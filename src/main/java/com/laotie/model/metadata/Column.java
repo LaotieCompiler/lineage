@@ -23,7 +23,7 @@ public class Column {
     }
 
     public Column(String tableName, String columnName) {
-        this(columnName);
+        this.columnName = columnName;
         this.tableName = tableName;
     }
 

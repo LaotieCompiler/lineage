@@ -204,9 +204,9 @@ public class SelectLineageTest {
     @Test
     public void insertTest() throws JSQLParserException {
         String sqlStr = "INSERT INTO\n" + //
-                        "    TTT (col1, col2, col3, col4)\n" + //
+                        "    TTT (col1, col2, col3, col4, col5)\n" + //
                         // "    TTT\n" + //
-                        "SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1\n" + //
+                        "SELECT C + D as A, D as B, C + TB.C1 as A1, D, C*D \n" + //
                         "From (\n" + //
                         "        SELECT E as C, F as D\n" + //
                         "        From T\n" + //
@@ -215,23 +215,26 @@ public class SelectLineageTest {
         Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
         DmlLineage selectLineage = new DmlLineage();
         List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
+        System.out.println("instructions:");
         for(Instruction instruct : instructions) {
-            System.out.println(instruct);
+            System.out.println("  "+instruct);
         }
-        // LineageGraph lineageGraph = new LineageGraph();
-        // lineageGraph.buildByInstructions(instructions);
-        // Set<Column> targets = new HashSet<>();
-        // targets.add(new Column("TTT.col1"));
-        // targets.add(new Column("TTT.col2"));
-        // targets.add(new Column("TTT.col3"));
-        // targets.add(new Column("TTT.col4"));
-        // Map<Column,Set<Column>> sources = lineageGraph.getSources(targets);
-        // for (Column target : sources.keySet()) {
-        //     System.out.println("target: " + target);
-        //     for (Column source : sources.get(target)) {
-        //         System.out.println("  " + source);
-        //     }
-        // }
+        LineageGraph lineageGraph = new LineageGraph();
+        lineageGraph.buildByInstructions(instructions);
+        Set<Column> targets = new HashSet<>();
+        targets.add(new Column("TTT.col1"));
+        targets.add(new Column("TTT.col2"));
+        targets.add(new Column("TTT.col3"));
+        targets.add(new Column("TTT.col4"));
+        targets.add(new Column("TTT.col5"));
+        Map<Column,Set<Column>> sources = lineageGraph.getSources(targets);
+        System.out.println("Shortten lineage:");
+        for (Column target : sources.keySet()) {
+            System.out.println("  target: " + target);
+            for (Column source : sources.get(target)) {
+                System.out.println("    " + source);
+            }
+        }
     }
 
 }

@@ -201,9 +201,9 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
     private Stack<String> stackTargetTable;
     private Stack<String> stackSourceTable;
     private Stack<String> stackTargetColumn;
+    private List<String> insertColumns;
     private boolean inTargetExpression = false;
     private int tempTableNum = 0;
-    private boolean allowColumnProcessing = false;
 
     private List<String> otherItemNames;
 
@@ -329,7 +329,11 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
     @Override
     public void visit(PlainSelect plainSelect) {
         FromItem fromItem = plainSelect.getFromItem();
-        // 无子节点，直接返回
+        // 如果发现 insertColumns，则只允许在当前层处理，为避免被子节点消费，所以先暂存再清空
+        List<String> _insertColumns = new ArrayList<String>(insertColumns);
+        insertColumns.clear();
+        // 无子节点，直接返回 
+        // TODO: constant value as source table
         if (fromItem == null) {
             return;
         }
@@ -354,6 +358,10 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
 
         stackSourceTable.push(fromAlias);
         if (plainSelect.getSelectItems() != null) {
+            insertColumns.addAll(_insertColumns);
+            if (insertColumns.size()>0 && insertColumns.size()!= plainSelect.getSelectItems().size()) {
+                throw new UnsupportedOperationException("Invalid insert column count: " + _insertColumns.size() + " vs " + plainSelect.getSelectItems().size());
+            }
             for (SelectItem<?> item : plainSelect.getSelectItems()) {
                 item.accept(this);
             }
@@ -772,10 +780,10 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
         otherItemNames = new ArrayList<String>();
         tables = new HashSet<>();
         instructions = new ArrayList<>();
-        this.allowColumnProcessing = allowColumnProcessing;
         stackSourceTable = new Stack<>();
         stackTargetTable = new Stack<>();
         stackTargetColumn = new Stack<>();
+        insertColumns = new ArrayList<>();
     }
 
     @Override
@@ -869,6 +877,15 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
         item.getExpression().accept(this);
         inTargetExpression = false;
         stackTargetColumn.pop();
+
+        if (insertColumns.size()>0){
+            String selectTableName = stackTargetTable.peek();
+            String insertCol = insertColumns.get(0);
+            insertColumns.remove(0);
+            instructions.add(
+                new Instruction(OperationType.COLUMN_MAPPING, selectTableName+"."+targetColumn, insertCol)
+            );
+        }
     }
 
     @Override
@@ -957,16 +974,16 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
             }
         }
         stackTargetTable.push(getTempTableName());
+        if (insert.getColumns()!=null) {
+            insertColumns.addAll(insert.getColumns().stream().map(col -> tableName+"."+col.getColumnName()).collect(Collectors.toList()));
+        }
+
         Select select = insert.getSelect();
         if (select != null) {
             visit(select);
         }
-        if(insert.getColumns()!= null) {
-            List<String> columns = insert.getColumns().stream().map(col -> col.getColumnName()).collect(Collectors.toList());
-            instructions.add(
-                new Instruction(OperationType.TABLE_MAPPING, stackTargetTable.peek(), String.format("%s(%s)",tableName, String.join(",", columns)))
-            );
-        }else{
+
+        if(insert.getColumns()== null) {
             instructions.add(
                 new Instruction(OperationType.TABLE_MAPPING, stackTargetTable.peek(), tableName)
             );

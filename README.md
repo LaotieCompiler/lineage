@@ -43,6 +43,7 @@ All the features and test cases in `SelectLineageTest.java`.
 5. select * from A,B
 6. select c1,c2 from A,B //c1 from A or B
 7. select A.c1,B.c2 from A,B 
+7. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column.
 8. specify default database/schema
 
 ## metadata

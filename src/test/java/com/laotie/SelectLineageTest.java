@@ -1,6 +1,5 @@
 package com.laotie;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.HashSet;
@@ -128,46 +127,76 @@ public class SelectLineageTest {
     @Test
     public void batchSourceText() {
         String sqlStr = "SELECT C + D as A, D as B\n" + //
-                        "From (\n" + //
-                        "    SELECT E as C, F as D\n" + //
-                        "    From T\n" + //
-                        ")";
+                "From (\n" + //
+                "    SELECT E as C, F as D\n" + //
+                "    From T\n" + //
+                ")";
 
-        Statement statHandle;
-        Select select;
+        SelectLineage selectLineage = new SelectLineage();
         try {
-            statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
-            if (statHandle instanceof Select) {
-                select = (Select) statHandle;
+            Statement statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
 
-                SelectLineage selectLineage = new SelectLineage();
-                List<Instruction> instructions = selectLineage.getLineage((Statement) select);
-                System.out.println("instructions:");
-                for (Instruction instruct : instructions) {
-                    System.out.println(instruct);
-                }
-
-                LineageGraph lineageGraph = new LineageGraph();
-                lineageGraph.buildByInstructions(instructions);
-                Set<Column> targets = new HashSet<>();
-                targets.add(new Column("temp0.A"));
-                targets.add(new Column("temp0.B"));
-                Map<Column,Set<Column>> shorttenLineage = lineageGraph.getSources(targets);;
-                for (Column target : shorttenLineage.keySet()) {
-                    System.out.println("target: "+target);
-                    for (Column source : shorttenLineage.get(target)) {
-                        System.out.println("  "+source);
-                    }
-                }
-                assertEquals(true, shorttenLineage.containsKey(new Column("temp0.A")));
-                assertEquals(true, shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.E")));
-                assertEquals(true, shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.F")));
-
-                assertEquals(true, shorttenLineage.containsKey(new Column("temp0.B")));
-                assertEquals(true, shorttenLineage.get(new Column("temp0.B")).contains(new Column("T.F")));
+            List<Instruction> instructions = selectLineage.getLineage((Statement) statHandle);
+            System.out.println("instructions:");
+            for (Instruction instruct : instructions) {
+                System.out.println(instruct);
             }
-            System.out.println("well done.");
-        } catch (JSQLParserException e) {
+
+            LineageGraph lineageGraph = new LineageGraph();
+            lineageGraph.buildByInstructions(instructions);
+            Set<Column> targets = new HashSet<>();
+            targets.add(new Column("temp0.A"));
+            targets.add(new Column("temp0.B"));
+            Map<Column, Set<Column>> shorttenLineage = lineageGraph.getSources(targets);
+            for (Column target : shorttenLineage.keySet()) {
+                System.out.println("target: " + target);
+                for (Column source : shorttenLineage.get(target)) {
+                    System.out.println("  " + source);
+                }
+            }
+            assertTrue(shorttenLineage.containsKey(new Column("temp0.A")));
+            assertTrue(shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.E")));
+            assertTrue(shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.F")));
+
+            assertTrue(shorttenLineage.containsKey(new Column("temp0.B")));
+            assertTrue(shorttenLineage.get(new Column("temp0.B")).contains(new Column("T.F")));
+            System.out.println("well done.\n\n");
+
+            sqlStr = "SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1\n" + //
+                                "From (\n" + //
+                                "    SELECT E as C, F as D\n" + //
+                                "    From T\n" + //
+                                ") as TA \n" + //
+                                "INNER JOIN TB on TA.aid = TB.bid";
+            statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
+            instructions = selectLineage.getLineage((Statement) statHandle);
+            System.out.println("instructions:");
+            for (Instruction instruct : instructions) {
+                System.out.println(instruct);
+            }
+
+            lineageGraph.buildByInstructions(instructions);
+            targets = new HashSet<>();
+            targets.add(new Column("temp2.A"));
+            targets.add(new Column("temp2.B"));
+            targets.add(new Column("temp2.A1"));
+            targets.add(new Column("temp2.B1"));
+            shorttenLineage = lineageGraph.getSources(targets);
+            for (Column target : shorttenLineage.keySet()) {
+                System.out.println("target: " + target);
+                for (Column source : shorttenLineage.get(target)) {
+                    System.out.println("  " + source);
+                }
+            }
+            assertTrue(shorttenLineage.containsKey(new Column("temp2.A1")));
+            assertTrue(shorttenLineage.get(new Column("temp2.A1")).contains(new Column("TB.C1")));
+            assertTrue(shorttenLineage.get(new Column("temp2.A1")).contains(new Column("T.E")));
+
+            assertTrue(shorttenLineage.containsKey(new Column("temp2.B1")));
+            assertTrue(shorttenLineage.get(new Column("temp2.B1")).contains(new Column("TB.D1")));
+
+            System.out.println("well done.\n\n");
+        } catch ( JSQLParserException e) {
             e.printStackTrace();
         }
     }

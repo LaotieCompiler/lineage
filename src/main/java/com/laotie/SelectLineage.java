@@ -218,6 +218,11 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
         return instructions;
     }
 
+    public List<Instruction> getLineage(String sqlStr) throws JSQLParserException {
+        Statement statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
+        return getLineage(statHandle);
+    }
+
 
     @Deprecated
     public List<String> getTableList(Statement statement) {

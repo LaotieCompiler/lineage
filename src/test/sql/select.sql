@@ -25,13 +25,22 @@ SELECT * FROM A AS TA;
 
 SELECT C + D as A, D as B
 From (
-    SELECT E as C, F as D
-    From T
-)
+        SELECT E as C, F as D
+        From T
+    )
 
 SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1
 From (
-    SELECT E as C, F as D
-    From T
-) as TA 
-INNER JOIN TB on TA.aid = TB.bid
+        SELECT E as C, F as D
+        From T
+    ) as TA
+    INNER JOIN TB on TA.aid = TB.bid
+
+INSERT INTO
+    TTT (col1, col2, col3, col4)
+SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1
+From (
+        SELECT E as C, F as D
+        From T
+    ) as TA
+    INNER JOIN TB on TA.aid = TB.bid

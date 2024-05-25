@@ -191,7 +191,7 @@ import net.sf.jsqlparser.statement.upsert.Upsert;
  * Override extractTableName method to modify the extracted table names (e.g. without schema).
  */
 @SuppressWarnings({"PMD.CyclomaticComplexity", "PMD.UncommentedEmptyMethodBody"})
-public class SelectLineage implements SelectVisitor, FromItemVisitor, ExpressionVisitor,
+public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVisitor,
         SelectItemVisitor, StatementVisitor {
 
     private static final String NOT_SUPPORTED_YET = "Not supported yet.";
@@ -236,7 +236,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
     }
 
     public static Set<String> findTables(String sqlStr) throws JSQLParserException {
-        SelectLineage tablesNamesFinder = new SelectLineage();
+        DmlLineage tablesNamesFinder = new DmlLineage();
         return tablesNamesFinder.getTables(CCJSqlParserUtil.parse(sqlStr));
     }
 
@@ -287,7 +287,7 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
     }
 
     public static Set<String> findTablesInExpression(String exprStr) throws JSQLParserException {
-        SelectLineage tablesNamesFinder = new SelectLineage();
+        DmlLineage tablesNamesFinder = new DmlLineage();
         return tablesNamesFinder.getTables(CCJSqlParserUtil.parseExpression(exprStr));
     }
 
@@ -314,6 +314,8 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
             }
         }
         selectBody.getSelect().accept((SelectVisitor) this);
+
+        
 
         stackTargetTable.pop();
     }
@@ -946,15 +948,19 @@ public class SelectLineage implements SelectVisitor, FromItemVisitor, Expression
 
     @Override
     public void visit(Insert insert) {
+        String tableName = insert.getTable().getName();
         visit(insert.getTable());
         if (insert.getWithItemsList() != null) {
             for (WithItem withItem : insert.getWithItemsList()) {
                 withItem.accept((SelectVisitor) this);
             }
         }
-        if (insert.getSelect() != null) {
-            visit(insert.getSelect());
+        Select select = insert.getSelect();
+        if (select != null) {
+            visit(select);
+            
         }
+
     }
 
     public void visit(Analyze analyze) {

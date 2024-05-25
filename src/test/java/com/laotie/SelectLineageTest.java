@@ -36,7 +36,7 @@ public class SelectLineageTest {
             if (statHandle instanceof Select) {
                 select = (Select) statHandle;
 
-                SelectLineage selectLineage = new SelectLineage();
+                DmlLineage selectLineage = new DmlLineage();
                 List<Instruction> instructions = selectLineage.getLineage((Statement) select);
                 System.out.println("instructions:");
                 for (Instruction instruct : instructions) {
@@ -68,7 +68,7 @@ public class SelectLineageTest {
             if (statHandle instanceof Select) {
                 select = (Select) statHandle;
 
-                SelectLineage selectLineage = new SelectLineage();
+                DmlLineage selectLineage = new DmlLineage();
                 List<Instruction> instructions = selectLineage.getLineage((Statement) select);
                 System.out.println("instructions:");
                 for (Instruction instruct : instructions) {
@@ -103,7 +103,7 @@ public class SelectLineageTest {
             if (statHandle instanceof Select) {
                 select = (Select) statHandle;
 
-                SelectLineage selectLineage = new SelectLineage();
+                DmlLineage selectLineage = new DmlLineage();
                 List<Instruction> instructions = selectLineage.getLineage((Statement) select);
                 System.out.println("instructions:");
                 for (Instruction instruct : instructions) {
@@ -132,7 +132,7 @@ public class SelectLineageTest {
                 "    From T\n" + //
                 ")";
 
-        SelectLineage selectLineage = new SelectLineage();
+        DmlLineage selectLineage = new DmlLineage();
         try {
             Statement statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
 
@@ -199,6 +199,38 @@ public class SelectLineageTest {
         } catch ( JSQLParserException e) {
             e.printStackTrace();
         }
+    }
+
+    @Test
+    public void insertTest() throws JSQLParserException {
+        String sqlStr = "INSERT INTO\n" + //
+                        "    TTT (col1, col2, col3, col4)\n" + //
+                        "SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1\n" + //
+                        "From (\n" + //
+                        "        SELECT E as C, F as D\n" + //
+                        "        From T\n" + //
+                        "    ) as TA\n" + //
+                        "    INNER JOIN TB on TA.aid = TB.bid";
+        Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
+        DmlLineage selectLineage = new DmlLineage();
+        List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
+        for(Instruction instruct : instructions) {
+            System.out.println(instruct);
+        }
+        // LineageGraph lineageGraph = new LineageGraph();
+        // lineageGraph.buildByInstructions(instructions);
+        // Set<Column> targets = new HashSet<>();
+        // targets.add(new Column("TTT.col1"));
+        // targets.add(new Column("TTT.col2"));
+        // targets.add(new Column("TTT.col3"));
+        // targets.add(new Column("TTT.col4"));
+        // Map<Column,Set<Column>> sources = lineageGraph.getSources(targets);
+        // for (Column target : sources.keySet()) {
+        //     System.out.println("target: " + target);
+        //     for (Column source : sources.get(target)) {
+        //         System.out.println("  " + source);
+        //     }
+        // }
     }
 
 }

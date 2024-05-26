@@ -2,6 +2,8 @@
 
 A data lineage parser in columns level.
 
+[中文](README_zh.md)
+
 ## Visitor Pattern
 
 Postorder traversal the AST (Abstract Syntax Tree) of the SQL query and collect the lineage information using the Visitor pattern.
@@ -27,6 +29,16 @@ All the features and test cases in `SelectLineageTest.java`.
 
 ## Feature
 
+### Supported DB
+
+    Oracle
+    MS SQL Server and Sybase
+    Postgres
+    MySQL and MariaDB
+    DB2
+    H2 and HSQLDB and Derby
+    SQLite
+
 ### select parser
 
 1. `insert into A (c1, c2) from select c1, c2`
@@ -37,9 +49,10 @@ All the features and test cases in `SelectLineageTest.java`.
 6. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
 7. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
 
-### lineage map
 
-1. ~~build lineage map by direct relations~~
+### lineage graph
+
+1. build lineage graph by direct relations
 2. export global lineage for each target fields
 
 ## TODO
@@ -69,11 +82,6 @@ All the features and test cases in `SelectLineageTest.java`.
 2. import metadata information from real database.
 3. execute relations with metadata to get exactly relations. Meanwhile update metadata for middle tables.
 4. build lineage map.
-
-### lineage map
-
-1. ~~build lineage map by direct relations~~
-2. export global lineage for each target fields
 
 ## License
 

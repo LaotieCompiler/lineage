@@ -75,3 +75,6 @@ All the features and test cases in `SelectLineageTest.java`.
 1. ~~build lineage map by direct relations~~
 2. export global lineage for each target fields
 
+## License
+
+This project is licensed under the Apache-2.0 license - see the [LICENSE](LICENSE) file for details.

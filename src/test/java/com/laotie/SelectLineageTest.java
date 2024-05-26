@@ -160,14 +160,14 @@ public class SelectLineageTest {
 
             assertTrue(shorttenLineage.containsKey(new Column("temp0.B")));
             assertTrue(shorttenLineage.get(new Column("temp0.B")).contains(new Column("T.F")));
-            System.out.println("well done.\n\n");
+            System.out.println("well done.\n");
 
             sqlStr = "SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1\n" + //
-                                "From (\n" + //
-                                "    SELECT E as C, F as D\n" + //
-                                "    From T\n" + //
-                                ") as TA \n" + //
-                                "INNER JOIN TB on TA.aid = TB.bid";
+                    "From (\n" + //
+                    "    SELECT E as C, F as D\n" + //
+                    "    From T\n" + //
+                    ") as TA \n" + //
+                    "INNER JOIN TB on TA.aid = TB.bid";
             statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
             instructions = selectLineage.getLineage((Statement) statHandle);
             System.out.println("instructions:");
@@ -195,46 +195,55 @@ public class SelectLineageTest {
             assertTrue(shorttenLineage.containsKey(new Column("temp2.B1")));
             assertTrue(shorttenLineage.get(new Column("temp2.B1")).contains(new Column("TB.D1")));
 
-            System.out.println("well done.\n\n");
-        } catch ( JSQLParserException e) {
+            System.out.println("well done.\n");
+        } catch (JSQLParserException e) {
             e.printStackTrace();
         }
     }
 
     @Test
     public void insertTest() throws JSQLParserException {
-        String sqlStr = "INSERT INTO\n" + //
-                        "    TTT (col1, col2, col3, col4, col5)\n" + //
-                        // "    TTT\n" + //
-                        "SELECT C + D as A, D as B, C + TB.C1 as A1, D, C*D \n" + //
-                        "From (\n" + //
-                        "        SELECT E as C, F as D\n" + //
-                        "        From T\n" + //
-                        "    ) as TA\n" + //
-                        "    INNER JOIN TB on TA.aid = TB.bid";
-        Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
-        DmlLineage selectLineage = new DmlLineage();
-        List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
-        System.out.println("instructions:");
-        for(Instruction instruct : instructions) {
-            System.out.println("  "+instruct);
-        }
-        LineageGraph lineageGraph = new LineageGraph();
-        lineageGraph.buildByInstructions(instructions);
-        Set<Column> targets = new HashSet<>();
-        targets.add(new Column("TTT.col1"));
-        targets.add(new Column("TTT.col2"));
-        targets.add(new Column("TTT.col3"));
-        targets.add(new Column("TTT.col4"));
-        targets.add(new Column("TTT.col5"));
-        Map<Column,Set<Column>> sources = lineageGraph.getSources(targets);
-        System.out.println("Shortten lineage:");
-        for (Column target : sources.keySet()) {
-            System.out.println("  target: " + target);
-            for (Column source : sources.get(target)) {
-                System.out.println("    " + source);
+        long startMillis = System.currentTimeMillis();
+        long round = 1;
+        for (int i = 0; i < round; i++) {
+            String sqlStr = "INSERT INTO\n" + //
+                    "    TTT (col1, col2, col3, col4, col5)\n" + //
+                    // " TTT\n" + //
+                    "SELECT C + D as A, D as B, C + TB.C1 as A1, D, C*D \n" + //
+                    "From (\n" + //
+                    "        SELECT E as C, F as D\n" + //
+                    "        From T\n" + //
+                    "    ) as TA\n" + //
+                    "    INNER JOIN TB on TA.aid = TB.bid";
+            Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
+            DmlLineage selectLineage = new DmlLineage();
+            List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
+            System.out.println("instructions:");
+            for (Instruction instruct : instructions) {
+                System.out.println("  " + instruct);
+            }
+            Set<String> tables = selectLineage.getTables();
+            System.out.println("tables: ");
+            System.out.println("  " + tables); 
+            LineageGraph lineageGraph = new LineageGraph();
+            lineageGraph.buildByInstructions(instructions);
+            Set<Column> targets = new HashSet<>();
+            targets.add(new Column("TTT.col1"));
+            targets.add(new Column("TTT.col2"));
+            targets.add(new Column("TTT.col3"));
+            targets.add(new Column("TTT.col4"));
+            targets.add(new Column("TTT.col5"));
+            Map<Column, Set<Column>> sources = lineageGraph.getSources(targets);
+            System.out.println("Shortten lineage:");
+            for (Column target : sources.keySet()) {
+                System.out.println("  target: " + target);
+                for (Column source : sources.get(target)) {
+                    System.out.println("    " + source);
+                }
             }
         }
+        long endMillis = System.currentTimeMillis();
+        System.out.println(String.format("Duration [ms]: %d, Avg [ms]: %.2f", (endMillis - startMillis), (float) (endMillis - startMillis) / round));
     }
 
 }

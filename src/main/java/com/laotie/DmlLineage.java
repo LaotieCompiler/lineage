@@ -208,6 +208,24 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
 
     private List<String> otherItemNames;
 
+    /**
+     * Initializes table names collector. Important is the usage of Column instances to find table
+     * names. This is only allowed for expression parsing, where a better place for tablenames could
+     * not be there. For complete statements only from items are used to avoid some alias as
+     * tablenames.
+     *
+     * @param allowColumnProcessing
+     */
+    protected void init(boolean allowColumnProcessing) {
+        otherItemNames = new ArrayList<String>();
+        tables = new HashSet<>();
+        instructions = new ArrayList<>();
+        stackSourceTable = new Stack<>();
+        stackTargetTable = new Stack<>();
+        stackTargetColumn = new Stack<>();
+        insertColumns = new ArrayList<>();
+    }
+
     public String getTempTableName(){
         return String.format("temp%d", tempTableNum++);
     }
@@ -225,21 +243,8 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
         return getLineage(statHandle);
     }
 
-
-    @Deprecated
-    public List<String> getTableList(Statement statement) {
-        return new ArrayList<String>(getTables(statement));
-    }
-
-    public Set<String> getTables(Statement statement) {
-        init(true);
-        statement.accept(this);
+    public Set<String> getTables() {
         return tables;
-    }
-
-    public static Set<String> findTables(String sqlStr) throws JSQLParserException {
-        DmlLineage tablesNamesFinder = new DmlLineage();
-        return tablesNamesFinder.getTables(CCJSqlParserUtil.parse(sqlStr));
     }
 
     @Override
@@ -767,24 +772,6 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
     @Override
     public void visit(TableStatement tableStatement) {
         tableStatement.getTable().accept(this);
-    }
-
-    /**
-     * Initializes table names collector. Important is the usage of Column instances to find table
-     * names. This is only allowed for expression parsing, where a better place for tablenames could
-     * not be there. For complete statements only from items are used to avoid some alias as
-     * tablenames.
-     *
-     * @param allowColumnProcessing
-     */
-    protected void init(boolean allowColumnProcessing) {
-        otherItemNames = new ArrayList<String>();
-        tables = new HashSet<>();
-        instructions = new ArrayList<>();
-        stackSourceTable = new Stack<>();
-        stackTargetTable = new Stack<>();
-        stackTargetColumn = new Stack<>();
-        insertColumns = new ArrayList<>();
     }
 
     @Override

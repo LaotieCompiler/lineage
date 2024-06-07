@@ -44,3 +44,34 @@ From (
         From T
     ) as TA
     INNER JOIN TB on TA.aid = TB.bid
+
+
+INSERT INTO
+    TTT (col1, col2, col3, col4)
+SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1
+From (
+        SELECT E as C, F as D
+        From T
+    ) as TA
+    INNER JOIN TB on TA.aid = TB.bid
+WHERE TA.C IN (SELECT C FROM TC);
+
+
+INSERT INTO
+    TTT1
+SELECT C + D as A, D as B, C + TB.C1 as A1, TB.*
+From (
+        SELECT E as C, F as D
+        From T
+    ) as TA
+    INNER JOIN TB on TA.aid = TB.bid;
+
+INSERT INTO stat_dim_numbers (n)
+WITH RECURSIVE seq AS (
+  SELECT 1 AS n
+  UNION ALL
+  SELECT n + 1
+  FROM seq
+  WHERE n < 500
+)
+SELECT n FROM seq;

@@ -1,4 +1,4 @@
-package com.laotie;
+package com.laotie.model;
 
 import static org.junit.Assert.assertEquals;
 

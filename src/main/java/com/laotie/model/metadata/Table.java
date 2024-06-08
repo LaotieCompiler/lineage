@@ -1,27 +1,58 @@
 package com.laotie.model.metadata;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import lombok.Getter;
 import lombok.Setter;
 
 @Getter
 @Setter
+/**
+ * Represents a database table with a name and a list of columns.
+ * The table can be configured to have ordered columns.
+ */
 public class Table {
     private String name = "_";
-    // private List<String> columns = new ArrayList<>();
+    private List<Column> columns = new ArrayList<>();
+    private Boolean orderedColumns = false;
 
-    // public Table(String schema, String name, List<String> columns) {
-    //     this.schema = schema;
-    //     this.name = name;
-    //     this.columns = columns;
-    // }
+    public Table(String name, List<Column> columns, Boolean orderedColumns) {
+        this.name = name;
+        this.columns.addAll(columns);
+        this.orderedColumns = orderedColumns;
+        checkColumnUnique();
+    }
+
+    public Table(String name, List<Column> columns) {
+        this(name, columns, false);
+    }
 
     public Table(String name) {
-        this.name = name;
+        this(name, new ArrayList<>(), false);
+    }
+
+    public void addColumn(Column column) {
+        columns.add(column);
+        checkColumnUnique();
+    }
+
+    public void addAllColumn(List<Column> cols) {
+        columns.addAll(cols);
+        checkColumnUnique();
+    }
+
+    private void checkColumnUnique(){
+        if (columns.stream().map(Column::getColumnName).distinct().count() != columns.size()) {
+            throw new IllegalArgumentException("Duplicate column name");
+        }
     }
 
     @Override
     public String toString() {
-        return String.format("%s", name);
+        
+        String ColumnStr = columns.size()==0 ? "_" : columns.stream().map(Column::getColumnName).reduce((a, b) -> a + "," + b).get();
+        return String.format("%s(%s)", name, ColumnStr);
     }
 
     @Override
@@ -29,7 +60,7 @@ public class Table {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass()!= o.getClass()) {
+        if (o == null || getClass() != o.getClass()) {
             return false;
         }
         Table table = (Table) o;
@@ -38,15 +69,8 @@ public class Table {
 
     @Override
     public int hashCode() {
-        return (name).hashCode();
+        return name.hashCode();
     }
 
-    // public void addColumn(String column) {
-    //     columns.add(column);
-    // }
-
-    // public void addAllColumn(List<String> columns) {
-    //     columns.addAll(columns);
-    // }
 
 }

@@ -48,7 +48,13 @@ All the features and test cases in `SelectLineageTest.java`.
 5. `select max(c1) from A`
 6. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
 7. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
+1. select * from A  //dependence on metadata
 
+### metadata
+
+1. Some columns define are ambiguous such as * and same column name from multiple source table. So we need to introduce metadata from real DB to determine the source table.
+2. In the progress of parsing, it will generate metadata for middle table, save the infomation for checking in later.
+3. excute the origin instructions with metadata, get the full qualified column name for each column.
 
 ### lineage graph
 
@@ -59,7 +65,6 @@ All the features and test cases in `SelectLineageTest.java`.
 
 ### select parser
 
-1. select * from A  //dependence on metadata
 4. select c1, c2 from A as TA
 5. select * from A,B
 6. select c1,c2 from A,B //c1 from A or B
@@ -71,9 +76,6 @@ All the features and test cases in `SelectLineageTest.java`.
 
 ### metadata
 
-1. Some columns define are ambiguous such as * and same column name from multiple source table. So we need to introduce metadata from real DB to determine the source table.
-2. In the progress of parsing, it will generate metadata for middle table, save the infomation for checking in later.
-3. excute the origin instructions with metadata, get the full qualified column name for each column.
 4. Cross multiple database/schema
 
 #### steps

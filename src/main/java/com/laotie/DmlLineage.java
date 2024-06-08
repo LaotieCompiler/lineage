@@ -198,7 +198,6 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
     private Stack<String> stackSourceTable;
     private Stack<String> stackTargetColumn;
     // TODO: 为了解决 insert 与 select 中列名对应的问题。未来支持元数据解析之后，可以去掉这个变量，交给元数据解析器处理。
-    private List<String> insertColumns; 
     private boolean inTargetExpression = false;
     private int tempTableNum = 0;
 
@@ -219,7 +218,6 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
         stackSourceTable = new Stack<>();
         stackTargetTable = new Stack<>();
         stackTargetColumn = new Stack<>();
-        insertColumns = new ArrayList<>();
     }
 
     public String getTempTableName(){
@@ -332,8 +330,6 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
     public void visit(PlainSelect plainSelect) {
         FromItem fromItem = plainSelect.getFromItem();
         // 如果发现 insertColumns，则只允许在当前层处理，为避免被子节点消费，所以先暂存再清空
-        List<String> _insertColumns = new ArrayList<String>(insertColumns);
-        insertColumns.clear();
         // 无子节点，直接返回 
         // TODO: constant value as source table
         if (fromItem == null) {
@@ -360,10 +356,6 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
 
         stackSourceTable.push(fromAlias);
         if (plainSelect.getSelectItems() != null) {
-            insertColumns.addAll(_insertColumns);
-            if (insertColumns.size()>0 && insertColumns.size()!= plainSelect.getSelectItems().size()) {
-                throw new UnsupportedOperationException("Invalid insert column count: " + _insertColumns.size() + " vs " + plainSelect.getSelectItems().size());
-            }
             for (SelectItem<?> item : plainSelect.getSelectItems()) {
                 item.accept(this);
             }
@@ -857,19 +849,16 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
         }
 
         stackTargetColumn.push(targetColumn);
+        int insCountBefore = instructions.size();
         inTargetExpression = true;
         item.getExpression().accept(this);
         inTargetExpression = false;
+        int insCountAfter = instructions.size();
+        if (insCountAfter == insCountBefore){
+            instructions.add(new Instruction(OperationType.EXPR_MAPPING, item.getExpression().toString(), stackTargetTable.peek()+"."+targetColumn));
+        }
         stackTargetColumn.pop();
 
-        if (insertColumns.size()>0){
-            String selectTableName = stackTargetTable.peek();
-            String insertCol = insertColumns.get(0);
-            insertColumns.remove(0);
-            instructions.add(
-                new Instruction(OperationType.COLUMN_MAPPING, selectTableName+"."+targetColumn, insertCol)
-            );
-        }
     }
 
     @Override
@@ -958,18 +947,20 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
             }
         }
         stackTargetTable.push(getTempTableName());
-        if (insert.getColumns()!=null) {
-            insertColumns.addAll(insert.getColumns().stream().map(col -> tableName+"."+col.getColumnName()).collect(Collectors.toList()));
-        }
 
         Select select = insert.getSelect();
         if (select != null) {
             visit(select);
         }
 
-        if(insert.getColumns()== null) {
+        if (insert.getColumns()!=null) {
+            String colStr = insert.getColumns().stream().map(col -> col.getColumnName()).collect(Collectors.joining(","));
             instructions.add(
-                new Instruction(OperationType.TABLE_MAPPING, stackTargetTable.peek(), tableName)
+                new Instruction(OperationType.COLUMNS_INJECT, stackTargetTable.peek(), String.format("%s(%s)", tableName, colStr ))
+            );
+        }else{
+            instructions.add(
+                new Instruction(OperationType.COLUMNS_INJECT, stackTargetTable.peek(), tableName)
             );
         }
         stackTargetTable.pop();

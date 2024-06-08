@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.Table;
 
@@ -24,6 +25,9 @@ public class MetaBinder {
         for (Column column : columns) {
             Table table = new Table(column.getTableName());
             tableColumnsMap.putIfAbsent(table, new ArrayList<>());  
+            if (tableColumnsMap.get(table).contains(column)) {
+                continue;
+            }
             tableColumnsMap.get(table).add(column);
         }
     }
@@ -40,8 +44,36 @@ public class MetaBinder {
         return tableColumnsMap.get(table);
     }
 
-    public Boolean columnsMatched(List<Column> a, List<Column> b){
+    public void appendColumns(Table table, List<Column> columns){
+        tableColumnsMap.putIfAbsent(table, new ArrayList<>());  
+        // add columns keep unique
+        for (Column column : columns) {
+            if (tableColumnsMap.get(table).contains(column)) {
+                continue;
+            }
+            tableColumnsMap.get(table).add(column);
+        }
+    }
+
+    public Boolean tableMatched(Table a, List<Column> b){
+        if (tableColumnsMap.get(a) == null) {
+            throw new MetadataNotFoundException(a.getName());
+        }
+        return tableColumnsMap.get(a).equals(b);
+    }
+
+    public Boolean tableInclude(Table a, List<Column> b){
+        if (tableColumnsMap.get(a) == null) {
+            throw new MetadataNotFoundException(a.getName());
+        }
+        return tableColumnsMap.get(a).containsAll(b);
+    }
+
+    public static Boolean columnsMatched(List<Column> a, List<Column> b){
         return a.equals(b);
     }
 
+    public static Boolean columnsIncluded(List<Column> a, List<Column> b){
+        return a.containsAll(b);
+    }
 }

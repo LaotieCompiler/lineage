@@ -47,7 +47,7 @@ public class Instruction {
     }
 
     public static List<Instruction> toColumnInstructions(List<Instruction> sourceInstructions, MetaBinder metaBinder){
-        if (metaBinder == null || metaBinder.getTableColumnsMap().isEmpty()){
+        if (metaBinder == null ){
             return sourceInstructions;
         }
         List<Instruction> colInstructions = new ArrayList<>();

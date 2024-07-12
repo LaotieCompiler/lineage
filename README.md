@@ -79,6 +79,10 @@ All the features and test cases in `SelectLineageTest.java`.
 1. Strict syntax, all the talbe and colmuns must be quoated.
 2. Cross multiple database/schema
 
+### support DB
+
+1. Hive
+2. Spark
 
 #### steps
 

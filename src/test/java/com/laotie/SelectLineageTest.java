@@ -11,6 +11,7 @@ import org.junit.Test;
 
 import com.laotie.model.Instruction;
 import com.laotie.model.LineageGraph;
+import com.laotie.model.MetaBinder;
 import com.laotie.model.metadata.Column;
 
 import net.sf.jsqlparser.JSQLParserException;
@@ -217,16 +218,31 @@ public class SelectLineageTest {
                     "    INNER JOIN TB on TA.aid = TB.bid";
             Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
             DmlLineage selectLineage = new DmlLineage();
+            // get instructions
             List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
             System.out.println("instructions:");
             for (Instruction instruct : instructions) {
                 System.out.println("  " + instruct);
             }
+
+            // get related tables
             Set<String> tables = selectLineage.getTables();
             System.out.println("tables: ");
             System.out.println("  " + tables); 
+
+            // parse column instructions by metadata
+            MetaBinder metaBinder = new MetaBinder();
+            List<Instruction> colInstructions = Instruction.toColumnInstructions(instructions, metaBinder);
+            System.out.println("column instructions:");
+            for (Instruction instruct : colInstructions) {
+                System.out.println("  " + instruct);
+            }
+
+            // build lineage graph
             LineageGraph lineageGraph = new LineageGraph();
-            lineageGraph.buildByInstructions(instructions);
+            lineageGraph.buildByInstructions(colInstructions);
+
+            // get shortten lineage (ignore the middle temporary table, just from source to target directly)
             Set<Column> targets = new HashSet<>();
             targets.add(new Column("TTT.col1"));
             targets.add(new Column("TTT.col2"));

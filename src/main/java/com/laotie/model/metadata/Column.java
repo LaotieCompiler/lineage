@@ -2,48 +2,129 @@ package com.laotie.model.metadata;
 
 import java.util.Objects;
 
-import lombok.Getter;
-import lombok.Setter;
-
-@Getter
-@Setter
+/**
+ * A column (field) reference. It is also used as a vertex in the lineage graph.
+ *
+ * <p>
+ * Temporary columns (intermediate projections) have a distinct identity from physical columns,
+ * even when their display string is identical.
+ */
 public class Column {
     private String tableName;
     private String columnName;
+    private String dataType;
+    private boolean temporary;
+    private boolean immutable;
 
-    public Column(String columnName) {
-        String[] parts = columnName.split("\\.");
-        if (parts.length > 1) {
-            int length = parts.length;
-            this.tableName = parts[length-2];
-            this.columnName = parts[length-1];
+    /**
+     * Create a physical column from a qualified name such as {@code db1.A.c1}.
+     * The last segment is the column name; everything before it is the table name.
+     */
+    public Column(String qualifiedName) {
+        int idx = qualifiedName == null ? -1 : qualifiedName.lastIndexOf('.');
+        if (idx >= 0) {
+            this.tableName = qualifiedName.substring(0, idx);
+            this.columnName = qualifiedName.substring(idx + 1);
         } else {
-            this.columnName = columnName;
+            this.columnName = qualifiedName;
         }
     }
 
     public Column(String tableName, String columnName) {
-        this.columnName = columnName;
         this.tableName = tableName;
+        this.columnName = columnName;
+    }
+
+    /**
+     * Create a temporary graph vertex such as {@code stmt0.temp0.c1}.
+     */
+    public static Column temporary(String qualifiedName) {
+        Column column = new Column(qualifiedName);
+        column.temporary = true;
+        return column;
+    }
+
+    public String getTableName() {
+        return tableName;
+    }
+
+    public String getColumnName() {
+        return columnName;
+    }
+
+    public String getDataType() {
+        return dataType;
+    }
+
+    public boolean isTemporary() {
+        return temporary;
+    }
+
+    public boolean isImmutable() {
+        return immutable;
+    }
+
+    public void setTableName(String tableName) {
+        checkMutable();
+        this.tableName = tableName;
+    }
+
+    public void setColumnName(String columnName) {
+        checkMutable();
+        this.columnName = columnName;
+    }
+
+    public void setDataType(String dataType) {
+        checkMutable();
+        this.dataType = dataType;
+    }
+
+    public void setTemporary(boolean temporary) {
+        checkMutable();
+        this.temporary = temporary;
+    }
+
+    /**
+     * A read-only deep copy, used by published metadata snapshots.
+     */
+    public Column snapshot() {
+        Column copy = new Column(tableName, columnName);
+        copy.dataType = dataType;
+        copy.temporary = temporary;
+        copy.immutable = true;
+        return copy;
+    }
+
+    private void checkMutable() {
+        if (immutable) {
+            throw new UnsupportedOperationException("column is read-only: " + this);
+        }
     }
 
     @Override
     public String toString() {
+        if (tableName == null) {
+            return columnName;
+        }
         return tableName + "." + columnName;
     }
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
         Column column = (Column) o;
-        return Objects.equals(tableName, column.tableName) &&
-                Objects.equals(columnName, column.columnName);
+        return temporary == column.temporary
+                && Objects.equals(tableName, column.tableName)
+                && Objects.equals(columnName, column.columnName);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(tableName, columnName);
+        return Objects.hash(tableName, columnName, temporary);
     }
-
 }

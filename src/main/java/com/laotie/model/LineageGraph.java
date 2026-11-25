@@ -10,6 +10,7 @@ import java.util.Set;
 
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.metadata.Column;
+import com.laotie.model.metadata.MetadataContext;
 import org.jgrapht.Graph;
 import org.jgrapht.graph.DefaultEdge;
 import org.jgrapht.graph.DirectedMultigraph;
@@ -42,6 +43,77 @@ public class LineageGraph {
                 reverseGraph.addEdge(to, from); // reverse the data flow direction
             }
         }
+    }
+
+    /**
+     * Merge several statements into one global graph.
+     *
+     * <p>
+     * Temporary targets are namespaced per statement ({@code stmt0.temp0.c1}), and wildcard
+     * instructions are expanded with each result's own metadata snapshot. Failed results are
+     * skipped.
+     */
+    public void buildByResults(List<LineageResult> results) {
+        init();
+        for (int i = 0; i < results.size(); i++) {
+            LineageResult result = results.get(i);
+            if (result.getError() != null) {
+                continue;
+            }
+            List<Instruction> instructions = result.getInstructions();
+            if (result.getContext() != null) {
+                instructions = Instruction.toColumnInstructions(instructions, result.getContext());
+            }
+            String prefix = "stmt" + i + ".";
+            for (Instruction instruction : instructions) {
+                if (instruction.getOperation() != OperationType.COLUMN_MAPPING) {
+                    continue;
+                }
+                Column from = graphColumn(instruction.getFrom(), prefix, result.getContext());
+                Column to = graphColumn(instruction.getTo(), prefix, result.getContext());
+                reverseGraph.addVertex(from);
+                reverseGraph.addVertex(to);
+                reverseGraph.addEdge(to, from);
+            }
+        }
+    }
+
+    private static Column graphColumn(String reference, String prefix, MetadataContext context) {
+        int idx = reference.lastIndexOf('.');
+        if (idx < 0) {
+            return new Column(reference);
+        }
+        String table = reference.substring(0, idx);
+        String column = reference.substring(idx + 1);
+
+        if (isPhysicalTable(table, context)) {
+            return new Column(reference);
+        }
+        if (isTempTable(table)) {
+            return Column.temporary(prefix + table + "." + column);
+        }
+        return new Column(reference);
+    }
+
+    private static boolean isPhysicalTable(String table, MetadataContext context) {
+        if (context == null) {
+            return false;
+        }
+        try {
+            for (com.laotie.model.metadata.TableLocation location
+                    : context.getCatalog().findAllTables(table)) {
+                if (location.getDisplayName().equalsIgnoreCase(table)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static boolean isTempTable(String table) {
+        return table.matches("temp\\d+") || table.matches("stmt\\d+\\.temp\\d+");
     }
 
     public Set<Column> getSources(Column targetVertex) {

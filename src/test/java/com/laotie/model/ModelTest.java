@@ -1,6 +1,7 @@
 package com.laotie.model;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -31,6 +32,22 @@ public class ModelTest {
         columns.add(new Column("ta.ca"));
         columns.add(new Column("ta","ca"));
         columns.add(new Column("ta","cb"));
+        assertEquals(2, columns.size());
+    }
+
+    @Test
+    public void qualifiedColumnKeepsFullTableName(){
+        Column column = new Column("db1.A.c1");
+        assertEquals("db1.A", column.getTableName());
+        assertEquals("c1", column.getColumnName());
+
+        // Same table name in different databases must stay distinct.
+        Column other = new Column("db2.A.c1");
+        assertNotEquals(column, other);
+
+        Set<Column> columns = new HashSet<>();
+        columns.add(column);
+        columns.add(other);
         assertEquals(2, columns.size());
     }
 }

@@ -8,190 +8,63 @@ package com.laotie;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 import java.util.stream.Collectors;
 
+import com.alibaba.druid.DbType;
+import com.alibaba.druid.sql.SQLUtils;
+import com.alibaba.druid.sql.ast.SQLExpr;
+import com.alibaba.druid.sql.ast.SQLStatement;
+import com.alibaba.druid.sql.ast.expr.SQLAggregateExpr;
+import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
+import com.alibaba.druid.sql.ast.expr.SQLBetweenExpr;
+import com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr;
+import com.alibaba.druid.sql.ast.expr.SQLCaseExpr;
+import com.alibaba.druid.sql.ast.expr.SQLCastExpr;
+import com.alibaba.druid.sql.ast.expr.SQLExtractExpr;
+import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLInListExpr;
+import com.alibaba.druid.sql.ast.expr.SQLInSubQueryExpr;
+import com.alibaba.druid.sql.ast.expr.SQLListExpr;
+import com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr;
+import com.alibaba.druid.sql.ast.expr.SQLNotExpr;
+import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
+import com.alibaba.druid.sql.ast.expr.SQLQueryExpr;
+import com.alibaba.druid.sql.ast.expr.SQLUnaryExpr;
+import com.alibaba.druid.sql.ast.statement.SQLCreateTableStatement;
+import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
+import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
+import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
+import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
+import com.alibaba.druid.sql.ast.statement.SQLSelect;
+import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
+import com.alibaba.druid.sql.ast.statement.SQLSelectQuery;
+import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
+import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
+import com.alibaba.druid.sql.ast.statement.SQLSubqueryTableSource;
+import com.alibaba.druid.sql.ast.statement.SQLTableSource;
+import com.alibaba.druid.sql.ast.statement.SQLUnionQuery;
+import com.alibaba.druid.sql.ast.statement.SQLUnionQueryTableSource;
+import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
+import com.alibaba.druid.sql.ast.statement.SQLWithSubqueryClause;
+
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 
-import net.sf.jsqlparser.JSQLParserException;
-import net.sf.jsqlparser.expression.Alias;
-import net.sf.jsqlparser.expression.AllValue;
-import net.sf.jsqlparser.expression.AnalyticExpression;
-import net.sf.jsqlparser.expression.AnyComparisonExpression;
-import net.sf.jsqlparser.expression.ArrayConstructor;
-import net.sf.jsqlparser.expression.ArrayExpression;
-import net.sf.jsqlparser.expression.BinaryExpression;
-import net.sf.jsqlparser.expression.CaseExpression;
-import net.sf.jsqlparser.expression.CastExpression;
-import net.sf.jsqlparser.expression.CollateExpression;
-import net.sf.jsqlparser.expression.ConnectByRootOperator;
-import net.sf.jsqlparser.expression.DateTimeLiteralExpression;
-import net.sf.jsqlparser.expression.DateValue;
-import net.sf.jsqlparser.expression.DoubleValue;
-import net.sf.jsqlparser.expression.Expression;
-import net.sf.jsqlparser.expression.ExpressionVisitor;
-import net.sf.jsqlparser.expression.ExtractExpression;
-import net.sf.jsqlparser.expression.Function;
-import net.sf.jsqlparser.expression.HexValue;
-import net.sf.jsqlparser.expression.IntervalExpression;
-import net.sf.jsqlparser.expression.JdbcNamedParameter;
-import net.sf.jsqlparser.expression.JdbcParameter;
-import net.sf.jsqlparser.expression.JsonAggregateFunction;
-import net.sf.jsqlparser.expression.JsonExpression;
-import net.sf.jsqlparser.expression.JsonFunction;
-import net.sf.jsqlparser.expression.JsonFunctionExpression;
-import net.sf.jsqlparser.expression.KeepExpression;
-import net.sf.jsqlparser.expression.LongValue;
-import net.sf.jsqlparser.expression.MySQLGroupConcat;
-import net.sf.jsqlparser.expression.NextValExpression;
-import net.sf.jsqlparser.expression.NotExpression;
-import net.sf.jsqlparser.expression.NullValue;
-import net.sf.jsqlparser.expression.NumericBind;
-import net.sf.jsqlparser.expression.OracleHierarchicalExpression;
-import net.sf.jsqlparser.expression.OracleHint;
-import net.sf.jsqlparser.expression.OracleNamedFunctionParameter;
-import net.sf.jsqlparser.expression.OverlapsCondition;
-import net.sf.jsqlparser.expression.Parenthesis;
-import net.sf.jsqlparser.expression.RangeExpression;
-import net.sf.jsqlparser.expression.RowConstructor;
-import net.sf.jsqlparser.expression.RowGetExpression;
-import net.sf.jsqlparser.expression.SignedExpression;
-import net.sf.jsqlparser.expression.StringValue;
-import net.sf.jsqlparser.expression.TimeKeyExpression;
-import net.sf.jsqlparser.expression.TimeValue;
-import net.sf.jsqlparser.expression.TimestampValue;
-import net.sf.jsqlparser.expression.TimezoneExpression;
-import net.sf.jsqlparser.expression.TranscodingFunction;
-import net.sf.jsqlparser.expression.TrimFunction;
-import net.sf.jsqlparser.expression.UserVariable;
-import net.sf.jsqlparser.expression.VariableAssignment;
-import net.sf.jsqlparser.expression.WhenClause;
-import net.sf.jsqlparser.expression.XMLSerializeExpr;
-import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
-import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseAnd;
-import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseLeftShift;
-import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseOr;
-import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseRightShift;
-import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseXor;
-import net.sf.jsqlparser.expression.operators.arithmetic.Concat;
-import net.sf.jsqlparser.expression.operators.arithmetic.Division;
-import net.sf.jsqlparser.expression.operators.arithmetic.IntegerDivision;
-import net.sf.jsqlparser.expression.operators.arithmetic.Modulo;
-import net.sf.jsqlparser.expression.operators.arithmetic.Multiplication;
-import net.sf.jsqlparser.expression.operators.arithmetic.Subtraction;
-import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
-import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
-import net.sf.jsqlparser.expression.operators.conditional.XorExpression;
-import net.sf.jsqlparser.expression.operators.relational.Between;
-import net.sf.jsqlparser.expression.operators.relational.ContainedBy;
-import net.sf.jsqlparser.expression.operators.relational.Contains;
-import net.sf.jsqlparser.expression.operators.relational.DoubleAnd;
-import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
-import net.sf.jsqlparser.expression.operators.relational.ExistsExpression;
-import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
-import net.sf.jsqlparser.expression.operators.relational.FullTextSearch;
-import net.sf.jsqlparser.expression.operators.relational.GeometryDistance;
-import net.sf.jsqlparser.expression.operators.relational.GreaterThan;
-import net.sf.jsqlparser.expression.operators.relational.GreaterThanEquals;
-import net.sf.jsqlparser.expression.operators.relational.InExpression;
-import net.sf.jsqlparser.expression.operators.relational.IsBooleanExpression;
-import net.sf.jsqlparser.expression.operators.relational.IsDistinctExpression;
-import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
-import net.sf.jsqlparser.expression.operators.relational.JsonOperator;
-import net.sf.jsqlparser.expression.operators.relational.LikeExpression;
-import net.sf.jsqlparser.expression.operators.relational.Matches;
-import net.sf.jsqlparser.expression.operators.relational.MemberOfExpression;
-import net.sf.jsqlparser.expression.operators.relational.MinorThan;
-import net.sf.jsqlparser.expression.operators.relational.MinorThanEquals;
-import net.sf.jsqlparser.expression.operators.relational.NotEqualsTo;
-import net.sf.jsqlparser.expression.operators.relational.RegExpMatchOperator;
-import net.sf.jsqlparser.expression.operators.relational.SimilarToExpression;
-import net.sf.jsqlparser.expression.operators.relational.TSQLLeftJoin;
-import net.sf.jsqlparser.expression.operators.relational.TSQLRightJoin;
-import net.sf.jsqlparser.parser.CCJSqlParserUtil;
-import net.sf.jsqlparser.schema.Column;
-import net.sf.jsqlparser.schema.Table;
-import net.sf.jsqlparser.statement.Block;
-import net.sf.jsqlparser.statement.Commit;
-import net.sf.jsqlparser.statement.CreateFunctionalStatement;
-import net.sf.jsqlparser.statement.DeclareStatement;
-import net.sf.jsqlparser.statement.DescribeStatement;
-import net.sf.jsqlparser.statement.ExplainStatement;
-import net.sf.jsqlparser.statement.IfElseStatement;
-import net.sf.jsqlparser.statement.PurgeObjectType;
-import net.sf.jsqlparser.statement.PurgeStatement;
-import net.sf.jsqlparser.statement.ResetStatement;
-import net.sf.jsqlparser.statement.RollbackStatement;
-import net.sf.jsqlparser.statement.SavepointStatement;
-import net.sf.jsqlparser.statement.SetStatement;
-import net.sf.jsqlparser.statement.ShowColumnsStatement;
-import net.sf.jsqlparser.statement.ShowStatement;
-import net.sf.jsqlparser.statement.Statement;
-import net.sf.jsqlparser.statement.StatementVisitor;
-import net.sf.jsqlparser.statement.Statements;
-import net.sf.jsqlparser.statement.UnsupportedStatement;
-import net.sf.jsqlparser.statement.UseStatement;
-import net.sf.jsqlparser.statement.alter.Alter;
-import net.sf.jsqlparser.statement.alter.AlterSession;
-import net.sf.jsqlparser.statement.alter.AlterSystemStatement;
-import net.sf.jsqlparser.statement.alter.RenameTableStatement;
-import net.sf.jsqlparser.statement.alter.sequence.AlterSequence;
-import net.sf.jsqlparser.statement.analyze.Analyze;
-import net.sf.jsqlparser.statement.comment.Comment;
-import net.sf.jsqlparser.statement.create.index.CreateIndex;
-import net.sf.jsqlparser.statement.create.schema.CreateSchema;
-import net.sf.jsqlparser.statement.create.sequence.CreateSequence;
-import net.sf.jsqlparser.statement.create.synonym.CreateSynonym;
-import net.sf.jsqlparser.statement.create.table.CreateTable;
-import net.sf.jsqlparser.statement.create.view.AlterView;
-import net.sf.jsqlparser.statement.create.view.CreateView;
-import net.sf.jsqlparser.statement.delete.Delete;
-import net.sf.jsqlparser.statement.drop.Drop;
-import net.sf.jsqlparser.statement.execute.Execute;
-import net.sf.jsqlparser.statement.grant.Grant;
-import net.sf.jsqlparser.statement.insert.Insert;
-import net.sf.jsqlparser.statement.merge.Merge;
-import net.sf.jsqlparser.statement.refresh.RefreshMaterializedViewStatement;
-import net.sf.jsqlparser.statement.select.AllColumns;
-import net.sf.jsqlparser.statement.select.AllTableColumns;
-import net.sf.jsqlparser.statement.select.FromItem;
-import net.sf.jsqlparser.statement.select.FromItemVisitor;
-import net.sf.jsqlparser.statement.select.Join;
-import net.sf.jsqlparser.statement.select.LateralSubSelect;
-import net.sf.jsqlparser.statement.select.OrderByElement;
-import net.sf.jsqlparser.statement.select.ParenthesedFromItem;
-import net.sf.jsqlparser.statement.select.ParenthesedSelect;
-import net.sf.jsqlparser.statement.select.PlainSelect;
-import net.sf.jsqlparser.statement.select.Select;
-import net.sf.jsqlparser.statement.select.SelectItem;
-import net.sf.jsqlparser.statement.select.SelectItemVisitor;
-import net.sf.jsqlparser.statement.select.SelectVisitor;
-import net.sf.jsqlparser.statement.select.SetOperationList;
-import net.sf.jsqlparser.statement.select.TableFunction;
-import net.sf.jsqlparser.statement.select.TableStatement;
-import net.sf.jsqlparser.statement.select.Values;
-import net.sf.jsqlparser.statement.select.WithItem;
-import net.sf.jsqlparser.statement.show.ShowIndexStatement;
-import net.sf.jsqlparser.statement.show.ShowTablesStatement;
-import net.sf.jsqlparser.statement.truncate.Truncate;
-import net.sf.jsqlparser.statement.update.Update;
-import net.sf.jsqlparser.statement.upsert.Upsert;
-
-
 /**
- * Find all used tables within an select statement.
+ * Extract table and column level lineage from a SQL statement.
  *
  * <p>
- * Override extractTableName method to modify the extracted table names (e.g. without schema).
+ * The parser is backed by Alibaba Druid. The AST is traversed in post-order: nested queries and
+ * derived tables are processed before the select list of the query that consumes them, so that the
+ * instructions can be chained by {@link com.laotie.model.LineageGraph}.
  */
 @SuppressWarnings({"PMD.CyclomaticComplexity", "PMD.UncommentedEmptyMethodBody"})
-public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVisitor,
-        SelectItemVisitor, StatementVisitor {
+public class DmlLineage {
 
     private static final String NOT_SUPPORTED_YET = "Not supported yet.";
+
     private Set<String> tables;
     private List<Instruction> instructions; //to store the direct relationship between fields
     private Stack<String> stackTargetTable;
@@ -202,6 +75,16 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
     private int tempTableNum = 0;
 
     private List<String> otherItemNames;
+
+    private final DbType dbType;
+
+    public DmlLineage() {
+        this(DbType.mysql);
+    }
+
+    public DmlLineage(DbType dbType) {
+        this.dbType = dbType;
+    }
 
     /**
      * Initializes table names collector. Important is the usage of Column instances to find table
@@ -218,1162 +101,434 @@ public class DmlLineage implements SelectVisitor, FromItemVisitor, ExpressionVis
         stackSourceTable = new Stack<>();
         stackTargetTable = new Stack<>();
         stackTargetColumn = new Stack<>();
+        inTargetExpression = false;
     }
 
-    public String getTempTableName(){
+    public String getTempTableName() {
         return String.format("temp%d", tempTableNum++);
     }
 
-    public List<Instruction> getLineage(Statement statement) {
+    public List<Instruction> getLineage(SQLStatement statement) {
         init(true);
         stackTargetTable.push(getTempTableName());
-        statement.accept(this);
+        processStatement(statement);
         stackTargetTable.pop();
         return instructions;
     }
 
-    public List<Instruction> getLineage(String sqlStr) throws JSQLParserException {
-        Statement statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
-        return getLineage(statHandle);
+    public List<Instruction> getLineage(String sqlStr) {
+        return getLineage(parse(sqlStr));
+    }
+
+    /**
+     * Parse a single SQL statement with the configured dialect.
+     */
+    public SQLStatement parse(String sqlStr) {
+        return SQLUtils.parseSingleStatement(sqlStr, dbType);
     }
 
     public Set<String> getTables() {
         return tables;
     }
 
-    @Override
-    public void visit(Select select) {
-        List<WithItem> withItemsList = select.getWithItemsList();
-        if (withItemsList != null && !withItemsList.isEmpty()) {
-            for (WithItem withItem : withItemsList) {
-                withItem.accept((SelectVisitor) this);
-            }
-        }
-        select.accept((SelectVisitor) this);
-    }
-
-    @Override
-    public void visit(TranscodingFunction transcodingFunction) {
-        transcodingFunction.getExpression().accept(this);
-    }
-
-    @Override
-    public void visit(TrimFunction trimFunction) {
-        if (trimFunction.getExpression() != null) {
-            trimFunction.getExpression().accept(this);
-        }
-        if (trimFunction.getFromExpression() != null) {
-            trimFunction.getFromExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(RangeExpression rangeExpression) {
-        rangeExpression.getStartExpression().accept(this);
-        rangeExpression.getEndExpression().accept(this);
-    }
-
-    /**
-     * Main entry for this Tool class. A list of found tables is returned.
-     */
-    @Deprecated
-    public List<String> getTableList(Expression expr) {
-        return new ArrayList<String>(getTables(expr));
-    }
-
-    public Set<String> getTables(Expression expr) {
+    public Set<String> getTables(SQLExpr expr) {
         init(true);
-        expr.accept(this);
+        visitExpr(expr);
         return tables;
     }
 
-    public static Set<String> findTablesInExpression(String exprStr) throws JSQLParserException {
+    public static Set<String> findTablesInExpression(String exprStr) {
         DmlLineage tablesNamesFinder = new DmlLineage();
-        return tablesNamesFinder.getTables(CCJSqlParserUtil.parseExpression(exprStr));
+        return tablesNamesFinder.getTables(SQLUtils.toSQLExpr(exprStr, DbType.mysql));
     }
 
-    @Override
-    public void visit(WithItem withItem) {
-        otherItemNames.add(withItem.getAlias().getName().toLowerCase());
-        withItem.getSelect().accept((SelectVisitor) this);
-    }
+    /* ------------------------------------------------------------------ */
+    /* statement dispatch                                                 */
+    /* ------------------------------------------------------------------ */
 
-    @Override
-    public void visit(ParenthesedSelect selectBody) {
-        String targetTable = selectBody.toString();
-        if (selectBody.getAlias()==null){
-            selectBody.setAlias(new Alias(getTempTableName()));
+    private void processStatement(SQLStatement statement) {
+        if (statement instanceof SQLSelectStatement) {
+            processSelect(((SQLSelectStatement) statement).getSelect());
+        } else if (statement instanceof SQLInsertStatement) {
+            processInsert((SQLInsertStatement) statement);
+        } else if (statement instanceof SQLUpdateStatement) {
+            processUpdate((SQLUpdateStatement) statement);
+        } else if (statement instanceof SQLDeleteStatement) {
+            processDelete((SQLDeleteStatement) statement);
+        } else if (statement instanceof SQLCreateTableStatement) {
+            processCreateTable((SQLCreateTableStatement) statement);
+        } else {
+            throw new UnsupportedOperationException(
+                    String.format("Finding tables from %s is not supported",
+                            statement.getClass().getSimpleName()));
         }
-        targetTable = selectBody.getAlias().getName();
-        
-        stackTargetTable.push(targetTable);
+    }
 
-        List<WithItem> withItemsList = selectBody.getWithItemsList();
-        if (withItemsList != null && !withItemsList.isEmpty()) {
-            for (WithItem withItem : withItemsList) {
-                withItem.accept((SelectVisitor) this);
+    private void processSelect(SQLSelect select) {
+        processWithSubQuery(select.getWithSubQuery());
+        processSelectQuery(select.getQuery());
+    }
+
+    private void processWithSubQuery(SQLWithSubqueryClause withSubQuery) {
+        if (withSubQuery == null) {
+            return;
+        }
+        for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
+            String alias = entry.getAlias();
+            if (alias != null) {
+                otherItemNames.add(alias.toLowerCase());
             }
+            stackTargetTable.push(alias != null ? alias : getTempTableName());
+            processSelect(entry.getSubQuery());
+            stackTargetTable.pop();
         }
-        selectBody.getSelect().accept((SelectVisitor) this);
+    }
 
-        
-
-        stackTargetTable.pop();
+    private void processSelectQuery(SQLSelectQuery query) {
+        if (query instanceof SQLSelectQueryBlock) {
+            processQueryBlock((SQLSelectQueryBlock) query);
+        } else if (query instanceof SQLUnionQuery) {
+            SQLUnionQuery union = (SQLUnionQuery) query;
+            processSelectQuery(union.getLeft());
+            processSelectQuery(union.getRight());
+        }
+        // VALUES and other queries do not contribute column lineage.
     }
 
     /**
      * 查询 SELECT 语句的血缘信息
-     * 
+     *
      * 采用后根法遍历语法树，先处理内层 FROM 语句（子节点），再处理 SELECT 语句（根节点）
      */
-    @Override
-    public void visit(PlainSelect plainSelect) {
-        FromItem fromItem = plainSelect.getFromItem();
-        // 如果发现 insertColumns，则只允许在当前层处理，为避免被子节点消费，所以先暂存再清空
-        // 无子节点，直接返回 
-        // TODO: constant value as source table
+    private void processQueryBlock(SQLSelectQueryBlock queryBlock) {
+        SQLTableSource fromItem = queryBlock.getFrom();
+        // 无 FROM 子句时没有可追踪的源表（常量查询）
         if (fromItem == null) {
             return;
         }
 
-        fromItem.accept(this);
-
-        visitJoins(plainSelect.getJoins());
-
-        // TODO: WHERE subquery
-        // if (plainSelect.getWhere() != null) {
-        //     plainSelect.getWhere().accept(this);
-        // }
-
-        String fromAlias = fromItem.toString();
-        if (fromItem.getAlias() != null) {
-            fromAlias = fromItem.getAlias().getName();
-        }else if (fromItem instanceof Table){
-            fromAlias = ((Table) fromItem).getName();
-        }else{
-            throw new UnsupportedOperationException("Unsupported table type: " + fromItem.toString());
-        }
+        String fromAlias = processTableSource(fromItem);
 
         stackSourceTable.push(fromAlias);
-        if (plainSelect.getSelectItems() != null) {
-            for (SelectItem<?> item : plainSelect.getSelectItems()) {
-                item.accept(this);
+        if (queryBlock.getSelectList() != null) {
+            for (SQLSelectItem item : queryBlock.getSelectList()) {
+                processSelectItem(item);
             }
         }
         stackSourceTable.pop();
     }
 
-    /**
-     * Override to adapt the tableName generation (e.g. with / without schema).
-     *
-     * @param table
-     * @return
-     */
-    protected String extractTableName(Table table) {
-        return table.getFullyQualifiedName();
-    }
-
-    @Override
-    public void visit(Table tableName) {
-        String tableWholeName = extractTableName(tableName);
-        if (!otherItemNames.contains(tableWholeName.toLowerCase())
-                && !tables.contains(tableWholeName)) {
-            tables.add(tableWholeName);
-            if(tableName.getAlias()!=null && tableName.getAlias().getName()!=null ){
-                instructions.add(new Instruction(OperationType.TABLE_MAPPING, tableWholeName, tableName.getAlias().getName()));
-            }
-        }
-
-    }
-
-    @Override
-    public void visit(Addition addition) {
-        visitBinaryExpression(addition);
-    }
-
-    @Override
-    public void visit(AndExpression andExpression) {
-        visitBinaryExpression(andExpression);
-    }
-
-    @Override
-    public void visit(Between between) {
-        between.getLeftExpression().accept(this);
-        between.getBetweenExpressionStart().accept(this);
-        between.getBetweenExpressionEnd().accept(this);
-    }
-
-    @Override
-    public void visit(OverlapsCondition overlapsCondition) {
-        overlapsCondition.getLeft().accept(this);
-        overlapsCondition.getRight().accept(this);
-    }
-
-    @Override
-    public void visit(Column tableColumn) {
-        if (!inTargetExpression){
+    private void processSelectItem(SQLSelectItem item) {
+        if (item.getExpr() == null) {
             return;
         }
-
-        String fromTable = stackSourceTable.peek();
-        if (tableColumn.getTable() != null && tableColumn.getTable().getName() != null) {
-            fromTable = tableColumn.getTable().getName();
-        }
-        String toTable = stackTargetTable.peek();
-        String toColumn = stackTargetColumn.peek();
-        instructions.add(
-            new Instruction(OperationType.COLUMN_MAPPING, fromTable + "." + tableColumn.getColumnName(), toTable + "." + toColumn)
-        );
-
-        // if (allowColumnProcessing && tableColumn.getTable() != null
-        //         && tableColumn.getTable().getName() != null) {
-        //     visit(tableColumn.getTable());
-        // }
-    }
-
-    @Override
-    public void visit(Division division) {
-        visitBinaryExpression(division);
-    }
-
-    @Override
-    public void visit(IntegerDivision division) {
-        visitBinaryExpression(division);
-    }
-
-    @Override
-    public void visit(DoubleValue doubleValue) {
-
-    }
-
-    @Override
-    public void visit(EqualsTo equalsTo) {
-        visitBinaryExpression(equalsTo);
-    }
-
-    @Override
-    public void visit(Function function) {
-        ExpressionList exprList = function.getParameters();
-        if (exprList != null) {
-            visit(exprList);
-        }
-    }
-
-    @Override
-    public void visit(GreaterThan greaterThan) {
-        visitBinaryExpression(greaterThan);
-    }
-
-    @Override
-    public void visit(GreaterThanEquals greaterThanEquals) {
-        visitBinaryExpression(greaterThanEquals);
-    }
-
-    @Override
-    public void visit(InExpression inExpression) {
-        inExpression.getLeftExpression().accept(this);
-        inExpression.getRightExpression().accept(this);
-    }
-
-    @Override
-    public void visit(FullTextSearch fullTextSearch) {
-
-    }
-
-    @Override
-    public void visit(SignedExpression signedExpression) {
-        signedExpression.getExpression().accept(this);
-    }
-
-    @Override
-    public void visit(IsNullExpression isNullExpression) {
-
-    }
-
-    @Override
-    public void visit(IsBooleanExpression isBooleanExpression) {
-
-    }
-
-    @Override
-    public void visit(JdbcParameter jdbcParameter) {
-
-    }
-
-    @Override
-    public void visit(LikeExpression likeExpression) {
-        visitBinaryExpression(likeExpression);
-    }
-
-    @Override
-    public void visit(ExistsExpression existsExpression) {
-        existsExpression.getRightExpression().accept(this);
-    }
-
-    @Override
-    public void visit(MemberOfExpression memberOfExpression) {
-        memberOfExpression.getLeftExpression().accept(this);
-        memberOfExpression.getRightExpression().accept(this);
-    }
-
-    @Override
-    public void visit(LongValue longValue) {
-
-    }
-
-    @Override
-    public void visit(MinorThan minorThan) {
-        visitBinaryExpression(minorThan);
-    }
-
-    @Override
-    public void visit(MinorThanEquals minorThanEquals) {
-        visitBinaryExpression(minorThanEquals);
-    }
-
-    @Override
-    public void visit(Multiplication multiplication) {
-        visitBinaryExpression(multiplication);
-    }
-
-    @Override
-    public void visit(NotEqualsTo notEqualsTo) {
-        visitBinaryExpression(notEqualsTo);
-    }
-
-    @Override
-    public void visit(DoubleAnd doubleAnd) {
-        visitBinaryExpression(doubleAnd);
-    }
-
-    @Override
-    public void visit(Contains contains) {
-        visitBinaryExpression(contains);
-    }
-
-    @Override
-    public void visit(ContainedBy containedBy) {
-        visitBinaryExpression(containedBy);
-    }
-
-    @Override
-    public void visit(NullValue nullValue) {
-
-    }
-
-    @Override
-    public void visit(OrExpression orExpression) {
-        visitBinaryExpression(orExpression);
-    }
-
-    @Override
-    public void visit(XorExpression xorExpression) {
-        visitBinaryExpression(xorExpression);
-    }
-
-    @Override
-    public void visit(Parenthesis parenthesis) {
-        parenthesis.getExpression().accept(this);
-    }
-
-    @Override
-    public void visit(StringValue stringValue) {
-
-    }
-
-    @Override
-    public void visit(Subtraction subtraction) {
-        visitBinaryExpression(subtraction);
-    }
-
-    @Override
-    public void visit(NotExpression notExpr) {
-        notExpr.getExpression().accept(this);
-    }
-
-    @Override
-    public void visit(BitwiseRightShift expr) {
-        visitBinaryExpression(expr);
-    }
-
-    @Override
-    public void visit(BitwiseLeftShift expr) {
-        visitBinaryExpression(expr);
-    }
-
-    public void visitBinaryExpression(BinaryExpression binaryExpression) {
-        binaryExpression.getLeftExpression().accept(this);
-        binaryExpression.getRightExpression().accept(this);
-    }
-
-    @Override
-    public void visit(ExpressionList<?> expressionList) {
-        for (Expression expression : expressionList) {
-            expression.accept(this);
-        }
-    }
-
-    @Override
-    public void visit(DateValue dateValue) {
-
-    }
-
-    @Override
-    public void visit(TimestampValue timestampValue) {
-
-    }
-
-    @Override
-    public void visit(TimeValue timeValue) {
-
-    }
-
-    /*
-     * (non-Javadoc)
-     *
-     * @see net.sf.jsqlparser.expression.ExpressionVisitor#visit(net.sf.jsqlparser.expression.
-     * CaseExpression)
-     */
-    @Override
-    public void visit(CaseExpression caseExpression) {
-        if (caseExpression.getSwitchExpression() != null) {
-            caseExpression.getSwitchExpression().accept(this);
-        }
-        if (caseExpression.getWhenClauses() != null) {
-            for (WhenClause when : caseExpression.getWhenClauses()) {
-                when.accept(this);
-            }
-        }
-        if (caseExpression.getElseExpression() != null) {
-            caseExpression.getElseExpression().accept(this);
-        }
-    }
-
-    /*
-     * (non-Javadoc)
-     *
-     * @see
-     * net.sf.jsqlparser.expression.ExpressionVisitor#visit(net.sf.jsqlparser.expression.WhenClause)
-     */
-    @Override
-    public void visit(WhenClause whenClause) {
-        if (whenClause.getWhenExpression() != null) {
-            whenClause.getWhenExpression().accept(this);
-        }
-        if (whenClause.getThenExpression() != null) {
-            whenClause.getThenExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(AnyComparisonExpression anyComparisonExpression) {
-        anyComparisonExpression.getSelect().accept((ExpressionVisitor) this);
-    }
-
-    @Override
-    public void visit(Concat concat) {
-        visitBinaryExpression(concat);
-    }
-
-    @Override
-    public void visit(Matches matches) {
-        visitBinaryExpression(matches);
-    }
-
-    @Override
-    public void visit(BitwiseAnd bitwiseAnd) {
-        visitBinaryExpression(bitwiseAnd);
-    }
-
-    @Override
-    public void visit(BitwiseOr bitwiseOr) {
-        visitBinaryExpression(bitwiseOr);
-    }
-
-    @Override
-    public void visit(BitwiseXor bitwiseXor) {
-        visitBinaryExpression(bitwiseXor);
-    }
-
-    @Override
-    public void visit(CastExpression cast) {
-        cast.getLeftExpression().accept(this);
-    }
-
-    @Override
-    public void visit(Modulo modulo) {
-        visitBinaryExpression(modulo);
-    }
-
-    @Override
-    public void visit(AnalyticExpression analytic) {
-        if (analytic.getExpression() != null) {
-            analytic.getExpression().accept(this);
-        }
-        if (analytic.getDefaultValue() != null) {
-            analytic.getDefaultValue().accept(this);
-        }
-        if (analytic.getOffset() != null) {
-            analytic.getOffset().accept(this);
-        }
-        if (analytic.getKeep() != null) {
-            analytic.getKeep().accept(this);
-        }
-        if (analytic.getFuncOrderBy() != null) {
-            for (OrderByElement element : analytic.getOrderByElements()) {
-                element.getExpression().accept(this);
-            }
-        }
-
-        if (analytic.getWindowElement() != null) {
-            analytic.getWindowElement().getRange().getStart().getExpression().accept(this);
-            analytic.getWindowElement().getRange().getEnd().getExpression().accept(this);
-            analytic.getWindowElement().getOffset().getExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(SetOperationList list) {
-        List<WithItem> withItemsList = list.getWithItemsList();
-        if (withItemsList != null && !withItemsList.isEmpty()) {
-            for (WithItem withItem : withItemsList) {
-                withItem.accept((SelectVisitor) this);
-            }
-        }
-        for (Select selectBody : list.getSelects()) {
-            selectBody.accept((SelectVisitor) this);
-        }
-    }
-
-    @Override
-    public void visit(ExtractExpression eexpr) {
-        if (eexpr.getExpression() != null) {
-            eexpr.getExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(LateralSubSelect lateralSubSelect) {
-        lateralSubSelect.getSelect().accept((SelectVisitor) this);
-    }
-
-    @Override
-    public void visit(TableStatement tableStatement) {
-        tableStatement.getTable().accept(this);
-    }
-
-    @Override
-    public void visit(IntervalExpression iexpr) {
-        if (iexpr.getExpression() != null) {
-            iexpr.getExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(JdbcNamedParameter jdbcNamedParameter) {
-
-    }
-
-    @Override
-    public void visit(OracleHierarchicalExpression oexpr) {
-        if (oexpr.getStartExpression() != null) {
-            oexpr.getStartExpression().accept(this);
-        }
-
-        if (oexpr.getConnectExpression() != null) {
-            oexpr.getConnectExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(RegExpMatchOperator rexpr) {
-        visitBinaryExpression(rexpr);
-    }
-
-    @Override
-    public void visit(JsonExpression jsonExpr) {
-        if (jsonExpr.getExpression() != null) {
-            jsonExpr.getExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(JsonOperator jsonExpr) {
-        visitBinaryExpression(jsonExpr);
-    }
-
-    @Override
-    public void visit(AllColumns allColumns) {
-        if (!inTargetExpression){
-            return;
-        }
-
-        String fromTable = stackSourceTable.peek(); // TODO: multiple source tables
-        String toTable = stackTargetTable.peek();
-        instructions.add(
-            new Instruction(OperationType.COLUMNS_INJECT, fromTable, toTable)
-        );
-    }
-
-    @Override
-    public void visit(AllTableColumns allTableColumns) {
-        if (!inTargetExpression){
-            return;
-        }
-
-        String fromTable = stackSourceTable.peek();
-        if (allTableColumns.getTable() != null && allTableColumns.getTable().getName() != null) {
-            fromTable = allTableColumns.getTable().getName();
-        }
-        String toTable = stackTargetTable.peek();
-        instructions.add(
-            new Instruction(OperationType.COLUMNS_INJECT, fromTable, toTable)
-        );
-    }
-
-    @Override
-    public void visit(AllValue allValue) {
-
-    }
-
-    @Override
-    public void visit(IsDistinctExpression isDistinctExpression) {
-        visitBinaryExpression(isDistinctExpression);
-    }
-
-    @Override
-    public void visit(SelectItem item) {
-        String targetColumn = item.getExpression().toString();
-        if (item.getAlias() != null) {
-            targetColumn = item.getAlias().getName();
-        }
+        String targetColumn = item.getAlias() != null ? item.getAlias() : item.getExpr().toString();
 
         stackTargetColumn.push(targetColumn);
         int insCountBefore = instructions.size();
         inTargetExpression = true;
-        item.getExpression().accept(this);
+        visitExpr(item.getExpr());
         inTargetExpression = false;
         int insCountAfter = instructions.size();
-        if (insCountAfter == insCountBefore){
-            instructions.add(new Instruction(OperationType.EXPR_MAPPING, item.getExpression().toString(), stackTargetTable.peek()+"."+targetColumn));
+        if (insCountAfter == insCountBefore) {
+            instructions.add(new Instruction(OperationType.EXPR_MAPPING, item.getExpr().toString(),
+                    stackTargetTable.peek() + "." + targetColumn));
         }
         stackTargetColumn.pop();
-
     }
 
-    @Override
-    public void visit(UserVariable var) {
+    /* ------------------------------------------------------------------ */
+    /* FROM / JOIN                                                        */
+    /* ------------------------------------------------------------------ */
 
-    }
-
-    @Override
-    public void visit(NumericBind bind) {
-
-
-    }
-
-    @Override
-    public void visit(KeepExpression aexpr) {
-
-    }
-
-    @Override
-    public void visit(MySQLGroupConcat groupConcat) {
-
-    }
-
-    @Override
-    public void visit(Delete delete) {
-        visit(delete.getTable());
-
-        if (delete.getUsingList() != null) {
-            for (Table using : delete.getUsingList()) {
-                visit(using);
+    /**
+     * Process a table source tree (post-order) and return the alias that unqualified columns of the
+     * enclosing query block resolve to. For a join this is the alias of its left-most base table.
+     */
+    private String processTableSource(SQLTableSource tableSource) {
+        if (tableSource == null) {
+            return null;
+        }
+        if (tableSource instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) tableSource;
+            String baseAlias = processTableSource(join.getLeft());
+            processTableSource(join.getRight());
+            return baseAlias;
+        }
+        if (tableSource instanceof SQLSubqueryTableSource) {
+            SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) tableSource;
+            String targetTable = subquery.getAlias();
+            if (targetTable == null) {
+                targetTable = getTempTableName();
+                subquery.setAlias(targetTable);
             }
+            stackTargetTable.push(targetTable);
+            processSelect(subquery.getSelect());
+            stackTargetTable.pop();
+            return targetTable;
         }
-
-        visitJoins(delete.getJoins());
-
-        if (delete.getWhere() != null) {
-            delete.getWhere().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(Update update) {
-        visit(update.getTable());
-        if (update.getWithItemsList() != null) {
-            for (WithItem withItem : update.getWithItemsList()) {
-                withItem.accept((SelectVisitor) this);
+        if (tableSource instanceof SQLUnionQueryTableSource) {
+            SQLUnionQueryTableSource union = (SQLUnionQueryTableSource) tableSource;
+            String targetTable = union.getAlias();
+            if (targetTable == null) {
+                targetTable = getTempTableName();
+                union.setAlias(targetTable);
             }
+            stackTargetTable.push(targetTable);
+            processSelectQuery(union.getUnion());
+            stackTargetTable.pop();
+            return targetTable;
         }
-
-        if (update.getStartJoins() != null) {
-            for (Join join : update.getStartJoins()) {
-                join.getRightItem().accept(this);
-            }
-        }
-        if (update.getExpressions() != null) {
-            for (Expression expression : update.getExpressions()) {
-                expression.accept(this);
-            }
-        }
-
-        if (update.getFromItem() != null) {
-            update.getFromItem().accept(this);
-        }
-
-        if (update.getJoins() != null) {
-            for (Join join : update.getJoins()) {
-                join.getRightItem().accept(this);
-                for (Expression expression : join.getOnExpressions()) {
-                    expression.accept(this);
+        if (tableSource instanceof SQLExprTableSource) {
+            SQLExprTableSource table = (SQLExprTableSource) tableSource;
+            String tableWholeName = extractTableName(table);
+            String alias = table.getAlias();
+            if (!otherItemNames.contains(tableWholeName.toLowerCase())
+                    && !tables.contains(tableWholeName)) {
+                tables.add(tableWholeName);
+                if (alias != null && !alias.isEmpty()) {
+                    instructions.add(new Instruction(OperationType.TABLE_MAPPING, tableWholeName, alias));
                 }
             }
+            return alias != null && !alias.isEmpty() ? alias : lastIdentifier(tableWholeName);
         }
-
-        if (update.getWhere() != null) {
-            update.getWhere().accept(this);
-        }
+        return null;
     }
 
-    @Override
-    public void visit(Insert insert) {
-        String tableName = insert.getTable().getName();
-        visit(insert.getTable());
-        if (insert.getWithItemsList() != null) {
-            for (WithItem withItem : insert.getWithItemsList()) {
-                withItem.accept((SelectVisitor) this);
-            }
+    /**
+     * Override to adapt the tableName generation (e.g. with / without schema).
+     */
+    protected String extractTableName(SQLExprTableSource table) {
+        SQLExpr expr = table.getExpr();
+        if (expr != null) {
+            return expr.toString();
         }
+        return table.getTableName();
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* INSERT / UPDATE / DELETE / CREATE                                  */
+    /* ------------------------------------------------------------------ */
+
+    private void processInsert(SQLInsertStatement insert) {
+        SQLExprTableSource tableSource = insert.getTableSource();
+        String tableName = extractTableName(tableSource);
+        registerTable(tableName, tableSource.getAlias());
+
+        processWithSubQuery(insert.getWith());
+
         stackTargetTable.push(getTempTableName());
 
-        Select select = insert.getSelect();
+        SQLSelect select = insert.getQuery();
         if (select != null) {
-            visit(select);
+            processSelect(select);
         }
 
-        if (insert.getColumns()!=null) {
-            String colStr = insert.getColumns().stream().map(col -> col.getColumnName()).collect(Collectors.joining(","));
-            instructions.add(
-                new Instruction(OperationType.COLUMNS_INJECT, stackTargetTable.peek(), String.format("%s(%s)", tableName, colStr ))
-            );
-        }else{
-            instructions.add(
-                new Instruction(OperationType.COLUMNS_INJECT, stackTargetTable.peek(), tableName)
-            );
+        List<SQLExpr> columns = insert.getColumns();
+        if (columns != null && !columns.isEmpty()) {
+            String colStr = columns.stream()
+                    .map(this::columnName)
+                    .collect(Collectors.joining(","));
+            instructions.add(new Instruction(OperationType.COLUMNS_INJECT, stackTargetTable.peek(),
+                    String.format("%s(%s)", tableName, colStr)));
+        } else {
+            instructions.add(new Instruction(OperationType.COLUMNS_INJECT, stackTargetTable.peek(), tableName));
         }
         stackTargetTable.pop();
     }
 
-    public void visit(Analyze analyze) {
-        visit(analyze.getTable());
+    private void processUpdate(SQLUpdateStatement update) {
+        processTableSource(update.getTableSource());
+        if (update.getFrom() != null) {
+            processTableSource(update.getFrom());
+        }
     }
 
-    @Override
-    public void visit(Drop drop) {
-        visit(drop.getName());
+    private void processDelete(SQLDeleteStatement delete) {
+        processTableSource(delete.getTableSource());
+        if (delete.getFrom() != null) {
+            processTableSource(delete.getFrom());
+        }
     }
 
-    @Override
-    public void visit(Truncate truncate) {
-        visit(truncate.getTable());
-    }
-
-    @Override
-    public void visit(CreateIndex createIndex) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(CreateSchema aThis) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(CreateTable create) {
-        visit(create.getTable());
+    private void processCreateTable(SQLCreateTableStatement create) {
+        SQLExprTableSource tableSource = create.getTableSource();
+        if (tableSource != null) {
+            registerTable(extractTableName(tableSource), tableSource.getAlias());
+        }
         if (create.getSelect() != null) {
-            create.getSelect().accept((SelectVisitor) this);
+            processSelect(create.getSelect());
         }
     }
 
-    @Override
-    public void visit(CreateView createView) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(Alter alter) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(Statements stmts) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(Execute execute) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(SetStatement set) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(ResetStatement reset) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(ShowColumnsStatement set) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(ShowIndexStatement showIndex) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(RowConstructor<?> rowConstructor) {
-        for (Expression expr : rowConstructor) {
-            expr.accept(this);
-        }
-    }
-
-    @Override
-    public void visit(RowGetExpression rowGetExpression) {
-        rowGetExpression.getExpression().accept(this);
-    }
-
-    @Override
-    public void visit(HexValue hexValue) {
-
-
-    }
-
-    @Override
-    public void visit(Merge merge) {
-        visit(merge.getTable());
-        if (merge.getWithItemsList() != null) {
-            for (WithItem withItem : merge.getWithItemsList()) {
-                withItem.accept((SelectVisitor) this);
-            }
-        }
-
-        if (merge.getFromItem() != null) {
-            merge.getFromItem().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(OracleHint hint) {
-
-    }
-
-    @Override
-    public void visit(TableFunction tableFunction) {
-        visit(tableFunction.getFunction());
-    }
-
-    @Override
-    public void visit(AlterView alterView) {
-        throw new UnsupportedOperationException(NOT_SUPPORTED_YET);
-    }
-
-    @Override
-    public void visit(RefreshMaterializedViewStatement materializedView) {
-        visit(materializedView.getView());
-    }
-
-    @Override
-    public void visit(TimeKeyExpression timeKeyExpression) {
-
-    }
-
-    @Override
-    public void visit(DateTimeLiteralExpression literal) {
-
-
-    }
-
-    @Override
-    public void visit(Commit commit) {
-
-
-    }
-
-    @Override
-    public void visit(Upsert upsert) {
-        visit(upsert.getTable());
-        if (upsert.getExpressions() != null) {
-            upsert.getExpressions().accept(this);
-        }
-        if (upsert.getSelect() != null) {
-            visit(upsert.getSelect());
-        }
-    }
-
-    @Override
-    public void visit(UseStatement use) {
-
-    }
-
-    @Override
-    public void visit(ParenthesedFromItem parenthesis) {
-        parenthesis.getFromItem().accept(this);
-        // support join keyword in fromItem
-        visitJoins(parenthesis.getJoins());
-    }
-
-    /**
-     * visit join block
-     *
-     * @param parenthesis join sql block
-     */
-    private void visitJoins(List<Join> parenthesis) {
-        if (parenthesis == null) {
+    private void registerTable(String tableWholeName, String alias) {
+        if (tableWholeName == null) {
             return;
         }
-        for (Join join : parenthesis) {
-            join.getFromItem().accept(this);
-            // join.getRightItem().accept(this);
-            // for (Expression expression : join.getOnExpressions()) {
-            //     expression.accept(this);
-            // }
-        }
-    }
-
-    @Override
-    public void visit(Block block) {
-        if (block.getStatements() != null) {
-            visit(block.getStatements());
-        }
-    }
-
-    @Override
-    public void visit(Comment comment) {
-        if (comment.getTable() != null) {
-            visit(comment.getTable());
-        }
-        if (comment.getColumn() != null) {
-            Table table = comment.getColumn().getTable();
-            if (table != null) {
-                visit(table);
+        if (!otherItemNames.contains(tableWholeName.toLowerCase()) && !tables.contains(tableWholeName)) {
+            tables.add(tableWholeName);
+            if (alias != null && !alias.isEmpty()) {
+                instructions.add(new Instruction(OperationType.TABLE_MAPPING, tableWholeName, alias));
             }
         }
     }
 
-    @Override
-    public void visit(Values values) {
-        values.getExpressions().accept(this);
+    private String columnName(SQLExpr column) {
+        if (column instanceof SQLIdentifierExpr) {
+            return ((SQLIdentifierExpr) column).getName();
+        }
+        return column.toString();
     }
 
-    @Override
-    public void visit(DescribeStatement describe) {
-        describe.getTable().accept(this);
+    /* ------------------------------------------------------------------ */
+    /* expressions                                                        */
+    /* ------------------------------------------------------------------ */
+
+    private void visitExpr(SQLExpr expr) {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof SQLIdentifierExpr) {
+            visitIdentifier((SQLIdentifierExpr) expr);
+        } else if (expr instanceof SQLPropertyExpr) {
+            visitProperty((SQLPropertyExpr) expr);
+        } else if (expr instanceof SQLAllColumnExpr) {
+            visitAllColumn();
+        } else if (expr instanceof SQLBinaryOpExpr) {
+            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
+            visitExpr(binary.getLeft());
+            visitExpr(binary.getRight());
+        } else if (expr instanceof SQLMethodInvokeExpr) {
+            // covers both regular functions and aggregates (max, count, now, ...)
+            visitMethodInvoke((SQLMethodInvokeExpr) expr);
+        } else if (expr instanceof SQLCastExpr) {
+            visitExpr(((SQLCastExpr) expr).getExpr());
+        } else if (expr instanceof SQLCaseExpr) {
+            visitCase((SQLCaseExpr) expr);
+        } else if (expr instanceof SQLListExpr) {
+            for (SQLExpr item : ((SQLListExpr) expr).getItems()) {
+                visitExpr(item);
+            }
+        } else if (expr instanceof SQLInListExpr) {
+            SQLInListExpr inList = (SQLInListExpr) expr;
+            visitExpr(inList.getExpr());
+            for (SQLExpr target : inList.getTargetList()) {
+                visitExpr(target);
+            }
+        } else if (expr instanceof SQLInSubQueryExpr) {
+            visitExpr(((SQLInSubQueryExpr) expr).getExpr());
+        } else if (expr instanceof SQLBetweenExpr) {
+            SQLBetweenExpr between = (SQLBetweenExpr) expr;
+            visitExpr(between.getTestExpr());
+            visitExpr(between.getBeginExpr());
+            visitExpr(between.getEndExpr());
+        } else if (expr instanceof SQLNotExpr) {
+            visitExpr(((SQLNotExpr) expr).getExpr());
+        } else if (expr instanceof SQLUnaryExpr) {
+            visitExpr(((SQLUnaryExpr) expr).getExpr());
+        } else if (expr instanceof SQLExtractExpr) {
+            visitExpr(((SQLExtractExpr) expr).getValue());
+        } else if (expr instanceof SQLQueryExpr) {
+            // scalar subquery nested in a select item; its lineage is not tracked here
+        }
+        // literals, parameters and other terminal expressions carry no lineage
     }
 
-    @Override
-    public void visit(ExplainStatement explain) {
-        if (explain.getStatement() != null) {
-            explain.getStatement().accept((StatementVisitor) this);
+    private void visitIdentifier(SQLIdentifierExpr identifier) {
+        if (!inTargetExpression) {
+            return;
+        }
+        if (stackSourceTable.isEmpty()) {
+            return;
+        }
+        addColumnMapping(stackSourceTable.peek(), identifier.getName());
+    }
+
+    private void visitProperty(SQLPropertyExpr property) {
+        if ("*".equals(property.getName())) {
+            if (!inTargetExpression) {
+                return;
+            }
+            String fromTable = property.getOwner() != null
+                    ? lastIdentifier(property.getOwner().toString())
+                    : stackSourceTable.peek();
+            addColumnInjection(fromTable);
+            return;
+        }
+
+        if (!inTargetExpression) {
+            return;
+        }
+        String fromTable = stackSourceTable.isEmpty() ? null : stackSourceTable.peek();
+        if (property.getOwner() != null) {
+            fromTable = lastIdentifier(property.getOwner().toString());
+        }
+        addColumnMapping(fromTable, property.getName());
+    }
+
+    private void visitAllColumn() {
+        if (!inTargetExpression) {
+            return;
+        }
+        addColumnInjection(stackSourceTable.peek());
+    }
+
+    private void visitMethodInvoke(SQLMethodInvokeExpr method) {
+        List<SQLExpr> arguments = method.getArguments();
+        if (arguments != null) {
+            for (SQLExpr argument : arguments) {
+                visitExpr(argument);
+            }
+        }
+        if (method instanceof SQLAggregateExpr) {
+            SQLExpr filter = ((SQLAggregateExpr) method).getFilter();
+            if (filter != null) {
+                visitExpr(filter);
+            }
         }
     }
 
-    @Override
-    public void visit(NextValExpression nextVal) {
-
-    }
-
-    @Override
-    public void visit(CollateExpression col) {
-        col.getLeftExpression().accept(this);
-    }
-
-    @Override
-    public void visit(ShowStatement aThis) {
-
-    }
-
-    @Override
-    public void visit(SimilarToExpression expr) {
-        visitBinaryExpression(expr);
-    }
-
-    @Override
-    public void visit(DeclareStatement aThis) {
-
-    }
-
-    @Override
-    public void visit(Grant grant) {
-
-
-    }
-
-    @Override
-    public void visit(ArrayExpression array) {
-        array.getObjExpression().accept(this);
-        if (array.getStartIndexExpression() != null) {
-            array.getIndexExpression().accept(this);
+    private void visitCase(SQLCaseExpr caseExpr) {
+        if (caseExpr.getValueExpr() != null) {
+            visitExpr(caseExpr.getValueExpr());
         }
-        if (array.getStartIndexExpression() != null) {
-            array.getStartIndexExpression().accept(this);
+        if (caseExpr.getItems() != null) {
+            for (SQLCaseExpr.Item item : caseExpr.getItems()) {
+                if (item.getConditionExpr() != null) {
+                    visitExpr(item.getConditionExpr());
+                }
+                if (item.getValueExpr() != null) {
+                    visitExpr(item.getValueExpr());
+                }
+            }
         }
-        if (array.getStopIndexExpression() != null) {
-            array.getStopIndexExpression().accept(this);
+        if (caseExpr.getElseExpr() != null) {
+            visitExpr(caseExpr.getElseExpr());
         }
     }
 
-    @Override
-    public void visit(ArrayConstructor array) {
-        for (Expression expression : array.getExpressions()) {
-            expression.accept(this);
+    private void addColumnMapping(String fromTable, String columnName) {
+        String toTable = stackTargetTable.peek();
+        String toColumn = stackTargetColumn.peek();
+        instructions.add(
+                new Instruction(OperationType.COLUMN_MAPPING, fromTable + "." + columnName,
+                        toTable + "." + toColumn));
+    }
+
+    private void addColumnInjection(String fromTable) {
+        String toTable = stackTargetTable.peek();
+        instructions.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable, toTable));
+    }
+
+    private static String lastIdentifier(String name) {
+        if (name == null) {
+            return null;
         }
-    }
-
-    @Override
-    public void visit(CreateSequence createSequence) {
-        throw new UnsupportedOperationException(
-                "Finding tables from CreateSequence is not supported");
-    }
-
-    @Override
-    public void visit(AlterSequence alterSequence) {
-        throw new UnsupportedOperationException(
-                "Finding tables from AlterSequence is not supported");
-    }
-
-    @Override
-    public void visit(CreateFunctionalStatement createFunctionalStatement) {
-        throw new UnsupportedOperationException(
-                "Finding tables from CreateFunctionalStatement is not supported");
-    }
-
-    @Override
-    public void visit(ShowTablesStatement showTables) {
-        throw new UnsupportedOperationException(
-                "Finding tables from ShowTablesStatement is not supported");
-    }
-
-    @Override
-    public void visit(TSQLLeftJoin tsqlLeftJoin) {
-        visitBinaryExpression(tsqlLeftJoin);
-    }
-
-    @Override
-    public void visit(TSQLRightJoin tsqlRightJoin) {
-        visitBinaryExpression(tsqlRightJoin);
-    }
-
-    @Override
-    public void visit(VariableAssignment var) {
-        var.getVariable().accept(this);
-        var.getExpression().accept(this);
-    }
-
-    @Override
-    public void visit(XMLSerializeExpr aThis) {
-
-    }
-
-    @Override
-    public void visit(CreateSynonym createSynonym) {
-        throwUnsupported(createSynonym);
-    }
-
-    private static <T> void throwUnsupported(T type) {
-        throw new UnsupportedOperationException(String.format(
-                "Finding tables from %s is not supported", type.getClass().getSimpleName()));
-    }
-
-    @Override
-    public void visit(TimezoneExpression aThis) {
-        aThis.getLeftExpression().accept(this);
-    }
-
-    @Override
-    public void visit(SavepointStatement savepointStatement) {}
-
-    @Override
-    public void visit(RollbackStatement rollbackStatement) {
-
-    }
-
-    @Override
-    public void visit(AlterSession alterSession) {
-
-    }
-
-    @Override
-    public void visit(JsonAggregateFunction expression) {
-        Expression expr = expression.getExpression();
-        if (expr != null) {
-            expr.accept(this);
+        String value = name.trim();
+        int idx = value.lastIndexOf('.');
+        if (idx >= 0) {
+            value = value.substring(idx + 1);
         }
-
-        expr = expression.getFilterExpression();
-        if (expr != null) {
-            expr.accept(this);
-        }
+        return value;
     }
-
-    @Override
-    public void visit(JsonFunction expression) {
-        for (JsonFunctionExpression expr : expression.getExpressions()) {
-            expr.getExpression().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(ConnectByRootOperator connectByRootOperator) {
-        connectByRootOperator.getColumn().accept(this);
-    }
-
-    public void visit(IfElseStatement ifElseStatement) {
-        ifElseStatement.getIfStatement().accept(this);
-        if (ifElseStatement.getElseStatement() != null) {
-            ifElseStatement.getElseStatement().accept(this);
-        }
-    }
-
-    public void visit(OracleNamedFunctionParameter oracleNamedFunctionParameter) {
-        oracleNamedFunctionParameter.getExpression().accept(this);
-    }
-
-    @Override
-    public void visit(RenameTableStatement renameTableStatement) {
-        for (Map.Entry<Table, Table> e : renameTableStatement.getTableNames()) {
-            e.getKey().accept(this);
-            e.getValue().accept(this);
-        }
-    }
-
-    @Override
-    public void visit(PurgeStatement purgeStatement) {
-        if (purgeStatement.getPurgeObjectType() == PurgeObjectType.TABLE) {
-            ((Table) purgeStatement.getObject()).accept(this);
-        }
-    }
-
-    @Override
-    public void visit(AlterSystemStatement alterSystemStatement) {
-        // no tables involved in this statement
-    }
-
-    @Override
-    public void visit(UnsupportedStatement unsupportedStatement) {
-        // no tables involved in this statement
-    }
-
-    @Override
-    public void visit(GeometryDistance geometryDistance) {
-        visitBinaryExpression(geometryDistance);
-    }
-
 }

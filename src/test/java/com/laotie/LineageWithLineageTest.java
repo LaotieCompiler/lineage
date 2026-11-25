@@ -16,23 +16,23 @@ import com.laotie.model.MetaBinder;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.Table;
 
-import net.sf.jsqlparser.JSQLParserException;
-import net.sf.jsqlparser.parser.CCJSqlParserUtil;
-import net.sf.jsqlparser.statement.Statement;
+import com.alibaba.druid.DbType;
+import com.alibaba.druid.sql.SQLUtils;
+import com.alibaba.druid.sql.ast.SQLStatement;
 
 public class LineageWithLineageTest {
 
     @Test
-    public void importMetadataTest() throws JSQLParserException {
+    public void importMetadataTest() {
         MetaBinder metaBinder = new MetaBinder();
 
         metaBinder.setColumns(new Table("TA"), Arrays.asList(new Column("col1"), new Column("col2")));
 
         String sqlStr = "INSERT INTO TB(colb,cola)  SELECT * FROM TA;";
 
-        Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
+        SQLStatement stat = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
         DmlLineage selectLineage = new DmlLineage();
-        List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
+        List<Instruction> instructions = selectLineage.getLineage(stat);
         System.out.println("instructions:");
         for (Instruction instruct : instructions) {
             System.out.println("  " + instruct);
@@ -47,7 +47,7 @@ public class LineageWithLineageTest {
     }
 
     @Test
-    public void secendTest() throws JSQLParserException {
+    public void secendTest() {
         MetaBinder metaBinder = new MetaBinder();
 
         metaBinder.setColumns(new Table("TA"), Arrays.asList(new Column("col1"), new Column("col2")));
@@ -55,9 +55,9 @@ public class LineageWithLineageTest {
 
         String sqlStr = "INSERT INTO TB  SELECT *, now() as col3 FROM TA tt;";
 
-        Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
+        SQLStatement stat = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
         DmlLineage selectLineage = new DmlLineage();
-        List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
+        List<Instruction> instructions = selectLineage.getLineage(stat);
         System.out.println("instructions:");
         for (Instruction instruct : instructions) {
             System.out.println("  " + instruct);

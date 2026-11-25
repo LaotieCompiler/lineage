@@ -9,15 +9,14 @@ import java.util.Set;
 
 import org.junit.Test;
 
+import com.alibaba.druid.DbType;
+import com.alibaba.druid.sql.SQLUtils;
+import com.alibaba.druid.sql.ast.SQLStatement;
+import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.laotie.model.Instruction;
 import com.laotie.model.LineageGraph;
 import com.laotie.model.MetaBinder;
 import com.laotie.model.metadata.Column;
-
-import net.sf.jsqlparser.JSQLParserException;
-import net.sf.jsqlparser.parser.CCJSqlParserUtil;
-import net.sf.jsqlparser.statement.select.Select;
-import net.sf.jsqlparser.statement.Statement;
 
 /**
  * Unit test for simple App.
@@ -30,24 +29,16 @@ public class SelectLineageTest {
     public void allColumnTest() {
         String sqlStr = "SELECT TA.* FROM DB.A AS TA;";
 
-        Statement statHandle;
-        Select select;
-        try {
-            statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
-            if (statHandle instanceof Select) {
-                select = (Select) statHandle;
-
-                DmlLineage selectLineage = new DmlLineage();
-                List<Instruction> instructions = selectLineage.getLineage((Statement) select);
-                System.out.println("instructions:");
-                for (Instruction instruct : instructions) {
-                    System.out.println(instruct);
-                }
+        SQLStatement statHandle = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
+        if (statHandle instanceof SQLSelectStatement) {
+            DmlLineage selectLineage = new DmlLineage();
+            List<Instruction> instructions = selectLineage.getLineage(statHandle);
+            System.out.println("instructions:");
+            for (Instruction instruct : instructions) {
+                System.out.println(instruct);
             }
-            System.out.println("well done.");
-        } catch (JSQLParserException e) {
-            e.printStackTrace();
         }
+        System.out.println("well done.");
     }
 
     @Test
@@ -62,24 +53,16 @@ public class SelectLineageTest {
                 "WHERE\n" + //
                 "    condition;";
 
-        Statement statHandle;
-        Select select;
-        try {
-            statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
-            if (statHandle instanceof Select) {
-                select = (Select) statHandle;
-
-                DmlLineage selectLineage = new DmlLineage();
-                List<Instruction> instructions = selectLineage.getLineage((Statement) select);
-                System.out.println("instructions:");
-                for (Instruction instruct : instructions) {
-                    System.out.println(instruct);
-                }
+        SQLStatement statHandle = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
+        if (statHandle instanceof SQLSelectStatement) {
+            DmlLineage selectLineage = new DmlLineage();
+            List<Instruction> instructions = selectLineage.getLineage(statHandle);
+            System.out.println("instructions:");
+            for (Instruction instruct : instructions) {
+                System.out.println(instruct);
             }
-            System.out.println("well done.");
-        } catch (JSQLParserException e) {
-            e.printStackTrace();
         }
+        System.out.println("well done.");
     }
 
     @Test
@@ -97,32 +80,24 @@ public class SelectLineageTest {
                 "WHERE\n" + //
                 "    condition;";
 
-        Statement statHandle;
-        Select select;
-        try {
-            statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
-            if (statHandle instanceof Select) {
-                select = (Select) statHandle;
-
-                DmlLineage selectLineage = new DmlLineage();
-                List<Instruction> instructions = selectLineage.getLineage((Statement) select);
-                System.out.println("instructions:");
-                for (Instruction instruct : instructions) {
-                    System.out.println(instruct);
-                }
-
-                LineageGraph lineageGraph = new LineageGraph();
-                lineageGraph.buildByInstructions(instructions);
-                Set<Column> sources = lineageGraph.getSources(new Column("temp0.Mcol1"));
-                System.out.println("sources:");
-                for (Column source : sources) {
-                    System.out.println(source);
-                }
+        SQLStatement statHandle = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
+        if (statHandle instanceof SQLSelectStatement) {
+            DmlLineage selectLineage = new DmlLineage();
+            List<Instruction> instructions = selectLineage.getLineage(statHandle);
+            System.out.println("instructions:");
+            for (Instruction instruct : instructions) {
+                System.out.println(instruct);
             }
-            System.out.println("well done.");
-        } catch (JSQLParserException e) {
-            e.printStackTrace();
+
+            LineageGraph lineageGraph = new LineageGraph();
+            lineageGraph.buildByInstructions(instructions);
+            Set<Column> sources = lineageGraph.getSources(new Column("temp0.Mcol1"));
+            System.out.println("sources:");
+            for (Column source : sources) {
+                System.out.println(source);
+            }
         }
+        System.out.println("well done.");
     }
 
     @Test
@@ -134,76 +109,72 @@ public class SelectLineageTest {
                 ")";
 
         DmlLineage selectLineage = new DmlLineage();
-        try {
-            Statement statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
+        SQLStatement statHandle = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
 
-            List<Instruction> instructions = selectLineage.getLineage((Statement) statHandle);
-            System.out.println("instructions:");
-            for (Instruction instruct : instructions) {
-                System.out.println(instruct);
-            }
-
-            LineageGraph lineageGraph = new LineageGraph();
-            lineageGraph.buildByInstructions(instructions);
-            Set<Column> targets = new HashSet<>();
-            targets.add(new Column("temp0.A"));
-            targets.add(new Column("temp0.B"));
-            Map<Column, Set<Column>> shorttenLineage = lineageGraph.getSources(targets);
-            for (Column target : shorttenLineage.keySet()) {
-                System.out.println("target: " + target);
-                for (Column source : shorttenLineage.get(target)) {
-                    System.out.println("  " + source);
-                }
-            }
-            assertTrue(shorttenLineage.containsKey(new Column("temp0.A")));
-            assertTrue(shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.E")));
-            assertTrue(shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.F")));
-
-            assertTrue(shorttenLineage.containsKey(new Column("temp0.B")));
-            assertTrue(shorttenLineage.get(new Column("temp0.B")).contains(new Column("T.F")));
-            System.out.println("well done.\n");
-
-            sqlStr = "SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1\n" + //
-                    "From (\n" + //
-                    "    SELECT E as C, F as D\n" + //
-                    "    From T\n" + //
-                    ") as TA \n" + //
-                    "INNER JOIN TB on TA.aid = TB.bid";
-            statHandle = (Statement) CCJSqlParserUtil.parse(sqlStr);
-            instructions = selectLineage.getLineage((Statement) statHandle);
-            System.out.println("instructions:");
-            for (Instruction instruct : instructions) {
-                System.out.println(instruct);
-            }
-
-            lineageGraph.buildByInstructions(instructions);
-            targets = new HashSet<>();
-            targets.add(new Column("temp2.A"));
-            targets.add(new Column("temp2.B"));
-            targets.add(new Column("temp2.A1"));
-            targets.add(new Column("temp2.B1"));
-            shorttenLineage = lineageGraph.getSources(targets);
-            for (Column target : shorttenLineage.keySet()) {
-                System.out.println("target: " + target);
-                for (Column source : shorttenLineage.get(target)) {
-                    System.out.println("  " + source);
-                }
-            }
-            assertTrue(shorttenLineage.containsKey(new Column("temp2.A1")));
-            assertTrue(shorttenLineage.get(new Column("temp2.A1")).contains(new Column("TB.C1")));
-            assertTrue(shorttenLineage.get(new Column("temp2.A1")).contains(new Column("T.E")));
-
-            assertTrue(shorttenLineage.containsKey(new Column("temp2.B1")));
-            assertTrue(shorttenLineage.get(new Column("temp2.B1")).contains(new Column("TB.D1")));
-
-            System.out.println("well done.\n");
-        } catch (JSQLParserException e) {
-            e.printStackTrace();
+        List<Instruction> instructions = selectLineage.getLineage(statHandle);
+        System.out.println("instructions:");
+        for (Instruction instruct : instructions) {
+            System.out.println(instruct);
         }
+
+        LineageGraph lineageGraph = new LineageGraph();
+        lineageGraph.buildByInstructions(instructions);
+        Set<Column> targets = new HashSet<>();
+        targets.add(new Column("temp0.A"));
+        targets.add(new Column("temp0.B"));
+        Map<Column, Set<Column>> shorttenLineage = lineageGraph.getSources(targets);
+        for (Column target : shorttenLineage.keySet()) {
+            System.out.println("target: " + target);
+            for (Column source : shorttenLineage.get(target)) {
+                System.out.println("  " + source);
+            }
+        }
+        assertTrue(shorttenLineage.containsKey(new Column("temp0.A")));
+        assertTrue(shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.E")));
+        assertTrue(shorttenLineage.get(new Column("temp0.A")).contains(new Column("T.F")));
+
+        assertTrue(shorttenLineage.containsKey(new Column("temp0.B")));
+        assertTrue(shorttenLineage.get(new Column("temp0.B")).contains(new Column("T.F")));
+        System.out.println("well done.\n");
+
+        sqlStr = "SELECT C + D as A, D as B, C + TB.C1 as A1, TB.D1 as B1\n" + //
+                "From (\n" + //
+                "    SELECT E as C, F as D\n" + //
+                "    From T\n" + //
+                ") as TA \n" + //
+                "INNER JOIN TB on TA.aid = TB.bid";
+        statHandle = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
+        instructions = selectLineage.getLineage(statHandle);
+        System.out.println("instructions:");
+        for (Instruction instruct : instructions) {
+            System.out.println(instruct);
+        }
+
+        lineageGraph.buildByInstructions(instructions);
+        targets = new HashSet<>();
+        targets.add(new Column("temp2.A"));
+        targets.add(new Column("temp2.B"));
+        targets.add(new Column("temp2.A1"));
+        targets.add(new Column("temp2.B1"));
+        shorttenLineage = lineageGraph.getSources(targets);
+        for (Column target : shorttenLineage.keySet()) {
+            System.out.println("target: " + target);
+            for (Column source : shorttenLineage.get(target)) {
+                System.out.println("  " + source);
+            }
+        }
+        assertTrue(shorttenLineage.containsKey(new Column("temp2.A1")));
+        assertTrue(shorttenLineage.get(new Column("temp2.A1")).contains(new Column("TB.C1")));
+        assertTrue(shorttenLineage.get(new Column("temp2.A1")).contains(new Column("T.E")));
+
+        assertTrue(shorttenLineage.containsKey(new Column("temp2.B1")));
+        assertTrue(shorttenLineage.get(new Column("temp2.B1")).contains(new Column("TB.D1")));
+
+        System.out.println("well done.\n");
     }
 
     @Test
-    public void insertTest() throws JSQLParserException {
+    public void insertTest() {
         long startMillis = System.currentTimeMillis();
         long round = 1;
         for (int i = 0; i < round; i++) {
@@ -216,10 +187,10 @@ public class SelectLineageTest {
                     "        From T\n" + //
                     "    ) as TA\n" + //
                     "    INNER JOIN TB on TA.aid = TB.bid";
-            Statement stat = (Statement) CCJSqlParserUtil.parse(sqlStr);
+            SQLStatement stat = SQLUtils.parseSingleStatement(sqlStr, DbType.mysql);
             DmlLineage selectLineage = new DmlLineage();
             // get instructions
-            List<Instruction> instructions = selectLineage.getLineage((Statement) stat);
+            List<Instruction> instructions = selectLineage.getLineage(stat);
             System.out.println("instructions:");
             for (Instruction instruct : instructions) {
                 System.out.println("  " + instruct);
@@ -228,7 +199,7 @@ public class SelectLineageTest {
             // get related tables
             Set<String> tables = selectLineage.getTables();
             System.out.println("tables: ");
-            System.out.println("  " + tables); 
+            System.out.println("  " + tables);
 
             // parse column instructions by metadata
             MetaBinder metaBinder = new MetaBinder();

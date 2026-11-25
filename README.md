@@ -4,11 +4,11 @@ A data lineage parser in columns level.
 
 [中文](README_zh.md)
 
-## Visitor Pattern
+## AST Parser
 
-Postorder traversal the AST (Abstract Syntax Tree) of the SQL query and collect the lineage information using the Visitor pattern.
+The SQL is parsed into an AST (Abstract Syntax Tree) by [Alibaba Druid](https://github.com/alibaba/druid).
 
-The code from `net.sf.jsqlparser.util.TablesNamesFinder` that can parse lineage in table level.
+The AST is traversed in post-order: nested queries and derived tables are processed before the select list of the query that consumes them, then the lineage information in table and column level is collected.
 
 ## Order of Execution in SQL
 

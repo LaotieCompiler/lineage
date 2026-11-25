@@ -4,11 +4,11 @@
 
 [English](README.md)
 
-## 访问者模式
+## AST 解析器
 
-使用访问者模式对SQL查询的抽象语法树(AST)进行后序遍历,并收集数据血缘信息。
+SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法树(AST)。
 
-来自 `net.sf.jsqlparser.util.TablesNamesFinder` 的代码可以解析表级别的数据血缘。
+对 AST 进行后序遍历:先处理内层查询和派生表,再处理消费它们的查询的 SELECT 列表,从而收集表和列级别的数据血缘信息。
 
 ## SQL执行顺序
 

@@ -2600,6 +2600,60 @@ public class LineageScannerTest {
     }
 
     @Test
+    public void repeatedWildcardRunsUsePerWildcardWidth() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.*, a.*, a.v AS mid, a.* FROM a)"
+                        + " SELECT x.* FROM x"
+                        + " UNION ALL SELECT c1,c2,c3,c4,c5,c6,c7,c8,c9 FROM d;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        boolean sawMid = false;
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            if ("x.mid".equals(instruction.getFrom())) {
+                assertEquals(6, instruction.getOrdinal());
+                sawMid = true;
+            }
+        }
+        assertTrue(sawMid);
+        assertEquals(columns("a.v", "d.c7"), result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.mid")));
+    }
+
+    @Test
+    public void repeatedWildcardGroupsSurviveStarPassthrough() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.v AS mid, b.* FROM a CROSS JOIN b),"
+                        + " y AS (SELECT x.* FROM x)"
+                        + " SELECT y.* FROM y"
+                        + " UNION ALL SELECT k,q,v,mid,r FROM d;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            if (instruction.getOperation() == OperationType.COLUMN_MAPPING) {
+                assertFalse("passthrough guessed group: " + instruction,
+                        "temp0.mid".equals(instruction.getTo()));
+            }
+        }
+    }
+
+    @Test
+    public void repeatedWildcardWidthWithoutIntegerSolutionFails() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.v AS mid, a.* FROM a)"
+                        + " SELECT x.* FROM x"
+                        + " UNION ALL SELECT k,v,mid,k2 FROM d;"
+                        + " SELECT c1 FROM a;");
+
+        assertEquals(2, result.getResults().size());
+        assertTrue(result.getResults().get(0).getError()
+                instanceof IllegalStateException);
+        assertTrue(result.getResults().get(0).getInstructions().isEmpty());
+        assertNull(result.getResults().get(1).getError());
+    }
+
+    @Test
     public void declaredCteAliasesCompleteKnownUnionWidth() {
         String cte = "WITH q(x,y) AS (SELECT * FROM a"
                 + " UNION ALL SELECT c1,c3 FROM b) ";

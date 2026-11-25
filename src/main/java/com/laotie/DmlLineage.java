@@ -1054,27 +1054,39 @@ public class DmlLineage {
                 if (repeatedSide != null
                         && unknownRegionCount(repeatedSide.get(0)) > 1) {
                     SourceTable source = repeatedSide.get(0);
-                    int regions = unknownRegionCount(source);
                     int deficit = inferredUnknownWidth - plan.size();
-                    if (deficit >= 0 && deficit % regions == 0
-                            && plan.size() == source.outputNameKnown.size()
+                    if (deficit >= 0 && plan.size() == source.outputNameKnown.size()
                             && sameUnknownGroup(source)) {
-                        int perRegion = deficit / regions;
-                        int offset = 0;
-                        for (int end : unknownRegionEnds(source)) {
-                            for (int k = 0; k < perRegion; k++) {
-                                List<StarColumn> columns = new ArrayList<>();
-                                String name = "col" + (end + offset + 1);
-                                columns.add(new StarColumn(source, name,
-                                        identifierKey(name), false, false));
-                                plan.add(end + offset, new StarOutput(columns, false, true));
-                                offset++;
+                        List<Integer> ends = unknownRegionEnds(source);
+                        List<Integer> runs = unknownRegionRuns(source);
+                        int occurrences = 0;
+                        for (int run : runs) {
+                            occurrences += run;
+                        }
+                        if (occurrences > 0) {
+                            if (deficit % occurrences != 0) {
+                                throw new IllegalStateException(
+                                        "UNION column count mismatch: repeated wildcard "
+                                                + "widths cannot satisfy " + inferredUnknownWidth);
                             }
+                            int perWildcard = deficit / occurrences;
+                            int offset = 0;
+                            for (int r = 0; r < ends.size(); r++) {
+                                int insertAt = ends.get(r) + offset;
+                                for (int k = 0; k < perWildcard * runs.get(r); k++) {
+                                    List<StarColumn> columns = new ArrayList<>();
+                                    String name = "col" + (insertAt + 1);
+                                    columns.add(new StarColumn(source, name,
+                                            identifierKey(name), false, false));
+                                    plan.add(insertAt++, new StarOutput(columns, false, true));
+                                }
+                                offset += perWildcard * runs.get(r);
+                            }
+                            for (int i = 0; i < plan.size(); i++) {
+                                plan.set(i, plan.get(i).withStable(true));
+                            }
+                            handledRepeated = true;
                         }
-                        for (int i = 0; i < plan.size(); i++) {
-                            plan.set(i, plan.get(i).withStable(true));
-                        }
-                        handledRepeated = true;
                     }
                 }
                 List<SourceTable> expansion;
@@ -1962,6 +1974,23 @@ public class DmlLineage {
         return seen;
     }
 
+    private static List<Integer> unknownRegionRuns(SourceTable source) {
+        List<Integer> runs = new ArrayList<>();
+        int current = 0;
+        for (int i = 0; i < source.outputNameKnown.size(); i++) {
+            if (!Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
+                current++;
+            } else if (current > 0) {
+                runs.add(current);
+                current = 0;
+            }
+        }
+        if (current > 0) {
+            runs.add(current);
+        }
+        return runs;
+    }
+
     private static List<Integer> unknownRegionEnds(SourceTable source) {
         List<Integer> ends = new ArrayList<>();
         boolean inRegion = false;
@@ -2623,7 +2652,10 @@ public class DmlLineage {
                 markOutputNameKnown(target, position,
                         declaredName || sourceOutputNameKnown(source, i));
                 if (!declaredName && !sourceOutputNameKnown(source, i)) {
-                    markUnknownGroup(target, position, source);
+                    SourceTable group = i < source.outputUnknownGroups.size()
+                            && source.outputUnknownGroups.get(i) != null
+                                    ? source.outputUnknownGroups.get(i) : source;
+                    markUnknownGroup(target, position, group);
                 }
                 entries.add(new OutputName(name, key));
                 used.add(name);

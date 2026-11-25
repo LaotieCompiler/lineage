@@ -355,6 +355,18 @@ public class MetadataCatalogTest {
     }
 
     @Test
+    public void exactDisplayDoesNotBypassDefaultLookupRules() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE A (c1 INT); CREATE TABLE d.A (c1 INT);");
+        catalog.setDefaultDatabase("d");
+
+        List<TableLocation> matches = catalog.findAllTables("A");
+        assertEquals(1, matches.size());
+        assertEquals("d", matches.get(0).getDatabase());
+        assertEquals("d", catalog.findTable("A").getDatabase());
+    }
+
+    @Test
     public void defaultsApplyToAllUnsetLevelsTogether() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
         catalog.setDefaultInstance("ins1");

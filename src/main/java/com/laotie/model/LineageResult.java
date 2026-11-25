@@ -2,7 +2,11 @@ package com.laotie.model;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import com.laotie.model.metadata.MetadataContext;
 
@@ -20,9 +24,25 @@ public class LineageResult {
     private final String instance;
     private final String database;
     private final List<String> schemas;
+    private final Set<String> temporaryTables;
+    private final Map<String, List<String>> targetOutputs;
 
     public LineageResult(String sql, List<Instruction> instructions, MetadataContext context,
             Throwable error, String instance, String database, List<String> schemas) {
+        this(sql, instructions, context, error, instance, database, schemas, new HashSet<>(),
+                new HashMap<>());
+    }
+
+    public LineageResult(String sql, List<Instruction> instructions, MetadataContext context,
+            Throwable error, String instance, String database, List<String> schemas,
+            Set<String> temporaryTables) {
+        this(sql, instructions, context, error, instance, database, schemas, temporaryTables,
+                new HashMap<>());
+    }
+
+    public LineageResult(String sql, List<Instruction> instructions, MetadataContext context,
+            Throwable error, String instance, String database, List<String> schemas,
+            Set<String> temporaryTables, Map<String, List<String>> targetOutputs) {
         this.sql = sql;
         this.instructions = Collections.unmodifiableList(new ArrayList<>(instructions));
         this.context = context;
@@ -32,6 +52,17 @@ public class LineageResult {
         this.instance = instance;
         this.database = database;
         this.schemas = Collections.unmodifiableList(new ArrayList<>(schemas));
+        this.temporaryTables = Collections.unmodifiableSet(new HashSet<>(temporaryTables));
+        this.targetOutputs = Collections.unmodifiableMap(copyOutputs(targetOutputs));
+    }
+
+    private static Map<String, List<String>> copyOutputs(Map<String, List<String>> outputs) {
+        Map<String, List<String>> copy = new HashMap<>();
+        for (Map.Entry<String, List<String>> entry : outputs.entrySet()) {
+            copy.put(entry.getKey(), Collections.unmodifiableList(
+                    new ArrayList<>(entry.getValue())));
+        }
+        return copy;
     }
 
     public String getSql() {
@@ -72,5 +103,13 @@ public class LineageResult {
 
     public List<String> getSchemas() {
         return schemas;
+    }
+
+    public Set<String> getTemporaryTables() {
+        return temporaryTables;
+    }
+
+    public Map<String, List<String>> getTargetOutputs() {
+        return targetOutputs;
     }
 }

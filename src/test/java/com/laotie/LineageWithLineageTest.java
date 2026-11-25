@@ -42,9 +42,9 @@ public class LineageWithLineageTest {
         assertInstruction(expanded.get(1), OperationType.COLUMN_MAPPING,
                 "db1.TA.col2", "temp1.col2");
         assertInstruction(expanded.get(2), OperationType.COLUMN_MAPPING,
-                "temp1.col1", "TB.colb");
+                "temp1.col1", "db2.TB.colb");
         assertInstruction(expanded.get(3), OperationType.COLUMN_MAPPING,
-                "temp1.col2", "TB.cola");
+                "temp1.col2", "db2.TB.cola");
     }
 
     @Test
@@ -71,9 +71,9 @@ public class LineageWithLineageTest {
         assertContains(expanded, OperationType.COLUMN_MAPPING, "db1.TA.col1", "temp1.col1");
         assertContains(expanded, OperationType.COLUMN_MAPPING, "db1.TA.col2", "temp1.col2");
         assertContains(expanded, OperationType.EXPR_MAPPING, "now()", "temp1.col3");
-        assertContains(expanded, OperationType.COLUMN_MAPPING, "temp1.col1", "TB.cola");
-        assertContains(expanded, OperationType.COLUMN_MAPPING, "temp1.col2", "TB.colb");
-        assertContains(expanded, OperationType.COLUMN_MAPPING, "temp1.col3", "TB.colc");
+        assertContains(expanded, OperationType.COLUMN_MAPPING, "temp1.col1", "db2.TB.cola");
+        assertContains(expanded, OperationType.COLUMN_MAPPING, "temp1.col2", "db2.TB.colb");
+        assertContains(expanded, OperationType.COLUMN_MAPPING, "temp1.col3", "db2.TB.colc");
     }
 
     private static MetadataContext mysqlContext(String ddl) {

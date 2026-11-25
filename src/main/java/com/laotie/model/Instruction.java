@@ -10,6 +10,7 @@ import java.util.logging.Logger;
 
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.metadata.Column;
+import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
 import com.laotie.model.metadata.Table;
 
@@ -31,6 +32,8 @@ public class Instruction {
      * projection (for example table mappings or update assignments).
      */
     int ordinal = -1;
+    boolean fromTemporary;
+    boolean toTemporary;
 
     public enum OperationType {
         COLUMN_MAPPING, // select tb.col as A
@@ -52,6 +55,16 @@ public class Instruction {
         this.ordinal = ordinal;
     }
 
+    public Instruction(OperationType operation, String from, String to, int ordinal,
+            boolean fromTemporary, boolean toTemporary) {
+        this.operation = operation;
+        this.from = from;
+        this.to = to;
+        this.ordinal = ordinal;
+        this.fromTemporary = fromTemporary;
+        this.toTemporary = toTemporary;
+    }
+
     @Override
     public String toString() {
         if (operation == OperationType.TABLE_MAPPING) {
@@ -67,6 +80,11 @@ public class Instruction {
      */
     public static List<Instruction> toColumnInstructions(List<Instruction> sourceInstructions,
             MetadataContext context) {
+        return toColumnInstructions(sourceInstructions, context, new HashMap<>());
+    }
+
+    public static List<Instruction> toColumnInstructions(List<Instruction> sourceInstructions,
+            MetadataContext context, Map<String, List<String>> targetOutputs) {
         if (context == null) {
             return new ArrayList<>(sourceInstructions);
         }
@@ -77,13 +95,14 @@ public class Instruction {
         for (Instruction instruction : sourceInstructions) {
             switch (instruction.getOperation()) {
                 case COLUMNS_INJECT:
-                    expandColumnsInject(instruction, context, tempColumns, result);
+                    expandColumnsInject(instruction, context, targetOutputs, tempColumns, result);
                     break;
                 case COLUMN_MAPPING:
                 case EXPR_MAPPING:
                     Instruction rewritten = rewriteTempTarget(instruction, tempColumns);
                     result.add(rewritten);
-                    registerTempTarget(rewritten.getTo(), rewritten.getOrdinal(), tempColumns);
+                    registerTempTarget(rewritten.getTo(), rewritten.getOrdinal(),
+                            rewritten.isToTemporary(), tempColumns);
                     break;
                 default:
                     result.add(instruction);
@@ -95,57 +114,64 @@ public class Instruction {
 
     private static Instruction rewriteTempTarget(Instruction instruction,
             Map<String, List<Column>> tempColumns) {
-        if (instruction.getOrdinal() < 0) {
+        if (instruction.getOrdinal() < 0 || !instruction.isToTemporary()) {
             return instruction;
         }
         String target = instruction.getTo();
-        int idx = target.lastIndexOf('.');
-        if (idx < 0) {
+        String[] parts = MetadataCatalog.splitQualifiedNamePreservingQuotes(target);
+        if (parts.length < 2) {
             return instruction;
         }
-        String table = target.substring(0, idx);
-        if (!isTempTable(table)) {
-            return instruction;
-        }
-        String column = target.substring(idx + 1);
+        String table = joinTableParts(parts);
+        String column = MetadataCatalog.normalizeIdentifier(parts[parts.length - 1]);
         List<Column> existing = tempColumns.get(table);
         boolean nameCollision = false;
         boolean positionOccupied = false;
         if (existing != null) {
-            for (Column tempColumn : existing) {
-                if (tempColumn != null
-                        && tempColumn.getColumnName().equalsIgnoreCase(column)) {
+            for (int i = 0; i < existing.size(); i++) {
+                Column tempColumn = existing.get(i);
+                if (tempColumn == null) {
+                    continue;
+                }
+                if (i != instruction.getOrdinal()
+                        && tempColumn.getColumnName().equals(column)) {
                     nameCollision = true;
                 }
+                if (i == instruction.getOrdinal()
+                        && !tempColumn.getColumnName().equals(column)) {
+                    positionOccupied = true;
+                }
             }
-            positionOccupied = existing.size() > instruction.getOrdinal()
-                    && existing.get(instruction.getOrdinal()) != null;
         }
         if (!nameCollision && !positionOccupied) {
             return instruction;
         }
         String positional = "col" + (instruction.getOrdinal() + 1);
         return new Instruction(instruction.getOperation(), instruction.getFrom(),
-                table + "." + positional, instruction.getOrdinal());
+                table + "." + positional, instruction.getOrdinal(),
+                instruction.isFromTemporary(), true);
     }
 
     private static void expandColumnsInject(Instruction instruction, MetadataContext context,
-            Map<String, List<Column>> tempColumns, List<Instruction> result) {
+            Map<String, List<String>> targetOutputs, Map<String, List<Column>> tempColumns,
+            List<Instruction> result) {
         String fromTable = instruction.getFrom();
         String toTable = instruction.getTo();
 
-        List<Column> fromColumns = columnsOf(fromTable, context, tempColumns);
+        List<Column> fromColumns = instruction.isFromTemporary()
+                ? tempColumns.get(fromTable)
+                : physicalColumns(fromTable, context);
         if (fromColumns == null || fromColumns.isEmpty()) {
             return;
         }
 
         String targetTable;
         List<String> explicitTargets = new ArrayList<>();
-        int lparen = toTable.indexOf('(');
-        if (lparen > 0 && toTable.endsWith(")")) {
+        int lparen = findColumnListStart(toTable);
+        if (lparen > 0) {
             targetTable = toTable.substring(0, lparen);
             String columns = toTable.substring(lparen + 1, toTable.length() - 1);
-            for (String column : columns.split(",")) {
+            for (String column : splitColumnList(columns)) {
                 explicitTargets.add(column.trim());
             }
         } else {
@@ -154,14 +180,29 @@ public class Instruction {
 
         List<String> targets;
         if (!explicitTargets.isEmpty()) {
-            targets = explicitTargets;
-        } else if (isTempTable(targetTable)) {
+            Table physical = physicalTable(targetTable, context);
+            targets = new ArrayList<>();
+            for (String explicitTarget : explicitTargets) {
+                String target = MetadataCatalog.normalizeIdentifier(explicitTarget);
+                if (physical != null) {
+                    String resolved = MetadataCatalog.resolveColumnName(physical, explicitTarget,
+                            context.getCatalog().getDialect());
+                    if (resolved != null) {
+                        target = resolved;
+                    }
+                }
+                targets.add(target);
+            }
+        } else if (instruction.isToTemporary()) {
             int start = instruction.getOrdinal() >= 0
                     ? instruction.getOrdinal()
                     : tempColumns.containsKey(targetTable) ? tempColumns.get(targetTable).size() : 0;
+            List<String> named = targetOutputs.get(targetTable);
             targets = new ArrayList<>();
             for (int i = 0; i < fromColumns.size(); i++) {
-                targets.add("col" + (start + i + 1));
+                String name = named != null && start + i < named.size()
+                        ? named.get(start + i) : "col" + (start + i + 1);
+                targets.add(name);
             }
             putTempColumns(tempColumns, targetTable, start, targets);
         } else {
@@ -179,29 +220,26 @@ public class Instruction {
             }
         }
 
+        if (instruction.isToTemporary() && !explicitTargets.isEmpty()) {
+            int start = instruction.getOrdinal() >= 0
+                    ? instruction.getOrdinal()
+                    : tempColumns.containsKey(targetTable)
+                            ? tempColumns.get(targetTable).size() : 0;
+            putTempColumns(tempColumns, targetTable, start, targets);
+        }
+
         int size = Math.min(fromColumns.size(), targets.size());
         for (int i = 0; i < size; i++) {
             result.add(new Instruction(OperationType.COLUMN_MAPPING,
-                    fromTable + "." + fromColumns.get(i).getColumnName(),
-                    targetTable + "." + targets.get(i)));
+                    fromTable + "." + renderIdentifier(fromColumns.get(i).getColumnName()),
+                    targetTable + "." + renderIdentifier(targets.get(i)), -1,
+                    instruction.isFromTemporary(), instruction.isToTemporary()));
         }
     }
 
-    private static List<Column> columnsOf(String table, MetadataContext context,
-            Map<String, List<Column>> tempColumns) {
-        if (tempColumns.containsKey(table)) {
-            return tempColumns.get(table);
-        }
-        if (isTempTable(table)) {
-            return null;
-        }
-        return physicalColumns(table, context);
-    }
-
-    private static List<Column> physicalColumns(String table, MetadataContext context) {
+    private static Table physicalTable(String table, MetadataContext context) {
         try {
-            Table metadataTable = context.getCatalog().findTable(table).getTable();
-            return metadataTable.getFields();
+            return context.getCatalog().findTableByDisplayName(table).getTable();
         } catch (MetadataNotFoundException e) {
             return null;
         } catch (RuntimeException e) {
@@ -209,18 +247,97 @@ public class Instruction {
         }
     }
 
-    private static void registerTempTarget(String target, int ordinal,
+    private static List<Column> physicalColumns(String table, MetadataContext context) {
+        Table metadataTable = physicalTable(table, context);
+        return metadataTable == null ? null : metadataTable.getFields();
+    }
+
+    private static int findColumnListStart(String value) {
+        if (value == null || !value.endsWith(")")) {
+            return -1;
+        }
+        char quote = 0;
+        int depth = 0;
+        int candidate = -1;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (quote != 0) {
+                if (ch == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (ch == '"' || ch == '`') {
+                quote = ch;
+            } else if (ch == '[') {
+                quote = ']';
+            } else if (ch == '(') {
+                if (depth == 0) {
+                    candidate = i;
+                }
+                depth++;
+            } else if (ch == ')') {
+                depth--;
+            }
+        }
+        return depth == 0 ? candidate : -1;
+    }
+
+    private static void registerTempTarget(String target, int ordinal, boolean toTemporary,
             Map<String, List<Column>> tempColumns) {
-        int idx = target.lastIndexOf('.');
-        if (idx < 0) {
+        if (!toTemporary) {
             return;
         }
-        String table = target.substring(0, idx);
-        if (!isTempTable(table)) {
+        String[] parts = MetadataCatalog.splitQualifiedNamePreservingQuotes(target);
+        if (parts.length < 2) {
             return;
         }
-        String column = target.substring(idx + 1);
+        String table = joinTableParts(parts);
+        String column = MetadataCatalog.normalizeIdentifier(parts[parts.length - 1]);
         putTempColumn(tempColumns, table, ordinal >= 0 ? ordinal : -1, column);
+    }
+
+    private static List<String> splitColumnList(String columns) {
+        List<String> result = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        for (int i = 0; i < columns.length(); i++) {
+            char ch = columns.charAt(i);
+            if (quote != 0) {
+                current.append(ch);
+                if (ch == quote) {
+                    quote = 0;
+                }
+            } else if (ch == '\'' || ch == '"' || ch == '`') {
+                quote = ch;
+                current.append(ch);
+            } else if (ch == ',') {
+                result.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        result.add(current.toString());
+        return result;
+    }
+
+    private static String joinTableParts(String[] parts) {
+        StringBuilder table = new StringBuilder();
+        for (int i = 0; i < parts.length - 1; i++) {
+            if (i > 0) {
+                table.append('.');
+            }
+            table.append(parts[i]);
+        }
+        return table.toString();
+    }
+
+    private static String renderIdentifier(String name) {
+        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return name;
+        }
+        return "\"" + name.replace("\"", "\"\"") + "\"";
     }
 
     private static void putTempColumns(Map<String, List<Column>> tempColumns, String table,
@@ -243,15 +360,6 @@ public class Instruction {
             columns.add(null);
         }
         columns.set(target, new Column(table, name));
-    }
-
-    private static int tempSize(Map<String, List<Column>> tempColumns, String table) {
-        List<Column> columns = tempColumns.get(table);
-        return columns == null ? 0 : columns.size();
-    }
-
-    private static boolean isTempTable(String table) {
-        return table.matches("temp\\d+") || table.matches("stmt\\d+\\.temp\\d+");
     }
 
     public static List<Instruction> toColumnInstructions(List<Instruction> sourceInstructions, MetaBinder metaBinder) {

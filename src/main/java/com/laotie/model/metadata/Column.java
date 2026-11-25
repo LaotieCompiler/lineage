@@ -14,6 +14,7 @@ public class Column {
     private String columnName;
     private String dataType;
     private boolean temporary;
+    private boolean quoted;
     private boolean immutable;
 
     /**
@@ -21,12 +22,20 @@ public class Column {
      * The last segment is the column name; everything before it is the table name.
      */
     public Column(String qualifiedName) {
-        int idx = qualifiedName == null ? -1 : qualifiedName.lastIndexOf('.');
-        if (idx >= 0) {
-            this.tableName = qualifiedName.substring(0, idx);
-            this.columnName = qualifiedName.substring(idx + 1);
+        String[] parts = MetadataCatalog.splitQualifiedNamePreservingQuotes(qualifiedName);
+        if (parts.length > 1) {
+            StringBuilder table = new StringBuilder();
+            for (int i = 0; i < parts.length - 1; i++) {
+                if (i > 0) {
+                    table.append('.');
+                }
+                table.append(parts[i]);
+            }
+            this.tableName = table.toString();
+            this.columnName = MetadataCatalog.normalizeIdentifier(parts[parts.length - 1]);
         } else {
-            this.columnName = qualifiedName;
+            this.columnName = parts.length == 0 ? qualifiedName
+                    : MetadataCatalog.normalizeIdentifier(parts[0]);
         }
     }
 
@@ -60,6 +69,15 @@ public class Column {
         return temporary;
     }
 
+    public boolean isQuoted() {
+        return quoted;
+    }
+
+    public void setQuoted(boolean quoted) {
+        checkMutable();
+        this.quoted = quoted;
+    }
+
     public boolean isImmutable() {
         return immutable;
     }
@@ -91,6 +109,7 @@ public class Column {
         Column copy = new Column(tableName, columnName);
         copy.dataType = dataType;
         copy.temporary = temporary;
+        copy.quoted = quoted;
         copy.immutable = true;
         return copy;
     }
@@ -104,9 +123,16 @@ public class Column {
     @Override
     public String toString() {
         if (tableName == null) {
-            return columnName;
+            return renderIdentifier(columnName);
         }
-        return tableName + "." + columnName;
+        return tableName + "." + renderIdentifier(columnName);
+    }
+
+    private static String renderIdentifier(String name) {
+        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return name;
+        }
+        return "\"" + name.replace("\"", "\"\"") + "\"";
     }
 
     @Override

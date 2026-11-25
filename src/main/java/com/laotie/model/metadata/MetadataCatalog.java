@@ -189,7 +189,10 @@ public class MetadataCatalog {
         for (SQLTableElement element : createTable.getTableElementList()) {
             if (element instanceof SQLColumnDefinition) {
                 SQLColumnDefinition definition = (SQLColumnDefinition) element;
-                Column column = new Column(normalizeIdentifier(definition.getColumnName()));
+                // A column definition name is already the bare field name; do not split dots.
+                String rawColumnName = definition.getColumnName();
+                Column column = new Column(null, normalizeIdentifier(rawColumnName));
+                column.setQuoted(isQuotedIdentifier(rawColumnName));
                 if (definition.getDataType() != null) {
                     column.setDataType(definition.getDataType().toString());
                 }
@@ -235,13 +238,28 @@ public class MetadataCatalog {
         return addTable(resolved[0], resolved[1], resolved[2], resolved[3], columns);
     }
 
-    public synchronized TableLocation addTable(String instance, String database, String schema, String tableName,
-            List<Column> columns) {
+    public synchronized TableLocation addTable(String instance, String database, String schema,
+            String tableName, List<Column> columns) {
+        return addTableInternal(instance, database, schema, tableName, columns, false);
+    }
+
+    /**
+     * Register a table discovered from JDBC. Such paths may not be representable as DDL text
+     * (for example a MySQL table with an instance name and no schema); they remain usable for
+     * lineage and snapshots, while {@link #toDdl()} rejects the catalog.
+     */
+    public synchronized TableLocation addScannedTable(String instance, String database,
+            String schema, String tableName, List<Column> columns) {
+        return addTableInternal(instance, database, schema, tableName, columns, true);
+    }
+
+    private TableLocation addTableInternal(String instance, String database, String schema,
+            String tableName, List<Column> columns, boolean allowNonRepresentable) {
         checkMutable();
         if (tableName == null || tableName.isEmpty()) {
             throw new MetadataPersistenceException("table name is empty");
         }
-        if (!isRepresentable(instance, database, schema)) {
+        if (!allowNonRepresentable && !isRepresentable(instance, database, schema)) {
             throw new MetadataPersistenceException("table path cannot be represented as DDL: "
                     + path(instance, database, schema, tableName));
         }
@@ -344,6 +362,50 @@ public class MetadataCatalog {
         return matches.get(0);
     }
 
+    /**
+     * Find exactly one table by its full display name. Internal code uses this when a reference
+     * is already a structured path (for example an instance-qualified MySQL name).
+     */
+    public TableLocation findTableByDisplayName(String display) {
+        List<TableLocation> exact = findAllByDisplayName(display);
+        if (exact.isEmpty()) {
+            throw new MetadataNotFoundException(display);
+        }
+        if (exact.size() > 1) {
+            List<String> candidates = new ArrayList<>();
+            for (TableLocation match : exact) {
+                candidates.add(match.getQualifiedName());
+            }
+            throw new AmbiguousTableException(display, candidates);
+        }
+        return exact.get(0);
+    }
+
+    /**
+     * Find tables whose display name is exactly the given reference. This disambiguates
+     * instance-qualified MySQL paths, which cannot be parsed positionally.
+     */
+    public List<TableLocation> findAllByDisplayName(String reference) {
+        List<TableLocation> result = new ArrayList<>();
+        if (reference == null) {
+            return result;
+        }
+        for (Instance instance : instances.values()) {
+            for (Database database : instance.getDatabases()) {
+                for (Schema schema : database.getSchemas()) {
+                    for (Table table : schema.getTables()) {
+                        TableLocation location = new TableLocation(instance.getName(),
+                                database.getName(), schema.getName(), table, dialect);
+                        if (location.getDisplayName().equalsIgnoreCase(reference)) {
+                            result.add(location);
+                        }
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
     private String[] referencePattern(String reference) {
         String[] parts = splitQualifiedName(reference);
         String[] pattern = new String[4];
@@ -392,18 +454,18 @@ public class MetadataCatalog {
 
     public synchronized String getChecksum() {
         if (cachedChecksum == null) {
-            cachedChecksum = sha256Hex(canonicalBody());
+            cachedChecksum = sha256Hex(canonicalBody(false));
         }
         return cachedChecksum;
     }
 
-    public String toDdl() {
+    public synchronized String toDdl() {
         StringBuilder ddl = new StringBuilder();
         ddl.append("-- lineage-metadata\n");
         ddl.append("-- dialect: ").append(dialect).append('\n');
         ddl.append("-- version: ").append(version).append('\n');
         ddl.append("-- checksum: ").append(getChecksum()).append('\n');
-        ddl.append(canonicalBody());
+        ddl.append(canonicalBody(true));
         return ddl.toString();
     }
 
@@ -501,7 +563,7 @@ public class MetadataCatalog {
         return copy;
     }
 
-    private String canonicalBody() {
+    private String canonicalBody(boolean forDdl) {
         List<String> databaseLines = new ArrayList<>();
         List<String> tableLines = new ArrayList<>();
 
@@ -511,14 +573,14 @@ public class MetadataCatalog {
                 for (Schema schema : database.getSchemas()) {
                     for (Table table : schema.getTables()) {
                         hasTable = true;
-                        tableLines.add("CREATE TABLE " + path(instance.getName(), database.getName(),
-                                schema.getName(), table.getName()) + " ("
-                                + columnDefinitions(table) + ");");
+                        tableLines.add("CREATE TABLE " + canonicalPath(forDdl,
+                                instance.getName(), database.getName(), schema.getName(),
+                                table.getName()) + " (" + columnDefinitions(table) + ");");
                     }
                 }
                 if (!hasTable) {
-                    databaseLines.add("CREATE DATABASE "
-                            + path(instance.getName(), database.getName()) + ";");
+                    databaseLines.add("CREATE DATABASE " + canonicalDatabasePath(forDdl,
+                            instance.getName(), database.getName()) + ";");
                 }
             }
         }
@@ -534,6 +596,43 @@ public class MetadataCatalog {
             body.append(line).append('\n');
         }
         return body.toString();
+    }
+
+    private String canonicalPath(boolean forDdl, String instance, String database, String schema,
+            String table) {
+        if (isRepresentable(instance, database, schema)) {
+            return path(instance, database, schema, table);
+        }
+        if (forDdl) {
+            throw new MetadataPersistenceException("table path cannot be represented as DDL: "
+                    + pathWithNullMarkers(instance, database, schema, table));
+        }
+        return pathWithNullMarkers(instance, database, schema, table);
+    }
+
+    private String canonicalDatabasePath(boolean forDdl, String instance, String database) {
+        if (isRepresentableDatabase(instance, database)) {
+            return path(instance, database);
+        }
+        if (forDdl) {
+            throw new MetadataPersistenceException("database path cannot be represented as DDL: "
+                    + pathWithNullMarkers(instance, database, null, null));
+        }
+        return pathWithNullMarkers(instance, database, null, null);
+    }
+
+    private boolean isRepresentableDatabase(String instance, String database) {
+        // An instance-qualified empty database would need a schema to be representable,
+        // and the canonical empty-database line does not carry one.
+        return instance == null && database != null;
+    }
+
+    private String pathWithNullMarkers(String... parts) {
+        List<String> result = new ArrayList<>();
+        for (String part : parts) {
+            result.add(part == null ? "<null>" : quote(part));
+        }
+        return String.join(".", result);
     }
 
     private String columnDefinitions(Table table) {
@@ -588,6 +687,47 @@ public class MetadataCatalog {
     /* names                                                              */
     /* ------------------------------------------------------------------ */
 
+    public static boolean isQuotedIdentifier(String identifier) {
+        if (identifier == null || identifier.length() < 2) {
+            return false;
+        }
+        char first = identifier.charAt(0);
+        char last = identifier.charAt(identifier.length() - 1);
+        return (first == '`' && last == '`')
+                || (first == '"' && last == '"')
+                || (first == '[' && last == ']');
+    }
+
+    /**
+     * Resolve a possibly quoted column reference to the canonical field name of the table.
+     * Returns null when the field does not exist.
+     */
+    public static String resolveColumnName(Table table, String rawName, DbType dialect) {
+        if (table == null || rawName == null) {
+            return normalizeIdentifier(rawName);
+        }
+        boolean quoted = isQuotedIdentifier(rawName);
+        String name = normalizeIdentifier(rawName);
+        Column column;
+        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
+            // MySQL/MariaDB column names are case-insensitive even when quoted.
+            column = table.getColumnIgnoreCase(name);
+        } else if (quoted) {
+            column = table.getColumnExact(name);
+        } else if (dialect == DbType.postgresql) {
+            column = table.getColumnExact(name.toLowerCase());
+            if (column == null) {
+                column = table.getColumnIgnoreCase(name);
+            }
+        } else {
+            column = table.getColumnExact(name.toUpperCase());
+            if (column == null) {
+                column = table.getColumnIgnoreCase(name);
+            }
+        }
+        return column == null ? null : column.getColumnName();
+    }
+
     public static String normalizeIdentifier(String identifier) {
         if (identifier == null) {
             return null;
@@ -603,6 +743,43 @@ public class MetadataCatalog {
             }
         }
         return value;
+    }
+
+    /**
+     * Split a qualified name on dots outside quotes, keeping the quote characters in each part.
+     */
+    public static String[] splitQualifiedNamePreservingQuotes(String qualifiedName) {
+        if (qualifiedName == null) {
+            return new String[0];
+        }
+        List<String> parts = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        for (int i = 0; i < qualifiedName.length(); i++) {
+            char ch = qualifiedName.charAt(i);
+            if (quote != 0) {
+                current.append(ch);
+                if (ch == quote) {
+                    quote = 0;
+                }
+            } else if (ch == '`' || ch == '"') {
+                quote = ch;
+                current.append(ch);
+            } else if (ch == '[') {
+                quote = ']';
+                current.append(ch);
+            } else if (ch == '.') {
+                parts.add(current.toString().trim());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        String last = current.toString().trim();
+        if (!last.isEmpty() || !parts.isEmpty()) {
+            parts.add(last);
+        }
+        return parts.toArray(new String[0]);
     }
 
     public static String[] splitQualifiedName(String qualifiedName) {

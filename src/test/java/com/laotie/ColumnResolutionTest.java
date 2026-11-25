@@ -1,7 +1,9 @@
 package com.laotie;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -17,6 +19,8 @@ import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
+import com.laotie.model.ScanResult;
+import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
 
@@ -349,6 +353,89 @@ public class ColumnResolutionTest {
     }
 
     @Test
+    public void punctuationInSourceAndTargetColumnsIsPreserved() {
+        MetadataContext context = mysqlContext(
+                "CREATE TABLE db1.A (c1 INT);"
+                        + "CREATE TABLE db1.D (`x,y` INT, `x-y.z` INT);");
+
+        LineageResult insert = new DmlLineage(context)
+                .parse("INSERT INTO D(`x,y`) SELECT c1 FROM A");
+        List<Instruction> expanded = Instruction.toColumnInstructions(
+                insert.getInstructions(), context);
+        assertEquals(2, expanded.size());
+        assertInstruction(expanded.get(0), OperationType.COLUMN_MAPPING,
+                "db1.A.c1", "temp1.c1");
+        assertInstruction(expanded.get(1), OperationType.COLUMN_MAPPING,
+                "temp1.c1", "db1.D.\"x,y\"");
+
+        ScanResult scan = new LineageScanner(context).scan("SELECT `x-y.z` FROM D;");
+        assertEquals(0, scan.getFailures().size());
+
+        Set<Column> sources = scan.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.\"x-y.z\""));
+        assertEquals(1, sources.size());
+        Column source = sources.iterator().next();
+        assertEquals("db1.D", source.getTableName());
+        assertEquals("x-y.z", source.getColumnName());
+    }
+
+    @Test
+    public void joinUsingDoesNotMergeQuotedDifferentCase() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (\"C1\" INT, c1 INT);"
+                + "CREATE TABLE b (c1 INT);");
+        MetadataContext context = MetadataContext.of(catalog);
+
+        ScanResult scan = new LineageScanner(context)
+                .scan("SELECT \"C1\" FROM a RIGHT JOIN b USING (c1);");
+
+        assertEquals(1, scan.getResults().size());
+        assertEquals(0, scan.getFailures().size());
+        Set<Column> sources = scan.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.C1"));
+        assertEquals(columns("a.C1"), sources);
+        assertFalse(sources.contains(new Column("b.C1")));
+    }
+
+    @Test
+    public void quotedAndUnquotedColumnsStayDistinctInPostgres() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (\"C1\" INT, c1 INT);"
+                + "CREATE TABLE b (\"C1\" INT, c1 INT);");
+        MetadataContext context = MetadataContext.of(catalog);
+
+        ScanResult scan = new LineageScanner(context).scan(
+                "SELECT c1 AS low, \"C1\" AS high FROM a;"
+                        + "INSERT INTO b(\"C1\", c1) SELECT \"C1\", c1 FROM a;");
+
+        assertEquals(2, scan.getResults().size());
+        assertEquals(0, scan.getFailures().size());
+        assertEquals(columns("a.c1"),
+                scan.getGraph().getSources(Column.temporary("stmt0.temp0.low")));
+        assertEquals(columns("a.C1"),
+                scan.getGraph().getSources(Column.temporary("stmt0.temp0.high")));
+        assertEquals(columns("a.C1"), scan.getGraph().getSources(new Column("b.C1")));
+        assertEquals(columns("a.c1"), scan.getGraph().getSources(new Column("b.c1")));
+    }
+
+    @Test
+    public void targetTableNameWithParenthesesIsPreserved() {
+        MetadataContext context = mysqlContext(
+                "CREATE TABLE db1.A (c1 INT);"
+                        + "CREATE TABLE `D(x)` (`x,y` INT);");
+
+        ScanResult scan = new LineageScanner(context)
+                .scan("INSERT INTO `D(x)`(`x,y`) SELECT c1 FROM A;");
+
+        assertEquals(1, scan.getResults().size());
+        assertEquals(0, scan.getFailures().size());
+        Set<Column> sources = scan.getGraph()
+                .getSources(new Column("`D(x)`.\"x,y\""));
+        assertEquals(1, sources.size());
+        assertTrue(sources.contains(new Column("db1.A.c1")));
+    }
+
+    @Test
     public void derivedTableUsesBareTargetColumnNames() {
         MetadataContext context = mysqlContext(
                 "CREATE TABLE db1.A (c1 INT); CREATE TABLE db2.B (c2 INT);");
@@ -449,6 +536,14 @@ public class ColumnResolutionTest {
         MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
         catalog.loadDdl(ddl);
         return MetadataContext.of(catalog);
+    }
+
+    private static Set<Column> columns(String... names) {
+        Set<Column> columns = new HashSet<>();
+        for (String name : names) {
+            columns.add(new Column(name));
+        }
+        return columns;
     }
 
     private static void assertInstruction(Instruction instruction, OperationType operation,

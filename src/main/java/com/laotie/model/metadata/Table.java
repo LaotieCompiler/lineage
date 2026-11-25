@@ -88,6 +88,22 @@ public class Table {
      * SQL identifiers are case insensitive, so field lookup is too.
      */
     public Column getColumn(String columnName) {
+        return getColumnIgnoreCase(columnName);
+    }
+
+    public Column getColumnExact(String columnName) {
+        if (columnName == null) {
+            return null;
+        }
+        for (Column column : columns) {
+            if (column.getColumnName().equals(columnName)) {
+                return immutable ? column.snapshot() : column;
+            }
+        }
+        return null;
+    }
+
+    public Column getColumnIgnoreCase(String columnName) {
         if (columnName == null) {
             return null;
         }

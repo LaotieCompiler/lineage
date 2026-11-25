@@ -2505,6 +2505,101 @@ public class LineageScannerTest {
     }
 
     @Test
+    public void usingColumnsAfterWildcardKeepHeadPosition() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.v AS head, a.*, a.k AS j1, a.q AS j2 FROM a)"
+                        + " SELECT * FROM x JOIN (SELECT j1,j2 FROM b) AS y"
+                        + " USING(j1,j2)"
+                        + " UNION ALL SELECT j1,j2,head,k,q,v FROM d;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        boolean sawHead = false;
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            if ("x.head".equals(instruction.getFrom())) {
+                assertEquals(2, instruction.getOrdinal());
+                sawHead = true;
+            }
+        }
+        assertTrue(sawHead);
+        assertEquals(columns("a.v", "d.head"), result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.head")));
+    }
+
+    @Test
+    public void multipleWildcardRegionsKeepMiddleColumnUnstable() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.v AS mid, b.* FROM a CROSS JOIN b)"
+                        + " SELECT x.* FROM x"
+                        + " UNION ALL SELECT k,q,v,mid,r FROM d;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            if (instruction.getOperation() == OperationType.COLUMN_MAPPING) {
+                assertFalse("unstable middle mapped: " + instruction,
+                        "temp0.mid".equals(instruction.getTo()));
+            }
+        }
+    }
+
+    @Test
+    public void qualifiedStarPlainSourceWithExtraFromUsesPositionPlan() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.v AS tail FROM a)"
+                        + " SELECT x.* FROM x CROSS JOIN (SELECT 1) AS z"
+                        + " UNION ALL SELECT k,q,v,tail FROM d;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        boolean sawTail = false;
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            if ("x.tail".equals(instruction.getFrom())) {
+                assertEquals(3, instruction.getOrdinal());
+                sawTail = true;
+            }
+        }
+        assertTrue(sawTail);
+        assertEquals(columns("a.v", "d.tail"), result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.tail")));
+    }
+
+    @Test
+    public void outerJoinDoesNotMutateQualifiedStarPlan() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT k FROM b), y AS (SELECT v FROM c)"
+                        + " SELECT j.* FROM a CROSS JOIN (x CROSS JOIN y) AS j;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        assertEquals(columns("b.k"), result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.k")));
+        assertEquals(columns("c.v"), result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.v")));
+    }
+
+    @Test
+    public void repeatedWildcardOfSameSourceKeepsEqualWidths() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.v AS mid, a.* FROM a)"
+                        + " SELECT x.* FROM x"
+                        + " UNION ALL SELECT k,v,mid,k2,v2 FROM d;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        boolean sawMid = false;
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            if ("x.mid".equals(instruction.getFrom())) {
+                assertEquals(2, instruction.getOrdinal());
+                sawMid = true;
+            }
+        }
+        assertTrue(sawMid);
+        assertEquals(columns("a.v", "d.mid"), result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.mid")));
+    }
+
+    @Test
     public void declaredCteAliasesCompleteKnownUnionWidth() {
         String cte = "WITH q(x,y) AS (SELECT * FROM a"
                 + " UNION ALL SELECT c1,c3 FROM b) ";

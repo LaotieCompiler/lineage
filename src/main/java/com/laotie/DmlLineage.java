@@ -91,6 +91,7 @@ public class DmlLineage {
     private int currentOrdinal = -1;
     private int uncertainOrdinal = -1;
     private int currentStarBudget = -1;
+    private Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
 
     private Set<String> tempTables;
     private Set<String> usedTargets;
@@ -104,6 +105,7 @@ public class DmlLineage {
     private Set<String> unionTargets;
     private Map<String, Boolean> targetWidthKnown;
     private Map<String, Boolean> targetNamesKnown;
+    private Map<String, List<SourceTable>> targetOutputUnknownGroup;
     private Map<String, List<Boolean>> targetOutputNameKnown;
     private Map<String, Integer> targetMinWidth;
     private Map<String, Integer> targetWidthOverride;
@@ -908,6 +910,7 @@ public class DmlLineage {
 
     private void processQueryBlock(SQLSelectQueryBlock queryBlock) {
         currentStarBudget = -1;
+        currentExpandedSourceNodes = new HashMap<>();
         SQLTableSource fromItem = queryBlock.getFrom();
         if (fromItem == null) {
             int position = 0;
@@ -1018,10 +1021,17 @@ public class DmlLineage {
             SourceNode targetNode = node;
             SQLExpr unknownExpr = selectItems.get(unknownItemIndex).getExpr();
             if (isStarProperty(unknownExpr)) {
-                SourceNode binding = joinBinding(
-                        ((SQLPropertyExpr) unknownExpr).getOwner());
+                SQLExpr owner = ((SQLPropertyExpr) unknownExpr).getOwner();
+                SourceNode binding = joinBinding(owner);
                 if (binding != null) {
                     targetNode = binding;
+                } else {
+                    SourceTable source = findByOwner(owner);
+                    if (source != null && !sourceColumnsKnown(source)) {
+                        SourceNode sourceNode = sourcePlanNode(source);
+                        currentExpandedSourceNodes.put(source, sourceNode);
+                        targetNode = sourceNode;
+                    }
                 }
             }
             List<StarOutput> plan = targetNode.plan;
@@ -1032,11 +1042,47 @@ public class DmlLineage {
                 List<SourceTable> rightUnknown = targetNode.unknownRightSources;
                 // Two or more independent unknown relations leave the distribution
                 // of the missing width ambiguous.
-                boolean leftOnly = leftUnknown.size() == 1 && rightUnknown.isEmpty();
-                boolean rightOnly = rightUnknown.size() == 1 && leftUnknown.isEmpty();
+                boolean leftOnly = leftUnknown.size() == 1 && rightUnknown.isEmpty()
+                        && unknownRegionCount(leftUnknown.get(0)) <= 1;
+                boolean rightOnly = rightUnknown.size() == 1 && leftUnknown.isEmpty()
+                        && unknownRegionCount(rightUnknown.get(0)) <= 1;
+                boolean handledRepeated = false;
+                List<SourceTable> repeatedSide = leftOnly || rightOnly ? null
+                        : leftUnknown.size() == 1 && rightUnknown.isEmpty() ? leftUnknown
+                        : rightUnknown.size() == 1 && leftUnknown.isEmpty()
+                                ? rightUnknown : null;
+                if (repeatedSide != null
+                        && unknownRegionCount(repeatedSide.get(0)) > 1) {
+                    SourceTable source = repeatedSide.get(0);
+                    int regions = unknownRegionCount(source);
+                    int deficit = inferredUnknownWidth - plan.size();
+                    if (deficit >= 0 && deficit % regions == 0
+                            && plan.size() == source.outputNameKnown.size()
+                            && sameUnknownGroup(source)) {
+                        int perRegion = deficit / regions;
+                        int offset = 0;
+                        for (int end : unknownRegionEnds(source)) {
+                            for (int k = 0; k < perRegion; k++) {
+                                List<StarColumn> columns = new ArrayList<>();
+                                String name = "col" + (end + offset + 1);
+                                columns.add(new StarColumn(source, name,
+                                        identifierKey(name), false, false));
+                                plan.add(end + offset, new StarOutput(columns, false, true));
+                                offset++;
+                            }
+                        }
+                        for (int i = 0; i < plan.size(); i++) {
+                            plan.set(i, plan.get(i).withStable(true));
+                        }
+                        handledRepeated = true;
+                    }
+                }
                 List<SourceTable> expansion;
                 int insertAt;
-                if (leftOnly) {
+                if (handledRepeated) {
+                    expansion = new ArrayList<>();
+                    insertAt = plan.size();
+                } else if (leftOnly) {
                     expansion = leftUnknown;
                     insertAt = insertionPoint(plan, leftUnknown,
                             Math.min(targetNode.rightBoundary, plan.size()),
@@ -1237,9 +1283,12 @@ public class DmlLineage {
             SQLExpr owner = ((SQLPropertyExpr) item.getExpr()).getOwner();
             SourceTable source = findByOwner(owner);
             if (source != null) {
+                SourceNode expanded = currentExpandedSourceNodes.get(source);
                 SourceNode leafNode = stackSourceNode.isEmpty()
                         ? null : stackSourceNode.peek();
-                if (context == null && currentStarBudget > 0 && leafNode != null
+                if (expanded != null) {
+                    recordBindingStar(targetTable, expanded, currentOrdinal);
+                } else if (context == null && currentStarBudget > 0 && leafNode != null
                         && leafNode.sources.size() == 1
                         && leafNode.sources.get(0) == source
                         && !sourceColumnsKnown(source)) {
@@ -1567,17 +1616,15 @@ public class DmlLineage {
                     right.plan.size() - Math.min(right.plan.size(), ownUsingCount), 0);
             int rightBoundary = Math.max(plan.size() - rightRemaining, 0);
             Map<SourceTable, Integer> unknownSectionEnd = new HashMap<>();
-            int consumedLeft = Math.min(left.plan.size(), ownUsingCount);
-            int consumedRight = Math.min(right.plan.size(), ownUsingCount);
-            int leftRemaining = left.plan.size() - consumedLeft;
-            int rightRemainingCount = right.plan.size() - consumedRight;
+            int leftRemaining = countRemaining(plan, left.plan);
+            int rightRemainingCount = countRemaining(plan, right.plan);
             int mergedPrefix = Math.max(
                     plan.size() - leftRemaining - rightRemainingCount, 0);
             for (SourceTable source : left.sources) {
                 if (!sourceColumnsKnown(source)) {
                     Integer previous = left.unknownSectionEnd.get(source);
-                    int end = previous == null ? left.plan.size()
-                            : mergedPrefix + Math.max(previous - consumedLeft, 0);
+                    int end = previous == null ? plan.size()
+                            : mergedPrefix + keptBefore(plan, left.plan, previous);
                     unknownSectionEnd.put(source, ownUsingCount > 0 ? end
                             : previous != null ? previous : left.plan.size());
                 }
@@ -1587,7 +1634,7 @@ public class DmlLineage {
                     Integer previous = right.unknownSectionEnd.get(source);
                     int end = previous == null ? plan.size()
                             : mergedPrefix + leftRemaining
-                                    + Math.max(previous - consumedRight, 0);
+                                    + keptBefore(plan, right.plan, previous);
                     unknownSectionEnd.put(source, ownUsingCount > 0 ? end
                             : previous != null ? left.plan.size() + previous
                                     : plan.size());
@@ -1635,7 +1682,8 @@ public class DmlLineage {
             SourceTable source = new SourceTable(target, null, null, alias, null, true,
                     widthKnown, namesKnown, derivedOutputs, copyKeys(target),
                     copyNameKnown(target, derivedOutputs.size()),
-                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()));
+                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
+                    copyUnknownGroups(target, derivedOutputs.size()));
             return new SourceNode(java.util.Collections.singletonList(source),
                     planFromSource(source), namesKnown, widthKnown, derivedOutputs.size(),
                     targetMinimumColumns(target, widthKnown, derivedOutputs.size()), 0,
@@ -1657,7 +1705,8 @@ public class DmlLineage {
             SourceTable source = new SourceTable(target, null, null, alias, null, true,
                     widthKnown, namesKnown, derivedOutputs, copyKeys(target),
                     copyNameKnown(target, derivedOutputs.size()),
-                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()));
+                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
+                    copyUnknownGroups(target, derivedOutputs.size()));
             return new SourceNode(java.util.Collections.singletonList(source),
                     planFromSource(source), namesKnown, widthKnown, derivedOutputs.size(),
                     targetMinimumColumns(target, widthKnown, derivedOutputs.size()), 0,
@@ -1802,9 +1851,10 @@ public class DmlLineage {
             boolean quoted = source.metadataTable != null
                     && i < source.metadataTable.getFields().size()
                     && source.metadataTable.getFields().get(i).isQuoted();
+            boolean stable = sourceColumnsKnown(source) || i < firstUnknownIndex(source);
             plan.add(new StarOutput(java.util.Collections.singletonList(
                     new StarColumn(source, names.get(i), key, nameKnown, quoted)),
-                    nameKnown));
+                    nameKnown, stable));
         }
         return plan;
     }
@@ -1890,8 +1940,84 @@ public class DmlLineage {
         return merged;
     }
 
+    private static boolean sameUnknownGroup(SourceTable source) {
+        SourceTable group = null;
+        boolean seen = false;
+        for (int i = 0; i < source.outputNameKnown.size(); i++) {
+            if (Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
+                continue;
+            }
+            SourceTable current = i < source.outputUnknownGroups.size()
+                    ? source.outputUnknownGroups.get(i) : null;
+            if (current == null) {
+                return false;
+            }
+            if (!seen) {
+                group = current;
+                seen = true;
+            } else if (group != current) {
+                return false;
+            }
+        }
+        return seen;
+    }
+
+    private static List<Integer> unknownRegionEnds(SourceTable source) {
+        List<Integer> ends = new ArrayList<>();
+        boolean inRegion = false;
+        for (int i = 0; i < source.outputNameKnown.size(); i++) {
+            boolean known = Boolean.TRUE.equals(source.outputNameKnown.get(i));
+            if (!known) {
+                inRegion = true;
+            } else if (inRegion) {
+                ends.add(i);
+                inRegion = false;
+            }
+        }
+        if (inRegion) {
+            ends.add(source.outputNameKnown.size());
+        }
+        return ends;
+    }
+
+    private static int firstUnknownIndex(SourceTable source) {
+        for (int i = 0; i < source.outputNameKnown.size(); i++) {
+            if (!Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
+                return i;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    private static int unknownRegionCount(SourceTable source) {
+        int regions = 0;
+        boolean previousKnown = true;
+        for (int i = 0; i < source.outputNameKnown.size(); i++) {
+            boolean known = Boolean.TRUE.equals(source.outputNameKnown.get(i));
+            if (!known && previousKnown) {
+                regions++;
+            }
+            previousKnown = known;
+        }
+        return regions;
+    }
+
     private int planSizeFor(SourceTable source) {
         return sourceColumnNames(source).size();
+    }
+
+    private SourceNode sourcePlanNode(SourceTable source) {
+        List<StarOutput> plan = planFromSource(source);
+        boolean widthKnown = sourceColumnsKnown(source);
+        int width = source.metadataTable != null
+                ? source.metadataTable.getFields().size() : source.outputColumns.size();
+        return new SourceNode(java.util.Collections.singletonList(source), plan,
+                sourceNamesKnown(source), widthKnown, width, minimumColumns(source), 0,
+                plan.size(),
+                widthKnown ? java.util.Collections.<SourceTable>emptyList()
+                        : java.util.Collections.singletonList(source),
+                java.util.Collections.<SourceTable>emptyList(),
+                unknownSectionEndFor(source, widthKnown, plan.size()));
     }
 
     private static Map<SourceTable, Integer> unknownSectionEndFor(SourceTable source,
@@ -2033,6 +2159,37 @@ public class DmlLineage {
         return last;
     }
 
+    private static int countRemaining(List<StarOutput> plan, List<StarOutput> originals) {
+        int count = 0;
+        for (StarOutput output : originals) {
+            if (containsIdentity(plan, output)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean containsIdentity(List<StarOutput> plan, StarOutput output) {
+        for (StarOutput candidate : plan) {
+            if (candidate.origin == output.origin) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int keptBefore(List<StarOutput> plan, List<StarOutput> originals,
+            int boundary) {
+        int kept = 0;
+        int limit = Math.min(boundary, originals.size());
+        for (int i = 0; i < limit; i++) {
+            if (containsIdentity(plan, originals.get(i))) {
+                kept++;
+            }
+        }
+        return kept;
+    }
+
     private static int lastIndexOfSource(List<StarOutput> plan, List<SourceTable> sources) {
         int last = -1;
         for (int i = 0; i < plan.size(); i++) {
@@ -2164,7 +2321,9 @@ public class DmlLineage {
                 widthKnown, namesKnown, outputColumns, copyKeys(cteTarget),
                 metadataTable != null ? java.util.Collections.<Boolean>emptyList()
                         : copyNameKnown(cteTarget, outputColumns.size()),
-                minOutputColumns);
+                minOutputColumns,
+                metadataTable != null ? java.util.Collections.<SourceTable>emptyList()
+                        : copyUnknownGroups(cteTarget, outputColumns.size()));
     }
 
     private int targetMinimumColumns(String target, boolean widthKnown, int outputCount) {
@@ -2173,6 +2332,16 @@ public class DmlLineage {
         }
         Integer minimum = target == null ? null : targetMinWidth.get(target);
         return minimum == null ? 0 : minimum;
+    }
+
+    private List<SourceTable> copyUnknownGroups(String target, int size) {
+        List<SourceTable> groups = target == null ? null
+                : targetOutputUnknownGroup.get(target);
+        List<SourceTable> result = new ArrayList<>();
+        for (int i = 0; i < size; i++) {
+            result.add(groups != null && i < groups.size() ? groups.get(i) : null);
+        }
+        return result;
     }
 
     private List<Boolean> copyNameKnown(String target, int size) {
@@ -2321,6 +2490,18 @@ public class DmlLineage {
         }
     }
 
+    private void markUnknownGroup(String target, int position, SourceTable source) {
+        if (target == null || source == null || position < 0) {
+            return;
+        }
+        List<SourceTable> groups = targetOutputUnknownGroup.computeIfAbsent(target,
+                k -> new ArrayList<SourceTable>());
+        while (groups.size() <= position) {
+            groups.add(null);
+        }
+        groups.set(position, source);
+    }
+
     private void markOutputNameKnown(String target, int position, boolean known) {
         if (target == null || position < 0) {
             return;
@@ -2438,10 +2619,12 @@ public class DmlLineage {
                         name = "col" + suffix++;
                         key = identifierKey(name);
                     } while (used.contains(name) || isExistingOutput(existing, name, position));
-                    declaredName = true;
                 }
                 markOutputNameKnown(target, position,
                         declaredName || sourceOutputNameKnown(source, i));
+                if (!declaredName && !sourceOutputNameKnown(source, i)) {
+                    markUnknownGroup(target, position, source);
+                }
                 entries.add(new OutputName(name, key));
                 used.add(name);
                 position++;
@@ -2697,6 +2880,11 @@ public class DmlLineage {
                 return;
             }
             String targetTable = stackTargetTable.peek();
+            SourceNode expanded = currentExpandedSourceNodes.get(source);
+            if (expanded != null) {
+                mapBindingStar(targetTable, expanded, currentOrdinal);
+                return;
+            }
             SourceNode leafNode = stackSourceNode.isEmpty()
                     ? null : stackSourceNode.peek();
             if (context == null && currentStarBudget > 0 && leafNode != null
@@ -3611,6 +3799,7 @@ public class DmlLineage {
         unionTargets = new HashSet<>();
         targetWidthKnown = new HashMap<>();
         targetNamesKnown = new HashMap<>();
+        targetOutputUnknownGroup = new HashMap<>();
         targetOutputNameKnown = new HashMap<>();
         targetMinWidth = new HashMap<>();
         targetWidthOverride = new HashMap<>();
@@ -3709,12 +3898,14 @@ public class DmlLineage {
         private final List<String> outputColumns;
         private final List<String> outputKeys;
         private final List<Boolean> outputNameKnown;
+        private final List<SourceTable> outputUnknownGroups;
         private final int minOutputColumns;
 
         private SourceTable(String displayName, String writtenName, String rawName, String alias,
                 Table metadataTable, boolean temporary, boolean outputWidthKnown,
                 boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
-                List<Boolean> outputNameKnown, int minOutputColumns) {
+                List<Boolean> outputNameKnown, int minOutputColumns,
+                List<SourceTable> outputUnknownGroups) {
             this.displayName = displayName;
             this.writtenName = writtenName;
             this.rawName = rawName;
@@ -3730,6 +3921,8 @@ public class DmlLineage {
             this.outputNameKnown = outputNameKnown == null
                     ? java.util.Collections.<Boolean>emptyList() : outputNameKnown;
             this.minOutputColumns = minOutputColumns;
+            this.outputUnknownGroups = outputUnknownGroups == null
+                    ? java.util.Collections.<SourceTable>emptyList() : outputUnknownGroups;
         }
     }
 
@@ -3747,6 +3940,7 @@ public class DmlLineage {
         private final List<StarColumn> sources;
         private final boolean nameKnown;
         private final boolean stable;
+        private final StarOutput origin;
 
         private StarOutput(List<StarColumn> sources) {
             this(sources, false);
@@ -3757,13 +3951,19 @@ public class DmlLineage {
         }
 
         private StarOutput(List<StarColumn> sources, boolean nameKnown, boolean stable) {
+            this(sources, nameKnown, stable, null);
+        }
+
+        private StarOutput(List<StarColumn> sources, boolean nameKnown, boolean stable,
+                StarOutput origin) {
             this.sources = sources;
             this.nameKnown = nameKnown;
             this.stable = stable;
+            this.origin = origin == null ? this : origin;
         }
 
         private StarOutput withStable(boolean value) {
-            return new StarOutput(sources, nameKnown, value);
+            return new StarOutput(sources, nameKnown, value, origin);
         }
     }
 

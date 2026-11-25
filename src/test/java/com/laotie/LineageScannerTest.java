@@ -2654,6 +2654,43 @@ public class LineageScannerTest {
     }
 
     @Test
+    public void repeatedWildcardThroughUsingKeepsReorderedPositions() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.v AS mid, a.*, a.k AS j1, a.v AS j2 FROM a)"
+                        + " SELECT * FROM x JOIN (SELECT j1,j2 FROM b) AS y"
+                        + " USING(j1,j2)"
+                        + " UNION ALL SELECT j1,j2,k,v,mid,k2,v2 FROM d;");
+
+        assertEquals(1, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        boolean sawMid = false;
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            if ("x.mid".equals(instruction.getFrom())) {
+                assertEquals(4, instruction.getOrdinal());
+                sawMid = true;
+            }
+        }
+        assertTrue(sawMid);
+        assertEquals(columns("a.v", "d.mid"), result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.mid")));
+    }
+
+    @Test
+    public void adjacentRepeatedWildcardWithoutSolutionFails() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "WITH x AS (SELECT a.*, a.* FROM a)"
+                        + " SELECT x.* FROM x"
+                        + " UNION ALL SELECT k,q,v FROM d;"
+                        + " SELECT c1 FROM a;");
+
+        assertEquals(2, result.getResults().size());
+        assertTrue(result.getResults().get(0).getError()
+                instanceof IllegalStateException);
+        assertTrue(result.getResults().get(0).getInstructions().isEmpty());
+        assertNull(result.getResults().get(1).getError());
+    }
+
+    @Test
     public void declaredCteAliasesCompleteKnownUnionWidth() {
         String cte = "WITH q(x,y) AS (SELECT * FROM a"
                 + " UNION ALL SELECT c1,c3 FROM b) ";

@@ -1047,46 +1047,71 @@ public class DmlLineage {
                 boolean rightOnly = rightUnknown.size() == 1 && leftUnknown.isEmpty()
                         && unknownRegionCount(rightUnknown.get(0)) <= 1;
                 boolean handledRepeated = false;
-                List<SourceTable> repeatedSide = leftOnly || rightOnly ? null
-                        : leftUnknown.size() == 1 && rightUnknown.isEmpty() ? leftUnknown
+                List<SourceTable> repeatedSide = leftUnknown.size() == 1
+                        && rightUnknown.isEmpty() ? leftUnknown
                         : rightUnknown.size() == 1 && leftUnknown.isEmpty()
                                 ? rightUnknown : null;
                 if (repeatedSide != null
-                        && unknownRegionCount(repeatedSide.get(0)) > 1) {
+                        && totalWildcardOccurrences(repeatedSide.get(0)) > 1) {
                     SourceTable source = repeatedSide.get(0);
                     int deficit = inferredUnknownWidth - plan.size();
-                    if (deficit >= 0 && plan.size() == source.outputNameKnown.size()
-                            && sameUnknownGroup(source)) {
-                        List<Integer> ends = unknownRegionEnds(source);
-                        List<Integer> runs = unknownRegionRuns(source);
-                        int occurrences = 0;
-                        for (int run : runs) {
-                            occurrences += run;
+                    List<Integer> ends = unknownRegionEnds(source);
+                    List<Integer> runs = unknownRegionRuns(source);
+                    int occurrences = totalWildcardOccurrences(source);
+                    // Locate the source's own plan to translate region boundaries after
+                    // any USING reordering.
+                    SourceNode sideNode = null;
+                    int sideOffset = 0;
+                    if (targetNode.leftNode != null
+                            && containsSource(targetNode.leftNode.sources, source)) {
+                        sideNode = targetNode.leftNode;
+                    } else if (targetNode.rightNode != null
+                            && containsSource(targetNode.rightNode.sources, source)) {
+                        sideNode = targetNode.rightNode;
+                        sideOffset = Math.max(plan.size()
+                                - countRemaining(plan, targetNode.leftNode == null
+                                        ? new ArrayList<StarOutput>()
+                                        : targetNode.leftNode.plan)
+                                - countRemaining(plan, targetNode.rightNode.plan), 0);
+                    } else if (targetNode.sources.size() == 1
+                            && targetNode.sources.get(0) == source) {
+                        sideNode = targetNode;
+                    }
+                    int mergedPrefix = 0;
+                    if (targetNode.leftNode != null && targetNode.rightNode != null) {
+                        mergedPrefix = Math.max(plan.size()
+                                - countRemaining(plan, targetNode.leftNode.plan)
+                                - countRemaining(plan, targetNode.rightNode.plan), 0);
+                    }
+                    if (deficit >= 0 && sameUnknownGroup(source) && sideNode != null
+                            && sideNode.plan.size() == source.outputNameKnown.size()
+                            && occurrences > 0) {
+                        if (deficit % occurrences != 0) {
+                            throw new IllegalStateException(
+                                    "UNION column count mismatch: repeated wildcard "
+                                            + "widths cannot satisfy " + inferredUnknownWidth);
                         }
-                        if (occurrences > 0) {
-                            if (deficit % occurrences != 0) {
-                                throw new IllegalStateException(
-                                        "UNION column count mismatch: repeated wildcard "
-                                                + "widths cannot satisfy " + inferredUnknownWidth);
+                        int perWildcard = deficit / occurrences;
+                        int offset = 0;
+                        for (int r = 0; r < ends.size(); r++) {
+                            int boundary = ends.get(r);
+                            int insertAt = mergedPrefix
+                                    + keptBefore(plan, sideNode.plan, boundary) + sideOffset
+                                    + offset;
+                            insertAt = Math.min(insertAt, plan.size());
+                            for (int k = 0; k < perWildcard * runs.get(r); k++) {
+                                List<StarColumn> columns = new ArrayList<>();
+                                String name = "col" + (insertAt + 1);
+                                columns.add(new StarColumn(source, name,
+                                        identifierKey(name), false, false));
+                                plan.add(insertAt++, new StarOutput(columns, false, true));
                             }
-                            int perWildcard = deficit / occurrences;
-                            int offset = 0;
-                            for (int r = 0; r < ends.size(); r++) {
-                                int insertAt = ends.get(r) + offset;
-                                for (int k = 0; k < perWildcard * runs.get(r); k++) {
-                                    List<StarColumn> columns = new ArrayList<>();
-                                    String name = "col" + (insertAt + 1);
-                                    columns.add(new StarColumn(source, name,
-                                            identifierKey(name), false, false));
-                                    plan.add(insertAt++, new StarOutput(columns, false, true));
-                                }
-                                offset += perWildcard * runs.get(r);
-                            }
-                            for (int i = 0; i < plan.size(); i++) {
-                                plan.set(i, plan.get(i).withStable(true));
-                            }
-                            handledRepeated = true;
+                            offset += perWildcard * runs.get(r);
                         }
+                        for (int i = 0; i < plan.size(); i++) {
+                            plan.set(i, plan.get(i).withStable(true));
+                        }
+                        handledRepeated = true;
                     }
                 }
                 List<SourceTable> expansion;
@@ -1655,7 +1680,7 @@ public class DmlLineage {
             SourceNode joined = new SourceNode(sources, plan,
                     left.knownColumns && right.knownColumns, widthKnown, width, minWidth,
                     joinUsingCount, rightBoundary, leftUnknownSources, rightUnknownSources,
-                    unknownSectionEnd);
+                    unknownSectionEnd, left, right);
             if (join.getAlias() != null) {
                 if (!stackJoinBindings.isEmpty()) {
                     Map<String, SourceNode> bindings = stackJoinBindings.peek();
@@ -1972,6 +1997,23 @@ public class DmlLineage {
             }
         }
         return seen;
+    }
+
+    private static boolean containsSource(List<SourceTable> sources, SourceTable source) {
+        for (SourceTable candidate : sources) {
+            if (candidate == source) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int totalWildcardOccurrences(SourceTable source) {
+        int total = 0;
+        for (int run : unknownRegionRuns(source)) {
+            total += run;
+        }
+        return total;
     }
 
     private static List<Integer> unknownRegionRuns(SourceTable source) {
@@ -4011,12 +4053,25 @@ public class DmlLineage {
         private final List<SourceTable> unknownLeftSources;
         private final List<SourceTable> unknownRightSources;
         private final Map<SourceTable, Integer> unknownSectionEnd;
+        private final SourceNode leftNode;
+        private final SourceNode rightNode;
 
         private SourceNode(List<SourceTable> sources, List<StarOutput> plan,
                 boolean knownColumns, boolean widthKnown, int width, int minWidth,
                 int usingCount, int rightBoundary, List<SourceTable> unknownLeftSources,
                 List<SourceTable> unknownRightSources,
                 Map<SourceTable, Integer> unknownSectionEnd) {
+            this(sources, plan, knownColumns, widthKnown, width, minWidth, usingCount,
+                    rightBoundary, unknownLeftSources, unknownRightSources,
+                    unknownSectionEnd, null, null);
+        }
+
+        private SourceNode(List<SourceTable> sources, List<StarOutput> plan,
+                boolean knownColumns, boolean widthKnown, int width, int minWidth,
+                int usingCount, int rightBoundary, List<SourceTable> unknownLeftSources,
+                List<SourceTable> unknownRightSources,
+                Map<SourceTable, Integer> unknownSectionEnd, SourceNode leftNode,
+                SourceNode rightNode) {
             this.sources = sources;
             this.plan = plan;
             this.knownColumns = knownColumns;
@@ -4028,6 +4083,8 @@ public class DmlLineage {
             this.unknownLeftSources = unknownLeftSources;
             this.unknownRightSources = unknownRightSources;
             this.unknownSectionEnd = unknownSectionEnd;
+            this.leftNode = leftNode;
+            this.rightNode = rightNode;
         }
     }
 

@@ -54,6 +54,12 @@ public class Instruction {
      */
     boolean wildcardWidthKnown;
 
+    /**
+     * True when the projection's column positions are unknown, so the wildcard must
+     * stay a table-level edge even if the source columns themselves are known.
+     */
+    boolean positionalWildcard;
+
     public enum OperationType {
         COLUMN_MAPPING, // select tb.col as A
         EXPR_MAPPING, // select tb.col as A
@@ -180,6 +186,24 @@ public class Instruction {
             Map<String, Set<Integer>> tempWildcardKnown, List<Instruction> result) {
         String fromTable = instruction.getFrom();
         String toTable = instruction.getTo();
+
+        if (instruction.isPositionalWildcard()) {
+            String target = toTable;
+            int lparen = findColumnListStart(target);
+            if (lparen > 0) {
+                target = target.substring(0, lparen);
+            }
+            result.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable, target,
+                    instruction.getOrdinal(), instruction.isFromTemporary(),
+                    instruction.isToTemporary()));
+            if (instruction.isToTemporary()) {
+                markUnknownTempColumn(tempColumns, target, instruction.getOrdinal());
+                tempUnknown.computeIfAbsent(target,
+                        key -> new HashSet<Integer>())
+                        .add(Math.max(instruction.getOrdinal(), 0));
+            }
+            return;
+        }
 
         List<Column> fromColumns = instruction.isFromTemporary()
                 ? tempColumns.get(fromTable)

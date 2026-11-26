@@ -84,6 +84,20 @@ belongs to `A` and `c2` belongs to `B`; a later `select c1 from A,B` resolves to
 instead of failing. Learned metadata is scoped to the scanner instance and never used to
 expand a wildcard.
 
+#### metadata-free contract
+
+When a table's columns are unknown, the projection's column **positions** are unknown too.
+In that case the analyzer keeps table-level edges and never guesses a column:
+
+- `select * from missing` yields `missing.* -> t.*`, not invented `missing.col1`;
+- a wildcard over unknown tables inside a derived table or `UNION` propagates as a
+  table-level edge through the outer query;
+- explicit projections that follow such a wildcard have no determinable position, so no
+  column-level edge is emitted for them;
+- as soon as every participating source is fully known (catalog, DDL, or inferred), the
+  projection is mapped column by column again, including `JOIN ... USING` merges and
+  `UNION` output names.
+
 ### lineage graph
 
 1. build lineage graph by direct relations

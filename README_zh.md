@@ -75,6 +75,16 @@ LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
 `select c1 from A,B` 可解析为 `A.c1` 而不报错。学习结果只在当前 scanner 实例内生效，
 且不会用于展开通配符。
 
+#### 无元数据契约
+
+当表的列集合未知时，投影的列**位置**同样未知。此时分析器只保留表级边，绝不猜测列：
+
+- `select * from missing` 产出 `missing.* -> t.*`，而不是编造 `missing.col1`；
+- 派生表或 `UNION` 内部的未知通配会以表级边向上传播；
+- 跟随在该通配之后的显式投影没有可确定的位置，因此不生成列级边；
+- 一旦所有参与来源的列都已知（catalog、DDL 或学习所得），投影会恢复逐列映射，包括
+  `JOIN ... USING` 合并列与 `UNION` 输出名。
+
 ### 血缘地图
 
 1. 通过直接关系构建血缘地图

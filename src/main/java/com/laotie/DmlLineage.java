@@ -1303,12 +1303,23 @@ public class DmlLineage {
         boolean widthKnown = true;
         boolean namesKnown = true;
         boolean prefixCertain = true;
+        boolean unknownStarSeen = false;
         for (int itemIndex = 0; itemIndex < selectItems.size(); itemIndex++) {
             SQLSelectItem item = selectItems.get(itemIndex);
             int start = startOverride[itemIndex] > position
                     ? startOverride[itemIndex] : position;
             boolean positionCertain = startOverride[itemIndex] >= 0 || prefixCertain;
-            uncertainOrdinal = positionalWidth > 0 && !positionCertain ? start : -1;
+            SQLExpr itemExpr = item.getExpr();
+            boolean unknownStar = detachedMetadata()
+                    && (itemExpr instanceof SQLAllColumnExpr || isStarProperty(itemExpr))
+                    && hasUnknownStarSource(itemExpr);
+            // Contract: a projection that follows an unknown-width wildcard has an
+            // undetermined position, so no column-level edge may be guessed for it.
+            uncertainOrdinal = positionalWidth > 0 && !positionCertain
+                    || detachedMetadata() && (unknownStar || unknownStarSeen) ? start : -1;
+            if (unknownStar) {
+                unknownStarSeen = true;
+            }
             currentOrdinal = start;
             int advanced = processSelectItem(item);
             if (itemIndex == unknownItemIndex && inferredUnknownWidth > advanced) {
@@ -3482,57 +3493,31 @@ public class DmlLineage {
             List<SourceTable> sources, SourceNode node, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean targetTemporary = tempTables.contains(targetTable);
-        Set<String> used = new HashSet<>();
-        int boundary = node == null ? template.size()
-                : Math.min(node.rightBoundary, template.size());
-        List<StarOutput> plan = new ArrayList<>(template);
-        Set<StarOutput> syntheticOutputs = new HashSet<>();
-        Set<StarOutput> exactlySizedOutputs = new HashSet<>();
-        List<SourceTable> remainderSources = new ArrayList<>();
+
+        boolean determinate = !sources.isEmpty();
         for (SourceTable source : sources) {
-            if (!sourceColumnsKnown(source) && !coveredByUnknownOutput(plan, source)) {
-                remainderSources.add(source);
+            if (!sourceNamesKnown(source)) {
+                determinate = false;
+                break;
             }
         }
-        List<java.util.Map.Entry<SourceTable, Integer>> remainderEnds =
-                new ArrayList<>();
-        for (SourceTable source : remainderSources) {
-            Integer end = node == null ? null : node.unknownSectionEnd.get(source);
-            remainderEnds.add(new java.util.AbstractMap.SimpleEntry<>(source,
-                    end == null ? boundary : Math.min(end, plan.size())));
-        }
-        remainderEnds.sort(java.util.Comparator.comparingInt(
-                java.util.Map.Entry::getValue));
-        int inserted = 0;
-        for (java.util.Map.Entry<SourceTable, Integer> entry : remainderEnds) {
-            SourceTable source = entry.getKey();
-            int insertAt = Math.min(entry.getValue() + inserted, plan.size());
-            // Its remaining columns are unknown: place a wildcard where this side's
-            // columns appear, so following known columns keep their positions. Only a
-            // single remainder can be sized exactly by a fixed total width; with two or
-            // more the distribution is unknown and later columns stay undetermined.
-            int count = 1;
-            boolean exact = false;
-            if (remainderSources.size() == 1 && currentStarBudget > 0) {
-                count = Math.max(1, currentStarBudget - plan.size());
-                exact = true;
+        if (!determinate) {
+            // Contract: when any participating source's columns are unknown the
+            // projection positions cannot be determined. Keep table-level edges only
+            // and never guess a column.
+            for (SourceTable source : sources) {
+                Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                        lineageTableName(source), targetTable, startPosition,
+                        source.temporary, targetTemporary);
+                wildcard.setPositionalWildcard(true);
+                instructions.add(wildcard);
             }
-            for (int i = 0; i < count; i++) {
-                String name = "col" + (insertAt + 1);
-                StarOutput placeholder = new StarOutput(
-                        java.util.Collections.singletonList(new StarColumn(source, name,
-                                identifierKey(name), false, false)), false, false);
-                plan.add(insertAt++, placeholder);
-                syntheticOutputs.add(placeholder);
-                inserted++;
-                if (exact) {
-                    exactlySizedOutputs.add(placeholder);
-                }
-            }
+            return Math.max(sources.size(), 1);
         }
 
+        Set<String> used = new HashSet<>();
         int position = startPosition;
-        for (StarOutput output : plan) {
+        for (StarOutput output : template) {
             if (output.sources.isEmpty()) {
                 continue;
             }
@@ -3550,7 +3535,6 @@ public class DmlLineage {
                     }
                 }
             }
-            // One output position, even when USING merges several columns into it.
             if (exact && !used.add(name)) {
                 exact = false;
             }
@@ -3580,13 +3564,9 @@ public class DmlLineage {
                 markOutputNameKnown(targetTable, position, true);
             } else {
                 for (SourceTable source : starOutputSources(output)) {
-                    Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                    instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
                             lineageTableName(source), targetTable, position,
-                            source.temporary, targetTemporary);
-                    if (exactlySizedOutputs.contains(output)) {
-                        wildcard.setWildcardWidthKnown(true);
-                    }
-                    instructions.add(wildcard);
+                            source.temporary, targetTemporary));
                 }
             }
             position++;
@@ -3595,34 +3575,17 @@ public class DmlLineage {
     }
 
     /**
-     * Whether a source already contributed a column whose identity is known. Its other
-     * columns are then still unexpanded.
-     */
-    /**
      * The physical table identity of a source: an alias is only a SQL binding, not a
      * lineage vertex.
      */
     private static String lineageTableName(SourceTable source) {
-        if (source.temporary || source.writtenName == null
-                || source.metadataTable != null) {
+        if (source.temporary || source.metadataTable != null) {
             return source.displayName;
         }
-        return source.writtenName;
-    }
-
-    private static boolean coveredByUnknownOutput(List<StarOutput> plan,
-            SourceTable source) {
-        for (StarOutput output : plan) {
-            if (output.nameKnown) {
-                continue;
-            }
-            for (StarColumn column : output.sources) {
-                if (column.source == source) {
-                    return true;
-                }
-            }
+        if (source.rawName != null) {
+            return source.rawName;
         }
-        return false;
+        return source.writtenName == null ? source.displayName : source.writtenName;
     }
 
     private boolean uniqueOutputNames(SourceTable source, String targetTable, int position) {
@@ -4236,20 +4199,7 @@ public class DmlLineage {
 
             SQLSelect select = insert.getQuery();
             if (select != null) {
-                List<SQLExpr> insertColumns = insert.getColumns();
-                Integer previousWidth = targetWidthOverride.get(insertTemp);
-                if (insertColumns != null && !insertColumns.isEmpty()) {
-                    targetWidthOverride.put(insertTemp, insertColumns.size());
-                }
-                try {
-                    processSelect(select);
-                } finally {
-                    if (previousWidth == null) {
-                        targetWidthOverride.remove(insertTemp);
-                    } else {
-                        targetWidthOverride.put(insertTemp, previousWidth);
-                    }
-                }
+                processSelect(select);
             }
 
             String fromTable = stackTargetTable.peek();

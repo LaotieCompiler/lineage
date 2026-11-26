@@ -421,7 +421,7 @@ public class MetadataFreeAnalysisTest {
 
         assertEquals(0, result.getFailures().size());
         assertTrue(result.getGraph().getReverseGraph().containsVertex(
-                new Column("X(y).*")));
+                new Column("\"X(y)\".*")));
         assertFalse(result.getGraph().getReverseGraph().containsVertex(
                 new Column("X.*")));
     }
@@ -637,12 +637,13 @@ public class MetadataFreeAnalysisTest {
                 .scan("SELECT * FROM missing RIGHT JOIN a USING(k);");
 
         assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.v"))),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.v")));
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.*")));
+        Set<Column> wildcardSources = result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.*"));
+        assertTrue(wildcardSources.contains(new Column("missing.*")));
+        assertTrue(wildcardSources.contains(new Column("a.*")));
+        // The positions of merged columns cannot be determined: no column edges.
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(
+                Column.temporary("stmt0.temp0.v")));
     }
 
     @Test
@@ -680,11 +681,12 @@ public class MetadataFreeAnalysisTest {
                 "INSERT INTO t(c1,c2,c3) SELECT * FROM missing RIGHT JOIN a USING(k);");
 
         assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.v"))),
-                result.getGraph().getSources(new Column("t.c3")));
+        Set<Column> wildcardSources = result.getGraph().getSources(new Column("t.*"));
+        assertTrue(wildcardSources.contains(new Column("missing.*")));
+        assertTrue(wildcardSources.contains(new Column("a.*")));
+        // No column position can be determined, so nothing is guessed.
         assertFalse(result.getGraph().getReverseGraph().containsVertex(new Column("t.c2")));
-        assertTrue(result.getGraph().getSources(new Column("t.*"))
-                .contains(new Column("missing.*")));
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(new Column("t.c3")));
     }
 
     @Test
@@ -696,12 +698,12 @@ public class MetadataFreeAnalysisTest {
                 .scan("SELECT * FROM missing LEFT JOIN a USING(k);");
 
         assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.k"))),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.v"))),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.v")));
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.*")));
+        Set<Column> wildcardSources = result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.*"));
+        assertTrue(wildcardSources.contains(new Column("missing.*")));
+        assertTrue(wildcardSources.contains(new Column("a.*")));
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(
+                Column.temporary("stmt0.temp0.v")));
     }
 
     @Test
@@ -743,12 +745,13 @@ public class MetadataFreeAnalysisTest {
                     MetadataContext.of(catalog), optional()).scan(sql);
 
             assertEquals(0, result.getFailures().size());
+            Set<Column> wildcardSources = result.getGraph().getSources(new Column("t.*"));
             assertTrue("wildcard edge lost: " + sql,
-                    result.getGraph().getSources(new Column("t.*"))
-                            .contains(new Column("missing.*")));
-            assertEquals("known column edge lost: " + sql,
-                    new HashSet<>(java.util.Arrays.asList(new Column("b.q"))),
-                    result.getGraph().getSources(new Column("t.c2")));
+                    wildcardSources.contains(new Column("missing.*")));
+            // The derived table's output positions are unknown, so no column edge is
+            // guessed for it.
+            assertFalse("guessed column edge: " + sql,
+                    result.getGraph().getReverseGraph().containsVertex(new Column("t.c2")));
         }
     }
 
@@ -791,6 +794,64 @@ public class MetadataFreeAnalysisTest {
         assertEquals(0, result.getFailures().size());
         assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
                 result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void contractThroughDerivedUnion() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT, v INT);"
+                + " CREATE TABLE b (k INT, q INT, v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+
+        ScanResult unknownNamesFirst = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3) SELECT q.* FROM ("
+                        + "SELECT * FROM missing RIGHT JOIN a USING(k)"
+                        + " UNION ALL SELECT k,q,v FROM b) AS q;");
+        assertEquals(0, unknownNamesFirst.getFailures().size());
+        Set<Column> sources = unknownNamesFirst.getGraph()
+                .getSources(new Column("t.*"));
+        assertTrue(sources.contains(new Column("missing.*")));
+        assertFalse(unknownNamesFirst.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.c2")));
+
+        ScanResult knownNamesFirst = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3) SELECT q.* FROM ("
+                        + "SELECT k,q,v FROM b"
+                        + " UNION ALL SELECT * FROM missing RIGHT JOIN a USING(k)) AS q;");
+        assertEquals(0, knownNamesFirst.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                knownNamesFirst.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.q"))),
+                knownNamesFirst.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void quotedAndQualifiedTableIdentitiesStayDistinct() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t SELECT * FROM \"s.a\"; INSERT INTO u SELECT * FROM s.a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("\"s.a\".*"))),
+                result.getGraph().getSources(new Column("t.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("s.a.*"))),
+                result.getGraph().getSources(new Column("u.*")));
+    }
+
+    @Test
+    public void strictInsertKeepsLegacyProjectionPositions() {
+        ScanResult result = new LineageScanner(DbType.postgresql).scan(
+                "INSERT INTO t(c1,c2,c3) SELECT a.*,b.k FROM a,b;");
+
+        assertEquals(0, result.getFailures().size());
+        List<Instruction> instructions = result.getResults().get(0).getInstructions();
+        assertEquals(3, instructions.size());
+        assertEquals(OperationType.COLUMNS_INJECT, instructions.get(0).getOperation());
+        assertEquals("a", instructions.get(0).getFrom());
+        assertEquals(OperationType.COLUMN_MAPPING, instructions.get(1).getOperation());
+        assertEquals("b.k", instructions.get(1).getFrom());
+        assertEquals(1, instructions.get(1).getOrdinal());
     }
 
     @Test

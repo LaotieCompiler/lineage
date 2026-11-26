@@ -1024,33 +1024,36 @@ public class DmlLineage {
 
     private int staticSourceWidth(SQLExprTableSource table, Map<String, Integer> scope) {
         String rawName = extractTableName(table);
-        if (!isSingleSegmentName(rawName)) {
+        if (rawName == null) {
             return -1;
         }
-        String key = identifierKey(rawName);
-        if (key != null && scope.containsKey(key)) {
-            return scope.get(key);
-        }
-        String cteTarget = findCteTarget(key);
-        if (cteTarget == null) {
-            if (context != null) {
-                TableLocation location = resolveMetadataTable(rawName);
-                if (location != null) {
-                    return Math.max(location.getTable().getFields().size(), 1);
-                }
+        if (isSingleSegmentName(rawName)) {
+            String key = identifierKey(rawName);
+            if (key != null && scope.containsKey(key)) {
+                return scope.get(key);
             }
-            return -1;
+            String cteTarget = findCteTarget(key);
+            if (cteTarget != null) {
+                // A CTE shadows any catalog table with the same name.
+                if (!Boolean.TRUE.equals(targetWidthKnown.get(cteTarget))) {
+                    return -1;
+                }
+                List<String> outputs = targetOutputs.get(cteTarget);
+                int width = outputs == null ? 0 : outputs.size();
+                Integer min = targetMinWidth.get(cteTarget);
+                if (min != null && min > 0) {
+                    width = Math.max(width, min);
+                }
+                return width > 0 ? width : -1;
+            }
         }
-        if (!Boolean.TRUE.equals(targetWidthKnown.get(cteTarget))) {
-            return -1;
+        if (context != null) {
+            TableLocation location = resolveMetadataTable(rawName);
+            if (location != null) {
+                return Math.max(location.getTable().getFields().size(), 1);
+            }
         }
-        List<String> outputs = targetOutputs.get(cteTarget);
-        int width = outputs == null ? 0 : outputs.size();
-        Integer min = targetMinWidth.get(cteTarget);
-        if (min != null && min > 0) {
-            width = Math.max(width, min);
-        }
-        return width > 0 ? width : -1;
+        return -1;
     }
 
     private void processQueryBlock(SQLSelectQueryBlock queryBlock) {

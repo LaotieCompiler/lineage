@@ -2218,6 +2218,23 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void schemaQualifiedBranchWidthBoundsEarlierStar() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);"
+                + " CREATE TABLE s.b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM m UNION ALL SELECT * FROM s.b;"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("s.b.k")));
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

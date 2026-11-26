@@ -3796,6 +3796,87 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void correlatedColumnContributionStaysInItsOwnSlot() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2) SELECT q.* FROM (SELECT b.k, m1.*"
+                        + " FROM b CROSS JOIN m1 UNION ALL SELECT 1,2) AS x"
+                        + " CROSS JOIN m2 CROSS JOIN LATERAL"
+                        + " (SELECT x.k, m2.*) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void outOfRangeSpanDoesNotWidenDerivedStar() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH x AS (SELECT 0 AS k, missing.* FROM missing"
+                        + " UNION ALL SELECT 1,2)"
+                        + " SELECT r.* FROM x CROSS JOIN LATERAL"
+                        + " (SELECT x.k) AS q CROSS JOIN LATERAL"
+                        + " (SELECT q.* UNION ALL SELECT 3) AS r;");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
+    @Test
+    public void unknownWidthTempStarKeepsKnownPrefix() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult traced = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT r.k FROM b CROSS JOIN missing CROSS JOIN LATERAL"
+                        + " (SELECT b.k, missing.*) AS q CROSS JOIN LATERAL"
+                        + " (SELECT q.*) AS r;");
+        assertEquals(0, traced.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                traced.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+
+        ScanResult mismatch = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT r.* FROM t CROSS JOIN missing CROSS JOIN LATERAL"
+                        + " (SELECT t.*, missing.*) AS q CROSS JOIN LATERAL"
+                        + " (SELECT q.* UNION ALL SELECT 1,2) AS r;");
+        assertTrue(mismatch.getResults().get(0).getError()
+                instanceof IllegalStateException);
+    }
+
+    @Test
+    public void lateralWithLocalFromRejectsHiddenAlias() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "SELECT q.k FROM b AS x"
+                        + " CROSS JOIN LATERAL (SELECT b.k FROM c) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+    }
+
+    @Test
+    public void sameScopeDuplicateQualifiersAreAmbiguous() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.b (k INT);"
+                + " CREATE TABLE s2.b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM s1.b CROSS JOIN s2.b"
+                        + " CROSS JOIN LATERAL (SELECT b.k) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

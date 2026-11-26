@@ -2436,7 +2436,7 @@ public class DmlLineage {
                 int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
                 if (width > 0) {
                     List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
-                    int limit = Math.max(width, maxSpanEnd(spans));
+                    int limit = width;
                     for (int i = 0; i < limit; i++) {
                         boolean named = sourceOutputNameKnown(source, i)
                                 && i < names.size();
@@ -2481,6 +2481,20 @@ public class DmlLineage {
                     return limit;
                 }
                 List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
+                int knownPrefix = 0;
+                for (int i = 0; i < names.size() && sourceOutputNameKnown(source, i);
+                        i++) {
+                    String name = names.get(i);
+                    String outputName = declared != null
+                            && position + i < declared.size()
+                                    ? declared.get(position + i) : name;
+                    setTargetOutput(target, position + i, outputName,
+                            identifierKey(outputName));
+                    markOutputNameKnown(target, position + i, true);
+                    addOuterColumnMapping(source, name, target, outputName,
+                            position + i, Boolean.FALSE);
+                    knownPrefix = i + 1;
+                }
                 if (!spans.isEmpty()) {
                     for (WildcardSpan span : spans) {
                         Instruction wildcard = new Instruction(
@@ -2499,17 +2513,19 @@ public class DmlLineage {
                                 span.source, span.temporary);
                         targetWildcardContribution.put(target, Boolean.TRUE);
                     }
-                    return -1;
+                } else {
+                    Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                            lineageTableName(source), target, position,
+                            source.temporary, tempTables.contains(target));
+                    wildcard.setPositionalWildcard(true);
+                    recordWildcardSpan(target, position, Integer.MAX_VALUE,
+                            lineageTableName(source), source.temporary);
+                    instructions.add(wildcard);
+                    targetWildcardContribution.put(target, Boolean.TRUE);
                 }
-                Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                        lineageTableName(source), target, position,
-                        source.temporary, tempTables.contains(target));
-                wildcard.setPositionalWildcard(true);
-                recordWildcardSpan(target, position, Integer.MAX_VALUE,
-                        lineageTableName(source), source.temporary);
-                instructions.add(wildcard);
-                targetWildcardContribution.put(target, Boolean.TRUE);
-                return -1;
+                int minimum = Math.max(Math.max(knownPrefix, source.minOutputColumns),
+                        maxSpanEnd(spans));
+                return -Math.max(minimum, 1);
             }
             int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
             if (width > 0 && sourceColumnNamesKnown(source)) {
@@ -2741,39 +2757,38 @@ public class DmlLineage {
                 target + "." + renderIdentifier(targetName), position,
                 source.temporary, tempTables.contains(target)));
         if (source.wildcardContribution && source.temporary) {
-            List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
-            if (spans.isEmpty()) {
-                addOuterWildcard(source, target, position);
-            } else {
-                for (WildcardSpan span : spans) {
-                    if (span.end == Integer.MAX_VALUE) {
-                        Instruction open = new Instruction(
-                                OperationType.COLUMNS_INJECT, span.source, target,
-                                position + span.start, span.temporary,
-                                tempTables.contains(target));
-                        open.setPositionalWildcard(true);
-                        instructions.add(open);
-                        recordWildcardSpan(target, position + span.start,
-                                Integer.MAX_VALUE, span.source, span.temporary);
-                        targetWildcardContribution.put(target, Boolean.TRUE);
-                        continue;
-                    }
-                    for (int offset = span.start; offset < span.end; offset++) {
-                        Instruction wildcard = new Instruction(
-                                OperationType.COLUMNS_INJECT, span.source, target,
-                                position + offset, span.temporary,
-                                tempTables.contains(target));
-                        wildcard.setPositionalWildcard(true);
-                        wildcard.setWildcardWidthKnown(true);
-                        wildcard.setWildcardWidth(1);
-                        instructions.add(wildcard);
-                        recordWildcardSpan(target, position + offset,
-                                position + offset + 1, span.source, span.temporary);
-                        targetWildcardContribution.put(target, Boolean.TRUE);
-                    }
+            int relative = -1;
+            String key = identifierKey(column);
+            for (int i = 0; i < source.outputKeys.size(); i++) {
+                if (key != null && key.equals(source.outputKeys.get(i))) {
+                    relative = i;
+                    break;
                 }
             }
+            List<WildcardSpan> spans = relative < 0
+                    ? java.util.Collections.<WildcardSpan>emptyList()
+                    : wildcardSpansOf(source.displayName);
+            for (WildcardSpan span : spans) {
+                if (relative < span.start || relative >= span.end) {
+                    continue;
+                }
+                // Only the wildcard covering the selected column contributes.
+                addOuterWildcard(span.source, target, position, span.temporary);
+            }
         }
+    }
+
+    private void addOuterWildcard(String sourceName, String target, int position,
+            boolean temporary) {
+        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                sourceName, target, position, temporary,
+                tempTables.contains(target));
+        wildcard.setPositionalWildcard(true);
+        wildcard.setWildcardWidthKnown(true);
+        wildcard.setWildcardWidth(1);
+        instructions.add(wildcard);
+        recordWildcardSpan(target, position, position + 1, sourceName, temporary);
+        targetWildcardContribution.put(target, Boolean.TRUE);
     }
 
     private void addOuterWildcardOpen(SourceTable source, String target,
@@ -5268,12 +5283,12 @@ public class DmlLineage {
         }
         String rawOwner = owner.toString();
         String ownerKey = qualifiedKey(rawOwner);
-        SourceTable direct = findByOwner(owner);
-        if (direct != null && lateralScopeActive() && direct.alias != null
-                && !qualifiedKey(direct.alias).equals(ownerKey)) {
-            // Inside a LATERAL body an alias hides the original table name.
-            direct = null;
+        List<SourceTable> matches = visibleOwnerMatches(owner);
+        if (matches.size() > 1) {
+            throw new AmbiguousColumnException(normalizeIdentifier(lastSegment(rawOwner)),
+                    displayNames(matches));
         }
+        SourceTable direct = matches.isEmpty() ? null : matches.get(0);
         if (direct != null) {
             return new CorrelatedOwner(direct, null);
         }
@@ -5308,6 +5323,52 @@ public class DmlLineage {
             }
         }
         return null;
+    }
+
+    private List<SourceTable> visibleOwnerMatches(SQLExpr owner) {
+        List<SourceTable> matches = new ArrayList<>();
+        if (owner == null) {
+            return matches;
+        }
+        String rawOwner = owner.toString();
+        String ownerKey = qualifiedKey(rawOwner);
+        String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
+        for (SourceTable source : visibleSources()) {
+            boolean matched;
+            if (source.alias != null) {
+                // An alias hides the original table name.
+                matched = qualifiedKey(source.alias).equals(ownerKey);
+            } else {
+                String reference = source.rawName != null
+                        ? source.rawName : source.displayName;
+                matched = qualifiedKey(reference).equals(ownerKey);
+                if (!matched && source.displayName != null
+                        && (source.rawName == null
+                                || !MetadataCatalog.isQuotedIdentifier(
+                                        source.rawName))) {
+                    matched = qualifiedKey(source.displayName).equals(ownerKey);
+                }
+                if (!matched && ownerParts.length > 0) {
+                    String[] referenceParts = MetadataCatalog
+                            .splitQualifiedNamePreservingQuotes(reference);
+                    if (ownerParts.length <= referenceParts.length) {
+                        matched = true;
+                        for (int i = 0; i < ownerParts.length; i++) {
+                            if (!identifierKey(ownerParts[i]).equals(identifierKey(
+                                    referenceParts[referenceParts.length
+                                            - ownerParts.length + i]))) {
+                                matched = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (matched) {
+                matches.add(source);
+            }
+        }
+        return matches;
     }
 
     private SourceTable findVisibleOwnerStrict(SQLExpr owner) {
@@ -5446,7 +5507,7 @@ public class DmlLineage {
                 bindJoinProperty(binding, rawName, name);
                 return;
             }
-            if (context != null) {
+            if (context != null || lateralScopeActive()) {
                 throw new MetadataNotFoundException(
                         property.getOwner() == null ? name : property.getOwner().toString());
             }

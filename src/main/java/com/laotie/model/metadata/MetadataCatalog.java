@@ -739,7 +739,14 @@ public class MetadataCatalog {
             if ((first == '`' && last == '`')
                     || (first == '"' && last == '"')
                     || (first == '[' && last == ']')) {
-                return value.substring(1, value.length() - 1);
+                String inner = value.substring(1, value.length() - 1);
+                if (first == '"') {
+                    return inner.replace("\"\"", "\"").replace("\\\"", "\"");
+                }
+                if (first == '`') {
+                    return inner.replace("``", "`");
+                }
+                return inner;
             }
         }
         return value;

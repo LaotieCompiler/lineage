@@ -2641,14 +2641,11 @@ public class MetadataFreeAnalysisTest {
                         + " SELECT * FROM y;");
 
         assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(
-                Column.temporary("stmt0.x.v"))),
+        // The padded position has no known name, so the outer star keeps a table-level
+        // claim instead of inventing a column mapping.
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m.*"))),
                 result.getGraph().getSources(
-                        Column.temporary("stmt0.temp0.v")));
-        assertEquals(new HashSet<>(java.util.Arrays.asList(
-                Column.temporary("stmt0.x.col2"))),
-                result.getGraph().getSources(
-                        Column.temporary("stmt0.temp0.col2")));
+                        Column.temporary("stmt0.temp0.*")));
     }
 
     @Test
@@ -2676,6 +2673,76 @@ public class MetadataFreeAnalysisTest {
         assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.K"))),
                 result.getGraph().getSources(
                         Column.temporary("stmt0.temp0.K")));
+    }
+
+    @Test
+    public void paddedDeclaredPositionKeepsTableLevelProvenance() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM x UNION ALL SELECT 3, 4),"
+                        + " x(v) AS (SELECT * FROM m UNION ALL SELECT 1, 2)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m.*"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.*")));
+    }
+
+    @Test
+    public void paddedWidthUsesSiblingCteScope() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM x UNION ALL SELECT 3, 4),"
+                        + " x(v) AS (SELECT * FROM m UNION ALL SELECT * FROM z),"
+                        + " z AS (SELECT 1, 2) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
+    public void unknownLocalCteShadowsPhysicalTableInStaticNames() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (v INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT k FROM x CROSS JOIN b),"
+                        + " x AS (WITH t AS (SELECT * FROM m) SELECT * FROM t)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(1, result.getResults().size());
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void escapedAliasSurvivesOuterStarProjection() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.\"a\"\"b\" FROM x),"
+                        + " x AS (SELECT k AS \"a\"\"b\" FROM b)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        Column output = null;
+        for (Column vertex : result.getGraph().getReverseGraph().vertexSet()) {
+            if (vertex.isTemporary() && "stmt0.temp0".equals(vertex.getTableName())
+                    && "a\"b".equals(vertex.getColumnName())) {
+                output = vertex;
+            }
+        }
+        assertNotNull(output);
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(output));
     }
 
     @Test

@@ -707,6 +707,31 @@ public class DmlLineage {
             // A sibling's columns are visible to earlier bodies too, so derive the
             // names that can be known statically before any body is analyzed.
             Map<String, List<String>> nameScope = new HashMap<>();
+            Map<String, Integer> widthScope = new HashMap<>();
+            for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
+                if (entry.getAlias() != null) {
+                    String key = identifierKey(entry.getAlias());
+                    nameScope.put(key, null);
+                    widthScope.put(key, -1);
+                }
+            }
+            int widthGuard = withSubQuery.getEntries().size() + 1;
+            boolean widthChanged = true;
+            while (widthChanged && widthGuard-- > 0) {
+                widthChanged = false;
+                for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
+                    String alias = entry.getAlias();
+                    if (alias == null) {
+                        continue;
+                    }
+                    int width = staticSelectWidth(entry.getSubQuery(), widthScope);
+                    String key = identifierKey(alias);
+                    if (width >= 0 && !Integer.valueOf(width).equals(widthScope.get(key))) {
+                        widthScope.put(key, width);
+                        widthChanged = true;
+                    }
+                }
+            }
             int guard = withSubQuery.getEntries().size() + 1;
             boolean changed = true;
             while (changed && guard-- > 0) {
@@ -719,7 +744,8 @@ public class DmlLineage {
                     List<String> names = staticOutputNames(entry.getSubQuery(), nameScope);
                     List<String> declared = rawDeclaredColumns(entry);
                     if (names == null && declared != null) {
-                        names = padToStaticWidth(declared, entry.getSubQuery());
+                        names = padToStaticWidth(declared, entry.getSubQuery(),
+                                widthScope);
                     }
                     names = mergeDeclaredColumns(declared, names);
                     if (names != null) {
@@ -743,14 +769,21 @@ public class DmlLineage {
                             usedKeys.add(identifierKey(raw));
                         }
                     }
+                    boolean namesKnown = true;
                     for (int i = 0; i < names.size(); i++) {
                         String raw = names.get(i);
                         String key;
                         String display;
                         if (raw == null) {
-                            // A constant owns a position but can never match a column
-                            // reference, so give it an unmatchable key and a display
-                            // name that cannot shadow an explicit alias.
+                            // A padded position has no known column name.
+                            display = "col" + (i + 1);
+                            while (usedKeys.contains(identifierKey(display))) {
+                                display = display + "_";
+                            }
+                            usedKeys.add(identifierKey(display));
+                            key = CONSTANT_OUTPUT_PREFIX + "unknown:" + i;
+                            namesKnown = false;
+                        } else if (CONSTANT_EXPRESSION.equals(raw)) {
                             display = "col" + (i + 1);
                             while (usedKeys.contains(identifierKey(display))) {
                                 display = display + "_";
@@ -763,12 +796,14 @@ public class DmlLineage {
                             key = identifierKey(spelling);
                         }
                         setTargetOutput(target, i, display, key);
-                        markOutputNameKnown(target, i, true);
+                        if (raw != null) {
+                            markOutputNameKnown(target, i, true);
+                        }
                     }
                     // Make the sibling's shape visible before its body is analyzed;
                     // recordTargetShape overwrites this with the analyzed result.
                     targetWidthKnown.put(target, true);
-                    targetNamesKnown.put(target, true);
+                    targetNamesKnown.put(target, namesKnown);
                     targetMinWidth.put(target, names.size());
                 }
             }
@@ -963,6 +998,7 @@ public class DmlLineage {
     }
 
     private static final String CONSTANT_OUTPUT_PREFIX = "\u0000constant:";
+    private static final String CONSTANT_EXPRESSION = "\u0000constant-expression";
 
     /**
      * Column names a query will produce when they can be derived without analyzing
@@ -1012,12 +1048,11 @@ public class DmlLineage {
                     if (alias == null) {
                         continue;
                     }
-                    List<String> names = mergeDeclaredColumns(
+                    // Register the name even when its shape is unknown, so it still
+                    // shadows a same-named physical table.
+                    nested.put(identifierKey(alias), mergeDeclaredColumns(
                             rawDeclaredColumns(entry),
-                            staticOutputNames(entry.getSubQuery(), nested));
-                    if (names != null) {
-                        nested.put(identifierKey(alias), names);
-                    }
+                            staticOutputNames(entry.getSubQuery(), nested)));
                 }
             }
         }
@@ -1043,10 +1078,11 @@ public class DmlLineage {
         return merged;
     }
 
-    private List<String> padToStaticWidth(List<String> declared, SQLSelect select) {
+    private List<String> padToStaticWidth(List<String> declared, SQLSelect select,
+            Map<String, Integer> widthScope) {
         int width;
         try {
-            width = staticSelectWidth(select, new HashMap<String, Integer>());
+            width = staticSelectWidth(select, widthScope);
         } catch (RuntimeException e) {
             width = -1;
         }
@@ -1072,7 +1108,8 @@ public class DmlLineage {
     }
 
     private static String unescapeQuotedName(String raw) {
-        return raw.replace("\"\"", "\"").replace("``", "`");
+        return raw.replace("\"\"", "\"").replace("\\\"", "\"")
+                .replace("``", "`");
     }
 
     private static String rawProjectionName(SQLPropertyExpr expr) {
@@ -1137,7 +1174,9 @@ public class DmlLineage {
                     }
                     names.addAll(star);
                 } else {
-                    names.add(null);
+                    // A constant owns a position but does not name a column; keep it
+                    // distinct from a padded unknown position (null).
+                    names.add(CONSTANT_EXPRESSION);
                 }
             }
             return names;
@@ -4281,7 +4320,19 @@ public class DmlLineage {
             }
             boolean planAmbiguous = node != null && node.widthKnown
                     && hasAmbiguousOutput(node.plan, node.width);
-            if (!planAmbiguous && !uncertainPosition && node != null
+            boolean pendingShape = false;
+            for (SourceTable source : sources) {
+                if (source.temporary && !sourceNamesKnown(source)
+                        && sourceWidthKnown(source)
+                        && wildcardSpansOf(source.displayName).isEmpty()) {
+                    // A forward CTE has a known width but its body has not run yet,
+                    // so its wildcard provenance is still unknown; keep a table-level
+                    // claim instead of emitting nothing.
+                    pendingShape = true;
+                    break;
+                }
+            }
+            if (!planAmbiguous && !pendingShape && !uncertainPosition && node != null
                     && node.widthKnown && !node.plan.isEmpty()) {
                 int position = startPosition;
                 int limit = startPosition + node.width;

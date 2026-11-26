@@ -2324,6 +2324,25 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void cteLeafDoesNotTriggerCatalogAmbiguityInPrepass() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.x (v INT);"
+                + " CREATE TABLE s2.x (v INT); CREATE TABLE s.b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH x AS (SELECT 0)"
+                        + " SELECT 1 UNION ALL"
+                        + " SELECT s.b.* FROM x CROSS JOIN s.b;");
+
+        assertEquals(0, result.getFailures().size());
+        // The union takes its output name from the first branch, so the physical
+        // column lands on that position.
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.\"1\""))
+                .contains(new Column("s.b.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

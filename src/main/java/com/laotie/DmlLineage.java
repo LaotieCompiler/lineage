@@ -922,6 +922,12 @@ public class DmlLineage {
             if (name == null) {
                 return null;
             }
+            if (isSingleSegmentName(name)
+                    && findCteTarget(identifierKey(name)) != null) {
+                // The leaf binds to a CTE; a qualified owner never refers to it and
+                // the catalog must not be consulted for the CTE's name.
+                return null;
+            }
             // Compare the bound identity, which honors search_path and per-segment
             // quoting, and keep the written spelling for quoted names whose display
             // form drops the quotes.

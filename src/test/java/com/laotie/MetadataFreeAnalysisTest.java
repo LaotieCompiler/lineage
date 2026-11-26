@@ -2859,6 +2859,39 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void existsSubqueryCteShadowsPhysicalTable() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);"
+                + " CREATE TABLE s1.z (v INT); CREATE TABLE s2.z (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT b.k FROM b"
+                        + " WHERE EXISTS (WITH z AS (SELECT 1) SELECT * FROM z);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void lateralSubqueryResolvesForwardCte() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS ("
+                        + "SELECT * FROM LATERAL (SELECT * FROM x) AS q),"
+                        + " x(v) AS (SELECT * FROM m UNION ALL SELECT 1)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

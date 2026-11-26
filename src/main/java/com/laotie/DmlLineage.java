@@ -102,6 +102,7 @@ public class DmlLineage {
     private Set<String> tempTables;
     private Set<String> usedTargets;
     private Stack<Map<String, String>> cteScopes;
+    private Stack<Set<String>> collectCteScopes;
     private Stack<Map<String, List<String>>> targetColumnAliases;
     private Map<String, List<String>> cteDeclaredColumns;
     private Map<String, List<String>> cteDeclaredKeys;
@@ -814,7 +815,13 @@ public class DmlLineage {
             collectSourceReferences(join.getLeft(), refs, shadowed);
             collectSourceReferences(join.getRight(), refs, shadowed);
         } else if (from instanceof SQLExprTableSource) {
-            String name = extractTableName((SQLExprTableSource) from);
+            SQLExprTableSource exprTable = (SQLExprTableSource) from;
+            SQLSelect inline = queryExpressionSelect(exprTable.getExpr());
+            if (inline != null) {
+                collectSelectReferences(inline, refs, shadowed);
+                return;
+            }
+            String name = extractTableName(exprTable);
             if (name != null && isSingleSegmentName(name)) {
                 String key = identifierKey(name);
                 if (!shadowed.contains(key)) {
@@ -1428,8 +1435,30 @@ public class DmlLineage {
         return null;
     }
 
+    private static SQLSelect queryExpressionSelect(SQLExpr expr) {
+        if (expr instanceof SQLQueryExpr) {
+            return ((SQLQueryExpr) expr).getSubQuery();
+        }
+        if (expr instanceof SQLMethodInvokeExpr) {
+            SQLMethodInvokeExpr call = (SQLMethodInvokeExpr) expr;
+            if ("LATERAL".equalsIgnoreCase(call.getMethodName())
+                    && call.getArguments() != null) {
+                for (SQLExpr argument : call.getArguments()) {
+                    if (argument instanceof SQLQueryExpr) {
+                        return ((SQLQueryExpr) argument).getSubQuery();
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     private List<String> staticSourceNames(SQLExprTableSource table,
             Map<String, List<String>> scope) {
+        SQLSelect inline = queryExpressionSelect(table.getExpr());
+        if (inline != null) {
+            return staticOutputNames(inline, scope);
+        }
         String name = extractTableName(table);
         if (name == null) {
             return null;
@@ -1692,6 +1721,10 @@ public class DmlLineage {
     }
 
     private int staticSourceWidth(SQLExprTableSource table, Map<String, Integer> scope) {
+        SQLSelect inline = queryExpressionSelect(table.getExpr());
+        if (inline != null) {
+            return staticSelectWidth(inline, scope);
+        }
         String rawName = extractTableName(table);
         if (rawName == null) {
             return -1;
@@ -2629,6 +2662,35 @@ public class DmlLineage {
                 }
             }
             return joined;
+        }
+        if (tableSource instanceof SQLExprTableSource
+                && queryExpressionSelect(
+                        ((SQLExprTableSource) tableSource).getExpr()) != null) {
+            // Druid parses LATERAL (SELECT ...) as a method-call expression.
+            SQLExprTableSource lateral = (SQLExprTableSource) tableSource;
+            SQLSelect body = queryExpressionSelect(lateral.getExpr());
+            String alias = lateral.getAlias();
+            String target = alias != null ? uniqueTarget(alias) : getTempTableName();
+            tempTables.add(target);
+            processDerivedBody(target, body, lateral.getColumns());
+            List<String> derivedOutputs = copyOutputs(targetOutputs.get(target));
+            boolean widthKnown = isOutputWidthKnown(target, derivedOutputs);
+            boolean namesKnown = isOutputNamesKnown(target, derivedOutputs);
+            int derivedWidth = derivedWidth(target, derivedOutputs, widthKnown);
+            SourceTable source = new SourceTable(target, null, null, alias, null, true,
+                    widthKnown, namesKnown, derivedOutputs, copyKeys(target),
+                    copyNameKnown(target, derivedOutputs.size()),
+                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
+                    copyUnknownGroups(target, derivedOutputs.size()), false,
+                    hasWildcardContribution(target));
+            return new SourceNode(java.util.Collections.singletonList(source),
+                    planFromSource(source), namesKnown, widthKnown, derivedWidth,
+                    targetMinimumColumns(target, widthKnown, derivedWidth), 0,
+                    derivedWidth,
+                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
+                            : java.util.Collections.singletonList(source),
+                    java.util.Collections.<SourceTable>emptyList(),
+                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
         }
         if (tableSource instanceof SQLSubqueryTableSource) {
             SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) tableSource;
@@ -5563,12 +5625,41 @@ public class DmlLineage {
         if (select == null) {
             return;
         }
-        if (select.getWithSubQuery() != null) {
-            for (SQLWithSubqueryClause.Entry entry : select.getWithSubQuery().getEntries()) {
-                collectTablesFromSelect(entry.getSubQuery());
+        SQLWithSubqueryClause with = select.getWithSubQuery();
+        if (with != null) {
+            Set<String> local = new HashSet<>();
+            collectCteScopes.push(local);
+            try {
+                boolean recursive = Boolean.TRUE.equals(with.getRecursive());
+                if (recursive) {
+                    for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                        if (entry.getAlias() != null) {
+                            local.add(identifierKey(entry.getAlias()));
+                        }
+                    }
+                }
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    collectTablesFromSelect(entry.getSubQuery());
+                    if (!recursive && entry.getAlias() != null) {
+                        local.add(identifierKey(entry.getAlias()));
+                    }
+                }
+                collectTablesFromQuery(select.getQuery());
+            } finally {
+                collectCteScopes.pop();
             }
+            return;
         }
         collectTablesFromQuery(select.getQuery());
+    }
+
+    private boolean collectCteNameVisible(String key) {
+        for (Set<String> frame : collectCteScopes) {
+            if (frame.contains(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void collectTablesFromQuery(SQLSelectQuery query) {
@@ -5595,7 +5686,19 @@ public class DmlLineage {
         } else if (tableSource instanceof SQLUnionQueryTableSource) {
             collectTablesFromQuery(((SQLUnionQueryTableSource) tableSource).getUnion());
         } else if (tableSource instanceof SQLExprTableSource) {
-            resolveSource((SQLExprTableSource) tableSource);
+            SQLExprTableSource exprTable = (SQLExprTableSource) tableSource;
+            SQLSelect inline = queryExpressionSelect(exprTable.getExpr());
+            if (inline != null) {
+                collectTablesFromSelect(inline);
+                return;
+            }
+            String name = extractTableName(exprTable);
+            if (name != null && isSingleSegmentName(name)
+                    && (collectCteNameVisible(identifierKey(name))
+                            || findCteTarget(identifierKey(name)) != null)) {
+                return;
+            }
+            resolveSource(exprTable);
         }
     }
 
@@ -5608,6 +5711,7 @@ public class DmlLineage {
         tempTables = new HashSet<>();
         usedTargets = new HashSet<>();
         cteScopes = new Stack<>();
+        collectCteScopes = new Stack<>();
         targetColumnAliases = new Stack<>();
         cteDeclaredColumns = new HashMap<>();
         cteDeclaredKeys = new HashMap<>();

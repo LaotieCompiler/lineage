@@ -2695,16 +2695,44 @@ public class DmlLineage {
         return max;
     }
 
-    private WildcardRef wildcardSourceAt(SourceTable source, int relative) {
+    private int relativeColumnIndex(SourceTable source, StarColumn column) {
+        List<String> keys = sourceColumnKeys(source);
+        if (column.key != null) {
+            for (int i = 0; i < keys.size(); i++) {
+                if (column.key.equals(keys.get(i))) {
+                    return i;
+                }
+            }
+        }
+        List<String> names = sourceColumnNames(source);
+        for (int i = 0; i < names.size(); i++) {
+            if (names.get(i).equals(column.column)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private List<WildcardRef> wildcardSourcesAt(SourceTable source, StarColumn column,
+            int fallbackRelative) {
+        List<WildcardRef> refs = new ArrayList<>();
         if (!source.temporary) {
-            return new WildcardRef(lineageTableName(source), false);
+            refs.add(new WildcardRef(lineageTableName(source), false));
+            return refs;
+        }
+        int relative = relativeColumnIndex(source, column);
+        if (relative < 0) {
+            relative = fallbackRelative;
         }
         for (WildcardSpan span : wildcardSpansOf(source.displayName)) {
             if (relative >= span.start && relative < span.end) {
-                return new WildcardRef(span.source, span.temporary);
+                WildcardRef ref = new WildcardRef(span.source, span.temporary);
+                if (!refs.contains(ref)) {
+                    refs.add(ref);
+                }
             }
         }
-        return null;
+        return refs;
     }
 
     private static final class WildcardRef {
@@ -2714,6 +2742,21 @@ public class DmlLineage {
         private WildcardRef(String name, boolean temporary) {
             this.name = name;
             this.temporary = temporary;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof WildcardRef)) {
+                return false;
+            }
+            WildcardRef ref = (WildcardRef) other;
+            return temporary == ref.temporary
+                    && (name == null ? ref.name == null : name.equals(ref.name));
+        }
+
+        @Override
+        public int hashCode() {
+            return (name == null ? 0 : name.hashCode()) * 31 + (temporary ? 1 : 0);
         }
     }
 
@@ -3615,11 +3658,24 @@ public class DmlLineage {
                 List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
                 int sourceWidth = sourceColumnsKnown(source)
                         ? Math.max(sourceColumnNames(source).size(), maxSpanEnd(spans))
-                        : currentStarBudget > 0 ? currentStarBudget : maxSpanEnd(spans);
+                        : currentStarBudget > 0 ? currentStarBudget : -1;
                 for (WildcardSpan span : spans) {
+                    if (sourceWidth <= 0 && span.end == Integer.MAX_VALUE) {
+                        // No width is known yet: keep the span open so an outer
+                        // projection can bound it instead of shrinking it to one column.
+                        Instruction wildcard = new Instruction(
+                                OperationType.COLUMNS_INJECT, span.source, targetTable,
+                                startPosition + span.start, span.temporary, targetTemporary);
+                        wildcard.setPositionalWildcard(true);
+                        instructions.add(wildcard);
+                        recordWildcardSpan(targetTable, startPosition + span.start,
+                                Integer.MAX_VALUE, span.source, span.temporary);
+                        continue;
+                    }
+                    int width = sourceWidth > 0 ? sourceWidth : maxSpanEnd(spans);
                     int end = span.end == Integer.MAX_VALUE
-                            ? Math.max(sourceWidth, span.start + 1)
-                            : Math.min(span.end, Math.max(sourceWidth, span.start + 1));
+                            ? Math.max(width, span.start + 1)
+                            : Math.min(span.end, Math.max(width, span.start + 1));
                     for (int position = span.start; position < end; position++) {
                         Instruction wildcard = new Instruction(
                                 OperationType.COLUMNS_INJECT, span.source, targetTable,
@@ -3632,7 +3688,7 @@ public class DmlLineage {
                                 startPosition + position + 1, span.source, span.temporary);
                     }
                 }
-                return Math.max(sourceWidth, 1);
+                return Math.max(sourceWidth > 0 ? sourceWidth : maxSpanEnd(spans), 1);
             }
             if (node != null && node.widthKnown && !node.plan.isEmpty()) {
                 int position = startPosition;
@@ -3647,19 +3703,18 @@ public class DmlLineage {
                         int relative = seen.containsKey(source)
                                 ? seen.get(source) : 0;
                         seen.put(source, relative + 1);
-                        WildcardRef ref = wildcardSourceAt(source, relative);
-                        if (ref == null) {
-                            continue;
+                        for (WildcardRef ref : wildcardSourcesAt(source, column,
+                                relative)) {
+                            Instruction wildcard = new Instruction(
+                                    OperationType.COLUMNS_INJECT, ref.name, targetTable,
+                                    position, ref.temporary, targetTemporary);
+                            wildcard.setPositionalWildcard(true);
+                            wildcard.setWildcardWidthKnown(true);
+                            wildcard.setWildcardWidth(1);
+                            instructions.add(wildcard);
+                            recordWildcardSpan(targetTable, position, position + 1,
+                                    ref.name, ref.temporary);
                         }
-                        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                                ref.name, targetTable, position,
-                                ref.temporary, targetTemporary);
-                        wildcard.setPositionalWildcard(true);
-                        wildcard.setWildcardWidthKnown(true);
-                        wildcard.setWildcardWidth(1);
-                        instructions.add(wildcard);
-                        recordWildcardSpan(targetTable, position, position + 1,
-                                ref.name, ref.temporary);
                     }
                     position++;
                 }

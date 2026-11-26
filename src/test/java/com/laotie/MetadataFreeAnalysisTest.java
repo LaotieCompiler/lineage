@@ -1793,6 +1793,61 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void overlappingUnionSourcesShareDerivedPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT, w INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3) SELECT * FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT * FROM m2"
+                        + " UNION ALL SELECT 1) AS q CROSS JOIN b;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = result.getGraph().getSources(new Column("t.c1"));
+        assertTrue(sources.contains(new Column("m1.*")));
+        assertTrue(sources.contains(new Column("m2.*")));
+    }
+
+    @Test
+    public void joinUsingMergedKeyDoesNotShiftDerivedWildcard() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT, w INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3) SELECT * FROM ("
+                        + "SELECT m1.*, 0 AS k FROM m1"
+                        + " UNION ALL SELECT 2, 3 AS k) AS q"
+                        + " LEFT JOIN b USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("m1.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.*"))),
+                result.getGraph().getSources(new Column("t.c3")));
+    }
+
+    @Test
+    public void nestedDerivedOpenWildcardSurvivesIntermediateProjection() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT * FROM ("
+                        + "SELECT * FROM (SELECT * FROM missing) AS q) AS r"
+                        + " UNION ALL SELECT 1, 2;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

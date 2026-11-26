@@ -1318,8 +1318,9 @@ public class DmlLineage {
             // Contract: a projection that follows an unknown-width wildcard has an
             // undetermined position, so no column-level edge may be guessed for it.
             uncertainOrdinal = positionalWidth > 0 && !positionCertain
-                    || detachedMetadata() && (unknownStar || unknownStarSeen) ? start : -1;
-            if (unknownStar) {
+                    || detachedMetadata() && unknownStarSeen ? start : -1;
+            if (unknownStar && !starOutputWidthKnown(itemExpr)) {
+                // Only an unknown-width wildcard leaves later positions undetermined.
                 unknownStarSeen = true;
             }
             currentOrdinal = start;
@@ -1624,6 +1625,38 @@ public class DmlLineage {
             return source.outputColumns.size();
         }
         return source.minOutputColumns;
+    }
+
+    private boolean starOutputWidthKnown(SQLExpr expr) {
+        if (expr instanceof SQLAllColumnExpr) {
+            if (!stackSourceNode.isEmpty()) {
+                return stackSourceNode.peek().widthKnown;
+            }
+            List<SourceTable> sources = currentSources();
+            if (sources.isEmpty()) {
+                return false;
+            }
+            for (SourceTable source : sources) {
+                if (!source.outputWidthKnown) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (isStarProperty(expr)) {
+            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
+            SourceTable source = findByOwner(owner);
+            if (source != null) {
+                if (source.metadataTable != null || source.outputWidthKnown) {
+                    return true;
+                }
+                return source.temporary
+                        && Boolean.TRUE.equals(targetWidthKnown.get(source.displayName));
+            }
+            SourceNode binding = joinBinding(owner);
+            return binding != null && binding.widthKnown;
+        }
+        return true;
     }
 
     private boolean outputWidthKnown(SQLSelectItem item) {
@@ -2133,8 +2166,15 @@ public class DmlLineage {
         List<StarOutput> leftPlan = new ArrayList<>(left);
         List<StarOutput> rightPlan = new ArrayList<>(right);
         List<StarOutput> merged = new ArrayList<>();
+        boolean ambiguousMerge = false;
         for (SQLExpr expr : using) {
             String key = identifierKey(expr.toString());
+            if (!leftKnown && !hasUniqueUsingColumn(leftPlan, key)
+                    || !rightKnown && !hasUniqueUsingColumn(rightPlan, key)) {
+                // More than one candidate column on an unnamed side: which position the
+                // USING key occupies cannot be determined, so no position may be fixed.
+                ambiguousMerge = true;
+            }
             StarOutput leftColumn = removeFirstMatching(leftPlan, key);
             StarOutput rightColumn = removeFirstMatching(rightPlan, key);
             // When one side's output names are unknown, the USING column still owns a
@@ -2187,7 +2227,30 @@ public class DmlLineage {
             // Right-side positions shift when the left subtree's width is unknown.
             merged.add(leftWidthKnown ? output : output.withStable(false));
         }
+        if (ambiguousMerge) {
+            for (int i = 0; i < merged.size(); i++) {
+                merged.set(i, merged.get(i).withAmbiguous(true));
+            }
+        }
         return merged;
+    }
+
+    private static boolean hasUniqueUsingColumn(List<StarOutput> plan, String key) {
+        int known = 0;
+        int unknown = 0;
+        for (StarOutput output : plan) {
+            if (!output.nameKnown) {
+                unknown++;
+                continue;
+            }
+            for (StarColumn column : output.sources) {
+                if (key.equals(column.key)) {
+                    known++;
+                    break;
+                }
+            }
+        }
+        return known == 1 || known == 0 && unknown == 1;
     }
 
     private static boolean sameUnknownGroup(SourceTable source) {
@@ -2683,6 +2746,20 @@ public class DmlLineage {
                 : new ArrayList<>(spans);
     }
 
+    private static boolean hasAmbiguousOutput(List<StarOutput> plan, int limit) {
+        int position = 0;
+        for (StarOutput output : plan) {
+            if (position >= limit) {
+                break;
+            }
+            if (output.ambiguous) {
+                return true;
+            }
+            position++;
+        }
+        return false;
+    }
+
     private static int maxSpanEnd(List<WildcardSpan> spans) {
         int max = 0;
         for (WildcardSpan span : spans) {
@@ -2698,19 +2775,32 @@ public class DmlLineage {
     private int relativeColumnIndex(SourceTable source, StarColumn column) {
         List<String> keys = sourceColumnKeys(source);
         if (column.key != null) {
+            int found = -1;
             for (int i = 0; i < keys.size(); i++) {
                 if (column.key.equals(keys.get(i))) {
-                    return i;
+                    if (found >= 0) {
+                        // A duplicated name cannot identify a position; let the caller
+                        // fall back to the plan's own occurrence order.
+                        return -1;
+                    }
+                    found = i;
                 }
+            }
+            if (found >= 0) {
+                return found;
             }
         }
         List<String> names = sourceColumnNames(source);
+        int found = -1;
         for (int i = 0; i < names.size(); i++) {
             if (names.get(i).equals(column.column)) {
-                return i;
+                if (found >= 0) {
+                    return -1;
+                }
+                found = i;
             }
         }
-        return -1;
+        return found;
     }
 
     private List<WildcardRef> wildcardSourcesAt(SourceTable source, StarColumn column,
@@ -3656,11 +3746,16 @@ public class DmlLineage {
                     && !wildcardSpansOf(sources.get(0).displayName).isEmpty()) {
                 SourceTable source = sources.get(0);
                 List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
-                int sourceWidth = sourceColumnsKnown(source)
-                        ? Math.max(sourceColumnNames(source).size(), maxSpanEnd(spans))
-                        : currentStarBudget > 0 ? currentStarBudget : -1;
+                boolean uncertainPosition = uncertainOrdinal >= 0
+                        && uncertainOrdinal == startPosition;
+                int sourceWidth = uncertainPosition ? -1
+                        : sourceColumnsKnown(source)
+                                ? Math.max(sourceColumnNames(source).size(),
+                                        maxSpanEnd(spans))
+                                : currentStarBudget > 0 ? currentStarBudget : -1;
                 for (WildcardSpan span : spans) {
-                    if (sourceWidth <= 0 && span.end == Integer.MAX_VALUE) {
+                    if (uncertainPosition
+                            || sourceWidth <= 0 && span.end == Integer.MAX_VALUE) {
                         // No width is known yet: keep the span open so an outer
                         // projection can bound it instead of shrinking it to one column.
                         Instruction wildcard = new Instruction(
@@ -3690,7 +3785,9 @@ public class DmlLineage {
                 }
                 return Math.max(sourceWidth > 0 ? sourceWidth : maxSpanEnd(spans), 1);
             }
-            if (node != null && node.widthKnown && !node.plan.isEmpty()) {
+            boolean planAmbiguous = node != null && node.widthKnown
+                    && hasAmbiguousOutput(node.plan, node.width);
+            if (!planAmbiguous && node != null && node.widthKnown && !node.plan.isEmpty()) {
                 int position = startPosition;
                 int limit = startPosition + node.width;
                 Map<SourceTable, Integer> seen = new java.util.IdentityHashMap<>();
@@ -3720,7 +3817,8 @@ public class DmlLineage {
                 }
                 return Math.max(node.width, 1);
             }
-            boolean allKnown = !sources.isEmpty() && allWidthKnown(sources);
+            boolean allKnown = !planAmbiguous && !sources.isEmpty()
+                    && allWidthKnown(sources);
             int position = startPosition;
             for (int index = 0; index < sources.size(); index++) {
                 SourceTable source = sources.get(index);
@@ -4877,6 +4975,11 @@ public class DmlLineage {
         private final boolean nameKnown;
         private final boolean stable;
         private final StarOutput origin;
+        /**
+         * True when the position or source identity of this output was guessed, so the
+         * metadata-free contract must keep the projection at table level.
+         */
+        private final boolean ambiguous;
 
         private StarOutput(List<StarColumn> sources) {
             this(sources, false);
@@ -4892,14 +4995,24 @@ public class DmlLineage {
 
         private StarOutput(List<StarColumn> sources, boolean nameKnown, boolean stable,
                 StarOutput origin) {
+            this(sources, nameKnown, stable, origin, false);
+        }
+
+        private StarOutput(List<StarColumn> sources, boolean nameKnown, boolean stable,
+                StarOutput origin, boolean ambiguous) {
             this.sources = sources;
             this.nameKnown = nameKnown;
             this.stable = stable;
             this.origin = origin == null ? this : origin;
+            this.ambiguous = ambiguous;
         }
 
         private StarOutput withStable(boolean value) {
-            return new StarOutput(sources, nameKnown, value, origin);
+            return new StarOutput(sources, nameKnown, value, origin, ambiguous);
+        }
+
+        private StarOutput withAmbiguous(boolean value) {
+            return new StarOutput(sources, nameKnown, stable, origin, value);
         }
     }
 

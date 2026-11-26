@@ -1768,7 +1768,9 @@ public class MetadataFreeAnalysisTest {
                 result.getGraph().getSources(new Column("t.c1")));
         assertFalse(result.getGraph().getSources(new Column("t.c2"))
                 .contains(new Column("m1.*")));
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.*"))),
+        // q has a known width, so b's position is certain and catalog metadata
+        // expands b.* into its explicit column.
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
                 result.getGraph().getSources(new Column("t.c3")));
     }
 
@@ -1845,6 +1847,67 @@ public class MetadataFreeAnalysisTest {
                 result.getGraph().getSources(new Column("t.c1")));
         assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
                 result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void duplicateUnionNamesDoNotLeakIntoConstantPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3) SELECT * FROM ("
+                        + "SELECT m1.*, 0 AS k FROM m1"
+                        + " UNION ALL SELECT 1 AS k, 2 AS k) AS q CROSS JOIN b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m1.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("b.*")));
+    }
+
+    @Test
+    public void ambiguousUsingMergeKeepsTableLevelSources() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT * FROM (SELECT x.*, y.* FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN (SELECT * FROM m2 UNION ALL SELECT 2) AS y"
+                        + " UNION ALL SELECT 3, 4) AS q LEFT JOIN b USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> first = result.getGraph().getSources(new Column("t.c1"));
+        Set<Column> second = result.getGraph().getSources(new Column("t.c2"));
+        // Which side owns the USING key is unknown, so both written positions keep the
+        // same table-level contributions instead of a per-position guess.
+        assertEquals(first, second);
+        assertTrue(first.contains(new Column("m1.*")));
+        assertTrue(first.contains(new Column("m2.*")));
+        assertTrue(first.contains(new Column("b.*")));
+    }
+
+    @Test
+    public void openWildcardBeforeQualifiedStarStaysTableLevel() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3) SELECT a.*, q.* FROM a"
+                        + " CROSS JOIN (SELECT * FROM m UNION ALL SELECT 1) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        // The estimated start position must not pin m.* to one column: the table-level
+        // contribution covers the remaining written positions.
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("m.*")));
     }
 
     @Test

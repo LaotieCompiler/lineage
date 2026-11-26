@@ -3536,25 +3536,29 @@ public class DmlLineage {
             // Contract: when any participating source's columns are unknown the
             // projection positions cannot be determined. Keep table-level edges only
             // and never guess a column.
-            for (SourceTable source : sources) {
+            boolean allKnown = !sources.isEmpty() && allWidthKnown(sources);
+            int position = startPosition;
+            for (int index = 0; index < sources.size(); index++) {
+                SourceTable source = sources.get(index);
+                int sourceStart = allKnown ? position : startPosition;
                 Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                        lineageTableName(source), targetTable, startPosition,
+                        lineageTableName(source), targetTable, sourceStart,
                         source.temporary, targetTemporary);
                 wildcard.setPositionalWildcard(true);
-                int starWidth = currentStarBudget;
-                if (starWidth <= 0 && sources.size() == 1
-                        && sourceColumnsKnown(sources.get(0))) {
-                    // The source's own width is known (for example a derived table
-                    // whose UNION branches fixed it).
-                    starWidth = Math.max(sourceColumnNames(sources.get(0)).size(), 1);
+                int sourceWidth = -1;
+                if (allKnown) {
+                    sourceWidth = Math.max(sourceColumnNames(source).size(), 1);
+                } else if (sources.size() == 1 && currentStarBudget > 0) {
+                    sourceWidth = currentStarBudget;
                 }
-                if (starWidth > 0) {
+                if (sourceWidth > 0) {
                     wildcard.setWildcardWidthKnown(true);
-                    wildcard.setWildcardWidth(starWidth);
+                    wildcard.setWildcardWidth(sourceWidth);
+                    position += sourceWidth;
                 }
                 instructions.add(wildcard);
             }
-            return Math.max(sources.size(), 1);
+            return Math.max(position - startPosition, sources.size());
         }
 
         Set<String> used = new HashSet<>();

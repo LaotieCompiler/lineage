@@ -1510,6 +1510,56 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void separateWildcardRangesKeepTheirOwnSources() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT x.*, y.* FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN (SELECT * FROM m2 UNION ALL SELECT 2) AS y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void laterWildcardRangeKeepsItsSource() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT x.*, y.* FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN m2 AS y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void multiSourceStarWidthBoundsWholeTableWrite() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM ("
+                        + "SELECT * FROM missing UNION ALL SELECT 1) AS q"
+                        + " CROSS JOIN (SELECT 2) AS b;"
+                        + " SELECT c3 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        if (result.getGraph().getReverseGraph().containsVertex(new Column("t.c3"))) {
+            assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                    .contains(new Column("missing.*")));
+        }
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

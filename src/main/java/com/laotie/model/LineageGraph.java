@@ -1,5 +1,6 @@
 package com.laotie.model;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -96,6 +97,35 @@ public class LineageGraph {
                     // Self-updates such as SET c1 = c1 + 1 add no external lineage.
                     reverseGraph.addEdge(to, from);
                 }
+            }
+        }
+        attachTableWildcards();
+    }
+
+    /**
+     * A physical column read from a table whose only lineage is a table-level wildcard
+     * (for example a table populated by INSERT ... SELECT * FROM an unknown table) is
+     * connected to that wildcard, so cross-statement lineage stays intact.
+     */
+    private void attachTableWildcards() {
+        Map<String, Column> wildcards = new HashMap<>();
+        for (Column vertex : reverseGraph.vertexSet()) {
+            if (vertex.isWildcard() && !vertex.isTemporary()) {
+                wildcards.put(vertex.getTableName(), vertex);
+            }
+        }
+        if (wildcards.isEmpty()) {
+            return;
+        }
+        for (Column vertex : new ArrayList<>(reverseGraph.vertexSet())) {
+            if (vertex.isWildcard() || vertex.isTemporary()
+                    || vertex.getTableName() == null
+                    || reverseGraph.outDegreeOf(vertex) != 0) {
+                continue;
+            }
+            Column wildcard = wildcards.get(vertex.getTableName());
+            if (wildcard != null && !wildcard.equals(vertex)) {
+                reverseGraph.addEdge(vertex, wildcard);
             }
         }
     }

@@ -2612,7 +2612,8 @@ public class DmlLineage {
         String alias = table.getAlias();
         Table metadataTable = null;
         String display = alias != null ? alias
-                : detachedMetadata() && !isSingleSegmentName(written) ? written
+                : detachedMetadata() && !isSingleSegmentName(written)
+                        ? (rawName != null ? rawName : written)
                         : lastIdentifier(written);
         String cteTarget = isSingleSegmentName(rawName)
                 ? findCteTarget(identifierKey(rawName)) : null;
@@ -3394,6 +3395,17 @@ public class DmlLineage {
         String targetTable = stackTargetTable.peek();
         String targetColumn = stackTargetColumn.peek();
         for (StarColumn column : columns) {
+            if (!column.source.wildcardContribution) {
+                continue;
+            }
+            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                    lineageTableName(column.source), targetTable, currentOrdinal,
+                    column.source.temporary, tempTables.contains(targetTable));
+            wildcard.setPositionalWildcard(true);
+            instructions.add(wildcard);
+            targetWildcardContribution.put(targetTable, Boolean.TRUE);
+        }
+        for (StarColumn column : columns) {
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                     column.source.displayName + "." + renderSourceColumn(column),
                     targetTable + "." + targetColumn, currentOrdinal,
@@ -4131,9 +4143,12 @@ public class DmlLineage {
             // Reading one named column from a derived table that also carries unknown
             // rows must not cut the table-level lineage.
             String target = stackTargetTable.peek();
-            instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
+            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                     lineageTableName(source), target, currentOrdinal,
-                    source.temporary, tempTables.contains(target)));
+                    source.temporary, tempTables.contains(target));
+            wildcard.setPositionalWildcard(true);
+            instructions.add(wildcard);
+            targetWildcardContribution.put(target, Boolean.TRUE);
         }
         if (!source.outputColumns.isEmpty()) {
             String key = identifierKey(columnName);

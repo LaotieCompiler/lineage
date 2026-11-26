@@ -623,7 +623,7 @@ public class MetadataFreeAnalysisTest {
                 MetadataContext.of(catalog), optional())
                 .scan("INSERT INTO t(c1,c2,c3) SELECT k,* FROM missing;");
         assertEquals(0, beforeStar.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.k"))),
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
                 beforeStar.getGraph().getSources(new Column("t.c1")));
         assertTrue(beforeStar.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
     }
@@ -963,6 +963,68 @@ public class MetadataFreeAnalysisTest {
         assertEquals(0, result.getFailures().size());
         assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.*"))
                 .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void contributionEdgeStaysTableLevel() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.v, 0 AS z FROM ("
+                        + "SELECT k, v FROM b UNION ALL SELECT * FROM missing) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.v"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.v")));
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void joinAliasReadKeepsContribution() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT k FROM b UNION ALL SELECT * FROM missing)"
+                        + " SELECT j.k FROM (q CROSS JOIN (SELECT 1 AS v) AS z) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void chainedContributionPropagates() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT k FROM b UNION ALL SELECT * FROM missing),"
+                        + " r AS (SELECT k FROM q) SELECT k FROM r;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void quotedExplicitColumnChainStaysConnected() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO \"s.a\" SELECT k FROM b;"
+                        + " SELECT k FROM \"s.a\";");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))
+                .contains(new Column("b.k")));
     }
 
     @Test

@@ -2612,8 +2612,10 @@ public class DmlLineage {
         String alias = table.getAlias();
         Table metadataTable = null;
         String display = alias != null ? alias
-                : detachedMetadata() && !isSingleSegmentName(written)
-                        ? (rawName != null ? rawName : written)
+                : detachedMetadata() && rawName != null
+                        && (!isSingleSegmentName(written)
+                                || MetadataCatalog.isQuotedIdentifier(rawName))
+                                        ? rawName
                         : lastIdentifier(written);
         String cteTarget = isSingleSegmentName(rawName)
                 ? findCteTarget(identifierKey(rawName)) : null;
@@ -3389,7 +3391,7 @@ public class DmlLineage {
     }
 
     private void emitBindingColumns(List<StarColumn> columns) {
-        if (columns.isEmpty() || uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+        if (columns.isEmpty()) {
             return;
         }
         String targetTable = stackTargetTable.peek();
@@ -3404,6 +3406,10 @@ public class DmlLineage {
             wildcard.setPositionalWildcard(true);
             instructions.add(wildcard);
             targetWildcardContribution.put(targetTable, Boolean.TRUE);
+        }
+        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+            // The position is unknown: the table-level contribution above is enough.
+            return;
         }
         for (StarColumn column : columns) {
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
@@ -4279,6 +4285,7 @@ public class DmlLineage {
                         fromTable, String.format("%s(%s)", tableName, colStr), -1,
                         fromTemporary, false);
                 insertEdge.setWildcardTable(tableName);
+                insertEdge.setPopulatedColumns(colStr);
                 instructions.add(insertEdge);
             } else {
                 instructions.add(new Instruction(OperationType.COLUMNS_INJECT,

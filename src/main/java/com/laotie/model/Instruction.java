@@ -60,6 +60,12 @@ public class Instruction {
      */
     boolean positionalWildcard;
 
+    /**
+     * The explicit target column list of an INSERT-style wildcard, if any. Kept
+     * separately so a table-level edge never covers unwritten columns.
+     */
+    String populatedColumns;
+
     public enum OperationType {
         COLUMN_MAPPING, // select tb.col as A
         EXPR_MAPPING, // select tb.col as A
@@ -193,9 +199,11 @@ public class Instruction {
             if (lparen > 0) {
                 target = target.substring(0, lparen);
             }
-            result.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable, target,
-                    instruction.getOrdinal(), instruction.isFromTemporary(),
-                    instruction.isToTemporary()));
+            Instruction kept = new Instruction(OperationType.COLUMNS_INJECT, fromTable,
+                    target, instruction.getOrdinal(), instruction.isFromTemporary(),
+                    instruction.isToTemporary());
+            kept.setPopulatedColumns(instruction.getPopulatedColumns());
+            result.add(kept);
             if (instruction.isToTemporary()) {
                 int at = Math.max(instruction.getOrdinal(), 0);
                 if (instruction.isWildcardWidthKnown()) {
@@ -448,6 +456,7 @@ public class Instruction {
                 instruction.getOrdinal(), instruction.isFromTemporary(),
                 instruction.isToTemporary());
         edge.setWildcardTable(target);
+        edge.setPopulatedColumns(instruction.getPopulatedColumns());
         result.add(edge);
         if (instruction.isToTemporary()) {
             int at = Math.max(instruction.getOrdinal(), 0);

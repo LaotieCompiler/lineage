@@ -1028,6 +1028,51 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void wildcardAttachmentHonorsInsertColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("INSERT INTO t(c1) SELECT * FROM missing; SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("missing.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void contributionSurvivesUnknownStarBeforeJoinAliasRead() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT k FROM b UNION ALL SELECT * FROM missing)"
+                        + " SELECT u.*, j.k FROM u"
+                        + " CROSS JOIN (q CROSS JOIN (SELECT 1 AS z) AS x) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void quotedSingleSegmentIdentityMatchesReads() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO \"A\" SELECT k FROM b; SELECT k FROM \"A\";");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

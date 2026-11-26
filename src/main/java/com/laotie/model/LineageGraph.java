@@ -56,6 +56,7 @@ public class LineageGraph {
      */
     public void buildByResults(List<LineageResult> results) {
         init();
+        Map<String, Set<String>> populatedColumns = new HashMap<>();
         for (int i = 0; i < results.size(); i++) {
             LineageResult result = results.get(i);
             if (result.getError() != null) {
@@ -75,6 +76,12 @@ public class LineageGraph {
                             instruction.isFromTemporary());
                     String toReference = instruction.getWildcardTable() != null
                             ? instruction.getWildcardTable() : instruction.getTo();
+                    if (instruction.getPopulatedColumns() != null) {
+                        recordPopulatedColumns(populatedColumns, toReference,
+                                instruction.getPopulatedColumns());
+                    } else {
+                        recordPopulatedColumns(populatedColumns, toReference);
+                    }
                     Column to = wildcardColumn(toReference, prefix,
                             instruction.isToTemporary());
                     reverseGraph.addVertex(from);
@@ -99,7 +106,7 @@ public class LineageGraph {
                 }
             }
         }
-        attachTableWildcards();
+        attachTableWildcards(populatedColumns);
     }
 
     /**
@@ -107,7 +114,7 @@ public class LineageGraph {
      * (for example a table populated by INSERT ... SELECT * FROM an unknown table) is
      * connected to that wildcard, so cross-statement lineage stays intact.
      */
-    private void attachTableWildcards() {
+    private void attachTableWildcards(Map<String, Set<String>> populatedColumns) {
         Map<String, Column> wildcards = new HashMap<>();
         for (Column vertex : reverseGraph.vertexSet()) {
             if (vertex.isWildcard() && !vertex.isTemporary()) {
@@ -124,10 +131,70 @@ public class LineageGraph {
                 continue;
             }
             Column wildcard = wildcards.get(vertex.getTableName());
-            if (wildcard != null && !wildcard.equals(vertex)) {
-                reverseGraph.addEdge(vertex, wildcard);
+            if (wildcard == null || wildcard.equals(vertex)) {
+                continue;
+            }
+            Set<String> populated = populatedColumns.get(vertex.getTableName());
+            if (populated != null && !populated.isEmpty()
+                    && !populated.contains(vertex.getColumnName())) {
+                // The wildcard only covers the columns the statement actually wrote.
+                continue;
+            }
+            reverseGraph.addEdge(vertex, wildcard);
+        }
+    }
+
+    /**
+     * Remember which target columns an INSERT-style wildcard populated. A table-level
+     * edge must not attribute unwritten columns.
+     */
+    private static void recordPopulatedColumns(Map<String, Set<String>> populatedColumns,
+            String reference) {
+        int lparen = reference.indexOf('(');
+        if (lparen <= 0 || !reference.endsWith(")")) {
+            return;
+        }
+        recordPopulatedColumns(populatedColumns, reference.substring(0, lparen),
+                reference.substring(lparen + 1, reference.length() - 1));
+    }
+
+    private static void recordPopulatedColumns(Map<String, Set<String>> populatedColumns,
+            String table, String columns) {
+        Set<String> columnsToAdd = populatedColumns.computeIfAbsent(table,
+                key -> new HashSet<String>());
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        for (int i = 0; i < columns.length(); i++) {
+            char ch = columns.charAt(i);
+            if (quote != 0) {
+                current.append(ch);
+                if (ch == quote) {
+                    quote = 0;
+                }
+            } else if (ch == '"' || ch == '`') {
+                quote = ch;
+                current.append(ch);
+            } else if (ch == ',') {
+                columnsToAdd.add(stripQuotes(current.toString()));
+                current.setLength(0);
+            } else {
+                current.append(ch);
             }
         }
+        columnsToAdd.add(stripQuotes(current.toString()));
+    }
+
+    private static String stripQuotes(String name) {
+        String value = name.trim();
+        if (value.length() >= 2) {
+            char first = value.charAt(0);
+            char last = value.charAt(value.length() - 1);
+            if ((first == '"' && last == '"') || (first == '`' && last == '`')
+                    || (first == '[' && last == ']')) {
+                return value.substring(1, value.length() - 1);
+            }
+        }
+        return value;
     }
 
     private static Column graphColumn(String reference, String prefix, boolean temporary) {

@@ -3411,7 +3411,7 @@ public class DmlLineage {
         }
         for (StarColumn column : columns) {
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                    column.source.displayName + "." + renderSourceColumn(column),
+                    lineageTableName(column.source) + "." + renderSourceColumn(column),
                     targetTable + "." + targetColumn, currentOrdinal,
                     column.source.temporary, tempTables.contains(targetTable)));
         }

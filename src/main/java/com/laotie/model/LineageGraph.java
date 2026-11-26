@@ -57,6 +57,7 @@ public class LineageGraph {
     public void buildByResults(List<LineageResult> results) {
         init();
         Map<String, Set<String>> populatedColumns = new HashMap<>();
+        Map<String, Map<Integer, String>> tempColumnsByPosition = new HashMap<>();
         java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
             LineageResult result = results.get(i);
@@ -89,8 +90,11 @@ public class LineageGraph {
                                 Column target = to;
                                 Column source = from;
                                 String columns = instruction.getPopulatedColumns();
+                                String fromTable = instruction.getFrom();
+                                boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
-                                        source, columns, prefix));
+                                        source, columns, prefix, fromTable, fromTemporary,
+                                        tempColumnsByPosition));
                             }
                         } else {
                             populatedColumns.computeIfAbsent(to.getTableName(),
@@ -106,6 +110,15 @@ public class LineageGraph {
                 }
                 if (instruction.getOperation() != OperationType.COLUMN_MAPPING) {
                     continue;
+                }
+                if (instruction.isToTemporary() && instruction.getOrdinal() >= 0) {
+                    String[] parts = splitReference(instruction.getTo());
+                    if (parts != null) {
+                        tempColumnsByPosition
+                                .computeIfAbsent(parts[0],
+                                        key -> new HashMap<Integer, String>())
+                                .put(instruction.getOrdinal(), parts[1]);
+                    }
                 }
                 Column from = graphColumn(instruction.getFrom(), prefix,
                         instruction.isFromTemporary());
@@ -168,21 +181,44 @@ public class LineageGraph {
      * INSERTs into the same table keep their own sources.
      */
     private void linkPopulatedColumns(Column target, Column sourceWildcard, String columns,
-            String prefix) {
-        for (String column : splitColumns(columns)) {
+            String prefix, String fromTable, boolean fromTemporary,
+            Map<String, Map<Integer, String>> tempColumnsByPosition) {
+        java.util.List<String> names = splitColumns(columns);
+        Map<Integer, String> tempPositions = fromTemporary
+                ? tempColumnsByPosition.get(fromTable) : null;
+        for (int i = 0; i < names.size(); i++) {
+            String column = names.get(i);
             Column columnVertex = new Column(target.getTableName(), column);
             reverseGraph.addVertex(columnVertex);
             reverseGraph.addVertex(sourceWildcard);
             if (columnVertex.equals(sourceWildcard)) {
                 continue;
             }
-            if (reverseGraph.outDegreeOf(columnVertex) > 0) {
-                // This column already has a precise source; the wildcard must not
-                // claim it when it belongs to a later, unknown position.
+            if (hasPreciseSource(columnVertex)) {
+                // This column already has a precise non-wildcard source.
+                continue;
+            }
+            String tempColumn = tempPositions == null ? null : tempPositions.get(i);
+            if (tempColumn != null) {
+                Column precise = graphColumn(fromTable + "." + tempColumn, prefix,
+                        fromTemporary);
+                reverseGraph.addVertex(precise);
+                if (!columnVertex.equals(precise)) {
+                    reverseGraph.addEdge(columnVertex, precise);
+                }
                 continue;
             }
             reverseGraph.addEdge(columnVertex, sourceWildcard);
         }
+    }
+
+    private boolean hasPreciseSource(Column column) {
+        for (DefaultEdge edge : reverseGraph.outgoingEdgesOf(column)) {
+            if (!reverseGraph.getEdgeTarget(edge).isWildcard()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static java.util.List<String> splitColumns(String columns) {
@@ -248,6 +284,35 @@ public class LineageGraph {
             }
         }
         columnsToAdd.add(stripQuotes(current.toString()));
+    }
+
+    /**
+     * Split {@code table.column} at the last dot outside quotes.
+     */
+    private static String[] splitReference(String reference) {
+        if (reference == null) {
+            return null;
+        }
+        char quote = 0;
+        int dot = -1;
+        for (int i = 0; i < reference.length(); i++) {
+            char ch = reference.charAt(i);
+            if (quote != 0) {
+                if (ch == quote) {
+                    quote = 0;
+                }
+            } else if (ch == '"' || ch == '`') {
+                quote = ch;
+            } else if (ch == '[') {
+                quote = ']';
+            } else if (ch == '.') {
+                dot = i;
+            }
+        }
+        if (dot <= 0 || dot == reference.length() - 1) {
+            return null;
+        }
+        return new String[] {reference.substring(0, dot), reference.substring(dot + 1)};
     }
 
     private static String stripQuotes(String name) {

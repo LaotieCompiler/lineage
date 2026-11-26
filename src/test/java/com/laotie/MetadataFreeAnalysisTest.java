@@ -758,9 +758,10 @@ public class MetadataFreeAnalysisTest {
             Set<Column> wildcardSources = result.getGraph().getSources(new Column("t.*"));
             assertTrue("wildcard edge lost: " + sql,
                     wildcardSources.contains(new Column("missing.*")));
-            // The derived table's output positions are unknown: any attribution of
-            // t.c2 must stay table-level.
-            assertOnlyWildcardSources(result.getGraph(), new Column("t.c2"));
+            // The second position is explicitly supplied by the known UNION branch.
+            assertTrue("known branch column edge lost: " + sql,
+                    result.getGraph().getSources(new Column("t.c2"))
+                            .contains(new Column("b.q")));
         }
     }
 
@@ -1172,6 +1173,48 @@ public class MetadataFreeAnalysisTest {
         ScanResult result = LineageScanner.withMetadata(
                 MetadataContext.of(catalog), optional()).scan(
                 "INSERT INTO t1 SELECT k FROM b; SELECT x.k FROM t1 AS x;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void repeatedWildcardWritesAccumulate() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1) SELECT * FROM m1;"
+                        + " INSERT INTO t(c1) SELECT * FROM m2;"
+                        + " SELECT c1 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("m1.*"), new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+    }
+
+    @Test
+    public void noCatalogInsertPrefixColumnKeepsPreciseSource() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT b.k, missing.* FROM b, missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void joinAliasReadAfterInsertUsesPhysicalIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t1 SELECT k FROM b;"
+                        + " SELECT j.k FROM (t1 AS x LEFT JOIN b USING(k)) AS j;");
 
         assertEquals(0, result.getFailures().size());
         assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))

@@ -2411,26 +2411,48 @@ public class DmlLineage {
         return false;
     }
 
+    private boolean hasDuplicateNamedOutputs(SourceTable source) {
+        Set<String> seen = new HashSet<>();
+        for (int i = 0; i < source.outputKeys.size(); i++) {
+            if (!sourceOutputNameKnown(source, i)) {
+                continue;
+            }
+            String key = source.outputKeys.get(i);
+            if (key != null && !seen.add(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String effectiveOutputName(SourceTable source, int index) {
-        if (index < 0) {
-            return null;
+        if (index < 0 || index >= source.outputColumns.size()) {
+            return index >= 0 && index < source.outputColumns.size()
+                    ? source.outputColumns.get(index) : null;
         }
-        String name = index < source.outputColumns.size()
-                ? source.outputColumns.get(index) : null;
-        String key = index < source.outputKeys.size()
-                ? source.outputKeys.get(index) : null;
-        if (key == null || source.outputKeys.indexOf(key) == index) {
-            return name;
+        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+        for (String name : source.outputColumns) {
+            counts.merge(name, 1, Integer::sum);
         }
-        Set<String> usedKeys = new HashSet<>();
-        for (String outputName : source.outputColumns) {
-            usedKeys.add(identifierKey(outputName));
+        java.util.Set<String> usedNames = new java.util.HashSet<>(
+                source.outputColumns);
+        java.util.Set<String> duplicatesSeen = new java.util.HashSet<>();
+        java.util.Map<Integer, String> effective = new java.util.HashMap<>();
+        for (int position = 0; position < source.outputColumns.size(); position++) {
+            String name = source.outputColumns.get(position);
+            if (name != null && counts.get(name) > 1
+                    && !duplicatesSeen.add(name)) {
+                String candidate = "col" + (position + 1);
+                int suffix = 1;
+                while (usedNames.contains(candidate)
+                        || effective.containsValue(candidate)) {
+                    candidate = "col" + (position + 1) + "_" + suffix++;
+                }
+                name = candidate;
+            }
+            effective.put(position, name);
         }
-        String candidate = "col" + (index + 1);
-        while (usedKeys.contains(identifierKey(candidate))) {
-            candidate = candidate + "_";
-        }
-        return candidate;
+        return effective.get(index);
     }
 
     private List<WildcardRef> wildcardRefsAt(SourceTable source, int relative) {
@@ -2458,6 +2480,22 @@ public class DmlLineage {
                 int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
                 if (width > 0) {
                     List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
+                    if (declared == null && hasDuplicateNamedOutputs(source)) {
+                        // Ambiguous repeated names cannot be expanded into columns
+                        // unless the target declares their order.
+                        Instruction wildcard = new Instruction(
+                                OperationType.COLUMNS_INJECT,
+                                lineageTableName(source), target, position,
+                                source.temporary, tempTables.contains(target));
+                        wildcard.setPositionalWildcard(true);
+                        wildcard.setWildcardWidthKnown(true);
+                        wildcard.setWildcardWidth(width);
+                        instructions.add(wildcard);
+                        recordWildcardSpan(target, position, position + width,
+                                lineageTableName(source), source.temporary);
+                        targetWildcardContribution.put(target, Boolean.TRUE);
+                        return width;
+                    }
                     int limit = width;
                     for (int i = 0; i < limit; i++) {
                         boolean named = sourceOutputNameKnown(source, i)
@@ -2471,6 +2509,11 @@ public class DmlLineage {
                             String outputName;
                             String outputKey;
                             Boolean quoted = null;
+                            String sourceKey = i < source.outputKeys.size()
+                                    && source.outputKeys.get(i) != null
+                                            ? source.outputKeys.get(i)
+                                            : identifierKey(displayName);
+                            quoted = !sourceKey.equals(identifierKey(displayName));
                             if (declared != null && position + i < declared.size()) {
                                 outputName = declared.get(position + i);
                                 outputKey = declaredKeys != null
@@ -2479,11 +2522,7 @@ public class DmlLineage {
                                                 : identifierKey(outputName);
                             } else {
                                 outputName = displayName;
-                                outputKey = i < source.outputKeys.size()
-                                        && source.outputKeys.get(i) != null
-                                                ? source.outputKeys.get(i)
-                                                : identifierKey(displayName);
-                                quoted = !outputKey.equals(identifierKey(displayName));
+                                outputKey = sourceKey;
                             }
                             setTargetOutput(target, position + i, outputName, outputKey);
                             markOutputNameKnown(target, position + i, true);
@@ -2687,8 +2726,17 @@ public class DmlLineage {
                 }
                 for (StarColumn column : output.sources) {
                     represented.add(column.source);
+                    String sourceColumn = column.column;
+                    if (declared != null && column.source.temporary
+                            && column.index >= 0) {
+                        String effective = effectiveOutputName(column.source,
+                                column.index);
+                        if (effective != null) {
+                            sourceColumn = effective;
+                        }
+                    }
                     if (precise && column.nameKnown) {
-                        addOuterColumnMapping(column.source, column.column, target,
+                        addOuterColumnMapping(column.source, sourceColumn, target,
                                 outputName, pos, column.quoted);
                     } else if (column.source.temporary
                             && !wildcardSpansOf(column.source.displayName).isEmpty()) {
@@ -5409,6 +5457,22 @@ public class DmlLineage {
         return hasSignificantQuote(reference);
     }
 
+    private static boolean exactNormalizedSuffix(String[] ownerParts,
+            String[] referenceParts) {
+        if (ownerParts.length == 0 || ownerParts.length > referenceParts.length) {
+            return false;
+        }
+        for (int i = 0; i < ownerParts.length; i++) {
+            String ownerName = MetadataCatalog.normalizeIdentifier(ownerParts[i]);
+            String referenceName = MetadataCatalog.normalizeIdentifier(
+                    referenceParts[referenceParts.length - ownerParts.length + i]);
+            if (ownerName == null || !ownerName.equals(referenceName)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static boolean hasSignificantQuote(String reference) {
         for (String part : MetadataCatalog
                 .splitQualifiedNamePreservingQuotes(reference)) {
@@ -5446,6 +5510,13 @@ public class DmlLineage {
                         && (source.rawName == null
                                 || !hasQuotedSegment(source.rawName))) {
                     matched = qualifiedKey(source.displayName).equals(ownerKey);
+                }
+                if (!matched && source.displayName != null
+                        && source.rawName != null
+                        && hasQuotedSegment(source.rawName)) {
+                    matched = exactNormalizedSuffix(ownerParts,
+                            MetadataCatalog.splitQualifiedNamePreservingQuotes(
+                                    source.displayName));
                 }
                 if (!matched && ownerParts.length > 0) {
                     String[] referenceParts = MetadataCatalog
@@ -5521,6 +5592,12 @@ public class DmlLineage {
                 && (source.rawName == null
                         || !hasQuotedSegment(source.rawName))
                 && qualifiedKey(source.displayName).equals(ownerKey)) {
+            return true;
+        }
+        if (source.displayName != null && source.rawName != null
+                && hasQuotedSegment(source.rawName)
+                && exactNormalizedSuffix(ownerParts, MetadataCatalog
+                        .splitQualifiedNamePreservingQuotes(source.displayName))) {
             return true;
         }
         String[] referenceParts = MetadataCatalog

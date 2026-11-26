@@ -2810,6 +2810,38 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void stringLiteralDoesNotFakeCteDependency() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM x),"
+                        + " x(v) AS (SELECT * FROM m WHERE 'y' = 'y'"
+                        + " UNION ALL SELECT 1) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
+    public void escapedQuotedCteDependencyIsDetected() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM \"a\"\"b\"),"
+                        + " \"a\"\"b\"(v) AS (SELECT * FROM m UNION ALL SELECT 1)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

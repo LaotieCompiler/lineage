@@ -703,6 +703,13 @@ public class DmlLineage {
             }
             aliases.put(entry, keys);
         }
+        java.util.Map<SQLWithSubqueryClause.Entry, java.util.Set<String>> entryRefs =
+                new java.util.IdentityHashMap<>();
+        for (SQLWithSubqueryClause.Entry entry : entries) {
+            java.util.Set<String> refs = new java.util.LinkedHashSet<>();
+            collectSelectReferences(entry.getSubQuery(), refs);
+            entryRefs.put(entry, refs);
+        }
         java.util.List<SQLWithSubqueryClause.Entry> ordered = new java.util.ArrayList<>();
         java.util.Set<SQLWithSubqueryClause.Entry> done =
                 java.util.Collections.newSetFromMap(
@@ -715,7 +722,7 @@ public class DmlLineage {
                 }
                 boolean ready = true;
                 for (String key : aliases.get(entry)) {
-                    boolean references = referencesAlias(entry, key);
+                    boolean references = entryRefs.get(entry).contains(key);
                     boolean hasDependent = false;
                     for (SQLWithSubqueryClause.Entry other : entries) {
                         if (other != entry && !done.contains(other)
@@ -747,15 +754,47 @@ public class DmlLineage {
         return ordered;
     }
 
-    private boolean referencesAlias(SQLWithSubqueryClause.Entry entry, String key) {
-        if (key == null || entry.getSubQuery() == null) {
-            return false;
+    private void collectSelectReferences(SQLSelect select, Set<String> refs) {
+        if (select == null) {
+            return;
         }
-        String text = entry.getSubQuery().toString();
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
-                "(?i)(?<![A-Za-z0-9_$])" + java.util.regex.Pattern.quote(key)
-                        + "(?![A-Za-z0-9_$])").matcher(text);
-        return matcher.find();
+        SQLWithSubqueryClause with = select.getWithSubQuery();
+        if (with != null) {
+            for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                collectSelectReferences(entry.getSubQuery(), refs);
+            }
+        }
+        collectQueryReferences(select.getQuery(), refs);
+    }
+
+    private void collectQueryReferences(SQLSelectQuery query, Set<String> refs) {
+        if (query instanceof SQLSelectQueryBlock) {
+            collectSourceReferences(((SQLSelectQueryBlock) query).getFrom(), refs);
+        } else if (query instanceof SQLUnionQuery) {
+            SQLUnionQuery union = (SQLUnionQuery) query;
+            collectQueryReferences(union.getLeft(), refs);
+            collectQueryReferences(union.getRight(), refs);
+        }
+    }
+
+    private void collectSourceReferences(SQLTableSource from, Set<String> refs) {
+        if (from == null) {
+            return;
+        }
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            collectSourceReferences(join.getLeft(), refs);
+            collectSourceReferences(join.getRight(), refs);
+        } else if (from instanceof SQLExprTableSource) {
+            String name = extractTableName((SQLExprTableSource) from);
+            if (name != null && isSingleSegmentName(name)) {
+                refs.add(identifierKey(name));
+            }
+        } else if (from instanceof SQLSubqueryTableSource) {
+            collectSelectReferences(((SQLSubqueryTableSource) from).getSelect(), refs);
+        } else if (from instanceof SQLUnionQueryTableSource) {
+            collectQueryReferences(((SQLUnionQueryTableSource) from).getUnion(), refs);
+        }
     }
 
     private void processWithSubQuery(SQLWithSubqueryClause withSubQuery) {

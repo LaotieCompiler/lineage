@@ -1453,6 +1453,16 @@ public class DmlLineage {
         return null;
     }
 
+    private boolean isLateralSource(SQLTableSource source) {
+        if (!(source instanceof SQLExprTableSource)) {
+            return false;
+        }
+        SQLExpr expr = ((SQLExprTableSource) source).getExpr();
+        return expr instanceof SQLMethodInvokeExpr
+                && "LATERAL".equalsIgnoreCase(
+                        ((SQLMethodInvokeExpr) expr).getMethodName());
+    }
+
     private List<String> staticSourceNames(SQLExprTableSource table,
             Map<String, List<String>> scope) {
         SQLSelect inline = queryExpressionSelect(table.getExpr());
@@ -1765,11 +1775,17 @@ public class DmlLineage {
         if (fromItem == null) {
             int position = 0;
             int minWidth = 0;
+            List<SourceTable> outerSources = currentSources();
             for (SQLSelectItem item : queryBlock.getSelectList()) {
-                if (context != null || detachedMetadata()) {
+                if ((context != null || detachedMetadata())
+                        && outerSources.isEmpty()) {
                     validateUnboundQualified(item.getExpr());
                 }
-                position += recordUnboundSelectItem(item, position);
+                int width = recordUnboundSelectItem(item, position);
+                if (!outerSources.isEmpty()) {
+                    recordOuterColumnMapping(item, position);
+                }
+                position += width;
                 minWidth += minimumOutputColumns(item.getExpr());
             }
             lastQueryBlockWidth = position;
@@ -2084,6 +2100,31 @@ public class DmlLineage {
         stackSources.pop();
         stackHiddenSources.pop();
         stackJoinBindings.pop();
+    }
+
+    private void recordOuterColumnMapping(SQLSelectItem item, int position) {
+        SQLExpr base = item.getExpr();
+        while (base instanceof SQLCastExpr) {
+            base = ((SQLCastExpr) base).getExpr();
+        }
+        if (!(base instanceof SQLPropertyExpr) || isStarProperty(base)) {
+            return;
+        }
+        SQLPropertyExpr property = (SQLPropertyExpr) base;
+        SourceTable source = findByOwner(property.getOwner());
+        if (source == null) {
+            throw new MetadataNotFoundException(property.getOwner() == null
+                    ? "*" : property.getOwner().toString());
+        }
+        String target = stackTargetTable.peek();
+        List<String> outputs = targetOutputs.get(target);
+        String name = outputs != null && position < outputs.size()
+                && outputs.get(position) != null
+                        ? outputs.get(position) : normalizeIdentifier(property.getName());
+        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                source.displayName + "." + renderIdentifier(property.getName()),
+                target + "." + renderIdentifier(name), position,
+                source.temporary, tempTables.contains(target)));
     }
 
     private int recordUnboundSelectItem(SQLSelectItem item, int position) {
@@ -2502,7 +2543,23 @@ public class DmlLineage {
             Map<String, SourceNode> bindingsBefore = stackJoinBindings.isEmpty() ? null
                     : new HashMap<>(stackJoinBindings.peek());
             SourceNode left = buildSourceNode(join.getLeft(), using);
-            SourceNode right = buildSourceNode(join.getRight(), using);
+            boolean lateralRight = isLateralSource(join.getRight());
+            if (lateralRight) {
+                // A correlated LATERAL body can read the left side's columns.
+                stackSources.push(left.sources);
+                stackUsing.push(using);
+                stackStarPlan.push(left.plan);
+            }
+            SourceNode right;
+            try {
+                right = buildSourceNode(join.getRight(), using);
+            } finally {
+                if (lateralRight) {
+                    stackStarPlan.pop();
+                    stackUsing.pop();
+                    stackSources.pop();
+                }
+            }
             List<SourceTable> sources = new ArrayList<>();
             sources.addAll(left.sources);
             sources.addAll(right.sources);

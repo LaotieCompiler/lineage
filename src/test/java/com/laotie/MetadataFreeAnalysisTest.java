@@ -1375,6 +1375,54 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void multiSourceAliasKeepsItsOuterReference() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "SELECT q.col2 FROM (SELECT a.k, b.k, b.v + b.w AS col2 FROM a, b) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("b.v"), new Column("b.w"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.col2")));
+    }
+
+    @Test
+    public void constantAliasIsPreservedAndHasNoSource() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "SELECT q.col2 FROM (SELECT a.k, b.k, 1 AS col2 FROM a, b) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(Column.temporary("stmt0.temp0.col2"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void wholeTableWriteHandlesCommaInColumnName() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (\"a,b\" INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM missing; SELECT \"a,b\" FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.a,b"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void wholeTableWriteRespectsKnownProjectionWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT k FROM b UNION ALL SELECT * FROM missing;"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

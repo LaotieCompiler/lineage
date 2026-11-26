@@ -58,6 +58,8 @@ public class LineageGraph {
         init();
         Map<String, Set<String>> populatedColumns = new HashMap<>();
         Map<String, Map<Integer, String>> tempColumnsByPosition = new HashMap<>();
+        Map<String, Integer> tempMaxPosition = new HashMap<>();
+        Set<String> tempWidthKnown = new HashSet<>();
         java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
             LineageResult result = results.get(i);
@@ -82,6 +84,14 @@ public class LineageGraph {
                             ? instruction.getWildcardTable() : instruction.getTo();
                     Column to = wildcardColumn(toReference, prefix,
                             instruction.isToTemporary());
+                    if (instruction.isToTemporary() && instruction.getOrdinal() >= 0) {
+                        String key = prefix + instruction.getTo().split("\\(")[0];
+                        tempMaxPosition.merge(key, instruction.getOrdinal(),
+                                Math::max);
+                        if (instruction.isWildcardWidthKnown()) {
+                            tempWidthKnown.add(key);
+                        }
+                    }
                     if (!instruction.isToTemporary()) {
                         // Only writes establish which columns a table-level wildcard
                         // covers; reads from a table are not writes.
@@ -101,16 +111,33 @@ public class LineageGraph {
                         } else if (!to.isTemporary() && result.getContext() != null) {
                             java.util.List<String> targetColumns =
                                     physicalColumnNames(to.getTableName(), result.getContext());
-                            if (!targetColumns.isEmpty()) {
+                            java.util.List<String> projected =
+                                    result.getTargetOutputs().get(instruction.getFrom());
+                            String fromKey = prefix + instruction.getFrom();
+                            if (targetColumns.isEmpty()) {
+                                targetColumns = new java.util.ArrayList<>();
+                            }
+                            if (projected != null && !projected.isEmpty()) {
+                                targetColumns = targetColumns.subList(0,
+                                        Math.min(projected.size(), targetColumns.size()));
+                            } else if (tempWidthKnown.contains(fromKey)) {
+                                Integer max = tempMaxPosition.get(fromKey);
+                                int width = max == null ? 0 : max + 1;
+                                if (width > 0 && width < targetColumns.size()) {
+                                    targetColumns = targetColumns.subList(0, width);
+                                }
+                            } else {
+                                targetColumns = new java.util.ArrayList<>(targetColumns);
+                            }
                                 Column target = to;
                                 Column source = from;
+                                java.util.List<String> names = targetColumns;
                                 String fromTable = instruction.getFrom();
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
-                                        source, String.join(",", targetColumns), prefix,
-                                        fromTable, fromTemporary, tempColumnsByPosition));
+                                        source, names, prefix, fromTable, fromTemporary,
+                                        tempColumnsByPosition));
                             }
-                        }
                     }
                     reverseGraph.addVertex(from);
                     reverseGraph.addVertex(to);
@@ -210,7 +237,15 @@ public class LineageGraph {
     private void linkPopulatedColumns(Column target, Column sourceWildcard, String columns,
             String prefix, String fromTable, boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition) {
-        java.util.List<String> names = splitColumns(columns);
+        linkPopulatedColumns(target, sourceWildcard, splitColumns(columns), prefix,
+                fromTable, fromTemporary, tempColumnsByPosition);
+    }
+
+    private void linkPopulatedColumns(Column target, Column sourceWildcard,
+            java.util.List<String> names, String prefix, String fromTable,
+            boolean fromTemporary,
+            Map<String, Map<Integer, String>> tempColumnsByPosition) {
+        System.err.println("DBGLINK " + target + " names=" + names + " from=" + fromTable);
         Map<Integer, String> tempPositions = fromTemporary
                 ? tempColumnsByPosition.get(prefix + fromTable) : null;
         for (int i = 0; i < names.size(); i++) {
@@ -344,8 +379,13 @@ public class LineageGraph {
         Map<String, Map<Integer, String>> raw = new HashMap<>();
         Map<String, Map<String, Integer>> counts = new HashMap<>();
         for (Instruction instruction : instructions) {
+            if (!instruction.isToTemporary() || instruction.getOrdinal() < 0
+                    || instruction.getOperation() != OperationType.COLUMN_MAPPING
+                            && instruction.getOperation() != OperationType.EXPR_MAPPING) {
+                continue;
+            }
             if (instruction.getOperation() != OperationType.COLUMN_MAPPING
-                    || !instruction.isToTemporary() || instruction.getOrdinal() < 0) {
+                    && instruction.getOperation() != OperationType.EXPR_MAPPING) {
                 continue;
             }
             String[] parts = splitReference(instruction.getTo());
@@ -355,17 +395,24 @@ public class LineageGraph {
             String tableKey = prefix + parts[0];
             raw.computeIfAbsent(tableKey, key -> new HashMap<Integer, String>())
                     .put(instruction.getOrdinal(), parts[1]);
-            counts.computeIfAbsent(tableKey, key -> new HashMap<String, Integer>())
+            counts.computeIfAbsent(tableKey,
+                    key -> new HashMap<String, Integer>())
                     .merge(parts[1], 1, Integer::sum);
         }
         Map<String, Map<Integer, String>> effective = new HashMap<>();
         for (Map.Entry<String, Map<Integer, String>> entry : raw.entrySet()) {
             String tableKey = entry.getKey();
-            Map<String, Integer> tableCounts = counts.get(tableKey);
+            Map<String, java.util.Set<Integer>> positionsByName = new HashMap<>();
+            for (Map.Entry<Integer, String> position : entry.getValue().entrySet()) {
+                positionsByName.computeIfAbsent(position.getValue(),
+                        key -> new java.util.HashSet<Integer>()).add(position.getKey());
+            }
+            Map<String, Integer> tableCounts = new HashMap<>();
             java.util.Set<String> usedNames = new java.util.HashSet<>();
-            for (Map.Entry<String, Integer> count : tableCounts.entrySet()) {
-                if (count.getValue() == 1) {
-                    usedNames.add(count.getKey());
+            for (Map.Entry<String, java.util.Set<Integer>> byName : positionsByName.entrySet()) {
+                tableCounts.put(byName.getKey(), byName.getValue().size());
+                if (byName.getValue().size() == 1) {
+                    usedNames.add(byName.getKey());
                 }
             }
             java.util.List<Integer> positions = new java.util.ArrayList<>(

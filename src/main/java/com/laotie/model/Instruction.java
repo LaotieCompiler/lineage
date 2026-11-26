@@ -203,6 +203,8 @@ public class Instruction {
                     target, instruction.getOrdinal(), instruction.isFromTemporary(),
                     instruction.isToTemporary());
             kept.setPopulatedColumns(instruction.getPopulatedColumns());
+            kept.setWildcardWidthKnown(instruction.isWildcardWidthKnown());
+            kept.setPositionalWildcard(instruction.isPositionalWildcard());
             result.add(kept);
             if (instruction.isToTemporary()) {
                 int at = Math.max(instruction.getOrdinal(), 0);
@@ -457,6 +459,7 @@ public class Instruction {
                 instruction.isToTemporary());
         edge.setWildcardTable(target);
         edge.setPopulatedColumns(instruction.getPopulatedColumns());
+        edge.setWildcardWidthKnown(instruction.isWildcardWidthKnown());
         result.add(edge);
         if (instruction.isToTemporary()) {
             int at = Math.max(instruction.getOrdinal(), 0);

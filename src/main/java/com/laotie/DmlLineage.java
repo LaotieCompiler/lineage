@@ -707,16 +707,25 @@ public class DmlLineage {
             // A sibling's columns are visible to earlier bodies too, so derive the
             // names that can be known statically before any body is analyzed.
             Map<String, List<String>> nameScope = new HashMap<>();
-            for (int pass = 0; pass < 2; pass++) {
+            int guard = withSubQuery.getEntries().size() + 1;
+            boolean changed = true;
+            while (changed && guard-- > 0) {
+                changed = false;
                 for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
                     String alias = entry.getAlias();
                     if (alias == null) {
                         continue;
                     }
-                    List<String> names = staticOutputNames(
-                            entry.getSubQuery().getQuery(), nameScope);
+                    List<String> names = rawDeclaredColumns(entry);
+                    if (names == null) {
+                        names = staticOutputNames(entry.getSubQuery(), nameScope);
+                    }
                     if (names != null) {
-                        nameScope.put(identifierKey(alias), names);
+                        String key = identifierKey(alias);
+                        if (!names.equals(nameScope.get(key))) {
+                            nameScope.put(key, names);
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -725,10 +734,21 @@ public class DmlLineage {
                 List<String> names = alias == null ? null
                         : nameScope.get(identifierKey(alias));
                 String target = prebound.get(entry);
-                if (names != null && target != null && !names.contains(null)) {
+                if (names != null && target != null) {
                     for (int i = 0; i < names.size(); i++) {
-                        setTargetOutput(target, i, names.get(i),
-                                identifierKey(names.get(i)));
+                        String raw = names.get(i);
+                        String key;
+                        String display;
+                        if (raw == null) {
+                            // A constant owns a position but can never match a column
+                            // reference, so give it an unmatchable key.
+                            display = "col" + (i + 1);
+                            key = CONSTANT_OUTPUT_PREFIX + i;
+                        } else {
+                            display = canonicalIdentifier(raw);
+                            key = identifierKey(raw);
+                        }
+                        setTargetOutput(target, i, display, key);
                         markOutputNameKnown(target, i, true);
                     }
                     // Make the sibling's shape visible before its body is analyzed;
@@ -906,14 +926,21 @@ public class DmlLineage {
             }
             if (recursive) {
                 // Resolve forward references that were still unknown in the first pass.
-                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
-                    String alias = entry.getAlias();
-                    if (alias == null) {
-                        continue;
-                    }
-                    int width = staticSelectWidth(entry.getSubQuery(), scope);
-                    if (width >= 0) {
-                        scope.put(identifierKey(alias), width);
+                int guard = with.getEntries().size() + 1;
+                boolean changed = true;
+                while (changed && guard-- > 0) {
+                    changed = false;
+                    for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                        String alias = entry.getAlias();
+                        if (alias == null) {
+                            continue;
+                        }
+                        int width = staticSelectWidth(entry.getSubQuery(), scope);
+                        String key = identifierKey(alias);
+                        if (width >= 0 && !Integer.valueOf(width).equals(scope.get(key))) {
+                            scope.put(key, width);
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -921,10 +948,80 @@ public class DmlLineage {
         return staticUnionWidth(select.getQuery(), scope);
     }
 
+    private static final String CONSTANT_OUTPUT_PREFIX = "\u0000constant:";
+
     /**
      * Column names a query will produce when they can be derived without analyzing
      * rows, used to pre-bind forward-referenced recursive CTEs.
      */
+    private List<String> staticOutputNames(SQLSelect select,
+            Map<String, List<String>> scope) {
+        if (select == null) {
+            return null;
+        }
+        Map<String, List<String>> nested = new HashMap<>(scope);
+        SQLWithSubqueryClause with = select.getWithSubQuery();
+        if (with != null) {
+            boolean recursive = Boolean.TRUE.equals(with.getRecursive());
+            if (recursive) {
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    String alias = entry.getAlias();
+                    if (alias != null) {
+                        nested.put(identifierKey(alias), null);
+                    }
+                }
+            }
+            int guard = with.getEntries().size() + 1;
+            boolean changed = true;
+            while (changed && guard-- > 0) {
+                changed = false;
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    String alias = entry.getAlias();
+                    if (alias == null) {
+                        continue;
+                    }
+                    String key = identifierKey(alias);
+                    List<String> names = rawDeclaredColumns(entry);
+                    if (names == null) {
+                        names = staticOutputNames(entry.getSubQuery(), nested);
+                    }
+                    if (names != null && !names.equals(nested.get(key))) {
+                        nested.put(key, names);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        return staticOutputNames(select.getQuery(), nested);
+    }
+
+    private static List<String> rawDeclaredColumns(SQLWithSubqueryClause.Entry entry) {
+        if (entry.getColumns() == null || entry.getColumns().isEmpty()) {
+            return null;
+        }
+        List<String> names = new ArrayList<>();
+        for (com.alibaba.druid.sql.ast.SQLName column : entry.getColumns()) {
+            names.add(column.toString());
+        }
+        return names;
+    }
+
+    private static String rawAlias(SQLSelectItem item) {
+        String alias = item.getAlias();
+        if (alias == null) {
+            return null;
+        }
+        String text = item.toString();
+        int index = text.toUpperCase().lastIndexOf(" AS ");
+        if (index >= 0) {
+            String tail = text.substring(index + 4).trim();
+            if (!tail.isEmpty()) {
+                return tail;
+            }
+        }
+        return alias;
+    }
+
     private List<String> staticOutputNames(SQLSelectQuery query,
             Map<String, List<String>> scope) {
         if (query instanceof SQLSelectQueryBlock) {
@@ -936,7 +1033,7 @@ public class DmlLineage {
                     return null;
                 }
                 if (item.getAlias() != null) {
-                    names.add(canonicalIdentifier(item.getAlias()));
+                    names.add(rawAlias(item));
                 } else if (expr instanceof SQLIdentifierExpr) {
                     names.add(canonicalIdentifier(((SQLIdentifierExpr) expr).getName()));
                 } else if (expr instanceof SQLPropertyExpr
@@ -984,8 +1081,7 @@ public class DmlLineage {
         if (from instanceof SQLSubqueryTableSource) {
             return ((SQLSubqueryTableSource) from).getAlias() != null
                     ? staticTableNames(from, scope)
-                    : staticOutputNames(((SQLSubqueryTableSource) from).getSelect().getQuery(),
-                            scope);
+                    : staticOutputNames(((SQLSubqueryTableSource) from).getSelect(), scope);
         }
         if (from instanceof SQLUnionQueryTableSource) {
             return staticOutputNames(((SQLUnionQueryTableSource) from).getUnion(), scope);
@@ -997,19 +1093,26 @@ public class DmlLineage {
             if (left == null || right == null) {
                 return null;
             }
-            List<String> names = new ArrayList<>(left);
-            if (join.getUsing() != null) {
+            if (join.getUsing() != null && !join.getUsing().isEmpty()) {
+                List<String> names = new ArrayList<>();
+                Set<String> usingKeys = new HashSet<>();
                 for (SQLExpr expr : join.getUsing()) {
-                    String key = identifierKey(expr.toString());
-                    for (int i = right.size() - 1; i >= 0; i--) {
-                        if (key.equals(identifierKey(right.get(i)))) {
-                            right = new ArrayList<>(right);
-                            right.remove(i);
-                            break;
-                        }
+                    names.add(expr.toString());
+                    usingKeys.add(identifierKey(expr.toString()));
+                }
+                for (String name : left) {
+                    if (name == null || !usingKeys.contains(identifierKey(name))) {
+                        names.add(name);
                     }
                 }
+                for (String name : right) {
+                    if (name == null || !usingKeys.contains(identifierKey(name))) {
+                        names.add(name);
+                    }
+                }
+                return names;
             }
+            List<String> names = new ArrayList<>(left);
             names.addAll(right);
             return names;
         }
@@ -1023,7 +1126,7 @@ public class DmlLineage {
         }
         if (table instanceof SQLSubqueryTableSource) {
             return staticOutputNames(
-                    ((SQLSubqueryTableSource) table).getSelect().getQuery(), scope);
+                    ((SQLSubqueryTableSource) table).getSelect(), scope);
         }
         if (table instanceof SQLUnionQueryTableSource) {
             return staticOutputNames(((SQLUnionQueryTableSource) table).getUnion(), scope);

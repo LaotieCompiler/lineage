@@ -2430,6 +2430,108 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void recursiveCteUsingKeepsMergedOrder() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (v INT, k INT);"
+                + " CREATE TABLE c (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE x AS (SELECT * FROM b JOIN c USING(k))"
+                        + " SELECT * FROM x;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("b.k"), new Column("c.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.v"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.v")));
+    }
+
+    @Test
+    public void recursiveCteDeclaredColumnsOverrideStaticNames() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.v FROM x), x(v) AS (SELECT k FROM b)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.v")));
+    }
+
+    @Test
+    public void recursiveCteQuotedForwardColumnKeepsIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.\"K\" FROM x),"
+                        + " x AS (SELECT k AS \"K\" FROM b) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.K")));
+    }
+
+    @Test
+    public void recursiveCteConstantPositionKeepsKnownNames() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT k FROM x CROSS JOIN b),"
+                        + " x AS (SELECT 1 AS v, 2) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void recursiveCteNestedWithNamesResolveLocally() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.k FROM x),"
+                        + " x AS (WITH b AS (SELECT 1 AS k) SELECT * FROM b)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                Column.temporary("stmt0.b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void threeLayerRecursiveForwardWidthBoundsEarlierStar() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM m UNION ALL SELECT * FROM ("
+                        + "WITH RECURSIVE y AS (SELECT * FROM x),"
+                        + " x AS (SELECT * FROM z),"
+                        + " z AS (SELECT k FROM b) SELECT * FROM y) AS q;"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("b.k")));
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

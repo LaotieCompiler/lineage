@@ -2596,7 +2596,8 @@ public class DmlLineage {
         String alias = table.getAlias();
         Table metadataTable = null;
         String display = alias != null ? alias
-                : isSingleSegmentName(written) ? lastIdentifier(written) : written;
+                : detachedMetadata() && !isSingleSegmentName(written) ? written
+                        : lastIdentifier(written);
         String cteTarget = isSingleSegmentName(rawName)
                 ? findCteTarget(identifierKey(rawName)) : null;
         boolean temporary = cteTarget != null;
@@ -3486,28 +3487,50 @@ public class DmlLineage {
                 : Math.min(node.rightBoundary, template.size());
         List<StarOutput> plan = new ArrayList<>(template);
         Set<StarOutput> syntheticOutputs = new HashSet<>();
-        boolean budgetUsed = false;
+        Set<StarOutput> exactlySizedOutputs = new HashSet<>();
+        List<SourceTable> remainderSources = new ArrayList<>();
         for (SourceTable source : sources) {
-            if (sourceColumnsKnown(source) || coveredByUnknownOutput(plan, source)) {
-                continue;
+            if (!sourceColumnsKnown(source) && !coveredByUnknownOutput(plan, source)) {
+                remainderSources.add(source);
             }
+        }
+        List<java.util.Map.Entry<SourceTable, Integer>> remainderEnds =
+                new ArrayList<>();
+        for (SourceTable source : remainderSources) {
+            Integer end = node == null ? null : node.unknownSectionEnd.get(source);
+            remainderEnds.add(new java.util.AbstractMap.SimpleEntry<>(source,
+                    end == null ? boundary : Math.min(end, plan.size())));
+        }
+        remainderEnds.sort(java.util.Comparator.comparingInt(
+                java.util.Map.Entry::getValue));
+        int inserted = 0;
+        for (java.util.Map.Entry<SourceTable, Integer> entry : remainderEnds) {
+            SourceTable source = entry.getKey();
+            int insertAt = Math.min(entry.getValue() + inserted, plan.size());
             // Its remaining columns are unknown: place a wildcard where this side's
-            // columns appear, so following known columns keep their positions. When the
-            // width is fixed (INSERT target list / UNION sibling), fill it exactly.
+            // columns appear, so following known columns keep their positions. Only a
+            // single remainder can be sized exactly by a fixed total width; with two or
+            // more the distribution is unknown and later columns stay undetermined.
             int count = 1;
-            if (!budgetUsed && currentStarBudget > 0) {
+            boolean exact = false;
+            if (remainderSources.size() == 1 && currentStarBudget > 0) {
                 count = Math.max(1, currentStarBudget - plan.size());
-                budgetUsed = true;
+                exact = true;
             }
             for (int i = 0; i < count; i++) {
-                String name = "col" + (boundary + 1);
+                String name = "col" + (insertAt + 1);
                 StarOutput placeholder = new StarOutput(
                         java.util.Collections.singletonList(new StarColumn(source, name,
                                 identifierKey(name), false, false)), false, false);
-                plan.add(boundary++, placeholder);
+                plan.add(insertAt++, placeholder);
                 syntheticOutputs.add(placeholder);
+                inserted++;
+                if (exact) {
+                    exactlySizedOutputs.add(placeholder);
+                }
             }
         }
+
         int position = startPosition;
         for (StarOutput output : plan) {
             if (output.sources.isEmpty()) {
@@ -3558,9 +3581,9 @@ public class DmlLineage {
             } else {
                 for (SourceTable source : starOutputSources(output)) {
                     Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                            source.displayName, targetTable, position, source.temporary,
-                            targetTemporary);
-                    if (syntheticOutputs.contains(output) && currentStarBudget > 0) {
+                            lineageTableName(source), targetTable, position,
+                            source.temporary, targetTemporary);
+                    if (exactlySizedOutputs.contains(output)) {
                         wildcard.setWildcardWidthKnown(true);
                     }
                     instructions.add(wildcard);
@@ -3575,6 +3598,18 @@ public class DmlLineage {
      * Whether a source already contributed a column whose identity is known. Its other
      * columns are then still unexpanded.
      */
+    /**
+     * The physical table identity of a source: an alias is only a SQL binding, not a
+     * lineage vertex.
+     */
+    private static String lineageTableName(SourceTable source) {
+        if (source.temporary || source.writtenName == null
+                || source.metadataTable != null) {
+            return source.displayName;
+        }
+        return source.writtenName;
+    }
+
     private static boolean coveredByUnknownOutput(List<StarOutput> plan,
             SourceTable source) {
         for (StarOutput output : plan) {

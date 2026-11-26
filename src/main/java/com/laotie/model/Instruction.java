@@ -27,6 +27,8 @@ public class Instruction {
     /** A column whose name is unknown but whose position is known. */
     private static final Column UNNAMED = new Column(null, "\u0000unnamed");
 
+
+
     OperationType operation;
 
     String from;
@@ -109,12 +111,13 @@ public class Instruction {
         List<Instruction> result = new ArrayList<>();
         Map<String, List<Column>> tempColumns = new HashMap<>();
         Map<String, Set<Integer>> tempUnknown = new HashMap<>();
+        Map<String, Set<Integer>> tempWildcardKnown = new HashMap<>();
 
         for (Instruction instruction : sourceInstructions) {
             switch (instruction.getOperation()) {
                 case COLUMNS_INJECT:
                     expandColumnsInject(instruction, context, targetOutputs, tempColumns,
-                            tempUnknown, result);
+                            tempUnknown, tempWildcardKnown, result);
                     break;
                 case COLUMN_MAPPING:
                 case EXPR_MAPPING:
@@ -173,7 +176,8 @@ public class Instruction {
 
     private static void expandColumnsInject(Instruction instruction, MetadataContext context,
             Map<String, List<String>> targetOutputs, Map<String, List<Column>> tempColumns,
-            Map<String, Set<Integer>> tempUnknown, List<Instruction> result) {
+            Map<String, Set<Integer>> tempUnknown,
+            Map<String, Set<Integer>> tempWildcardKnown, List<Instruction> result) {
         String fromTable = instruction.getFrom();
         String toTable = instruction.getTo();
 
@@ -183,7 +187,7 @@ public class Instruction {
         boolean partiallyKnown = false;
         if (fromColumns != null) {
             for (Column column : fromColumns) {
-                if (column == null || column == UNNAMED) {
+                if (column == null) {
                     partiallyKnown = true;
                     break;
                 }
@@ -191,10 +195,14 @@ public class Instruction {
         }
         Set<Integer> unknownPositions = instruction.isFromTemporary()
                 ? tempUnknown.get(fromTable) : null;
-        if (partiallyKnown || unknownPositions != null && !unknownPositions.isEmpty()) {
+        Set<Integer> knownWidthWildcards = instruction.isFromTemporary()
+                ? tempWildcardKnown.get(fromTable) : null;
+        if (partiallyKnown || unknownPositions != null && !unknownPositions.isEmpty()
+                || knownWidthWildcards != null && !knownWidthWildcards.isEmpty()) {
             // The source still has unexpanded wildcard positions: keep a table-level edge
             // even when some columns are known.
-            keepWildcardEdge(instruction, fromTable, tempColumns, tempUnknown, result);
+            keepWildcardEdge(instruction, fromTable, tempColumns, tempUnknown,
+                    tempWildcardKnown, result);
         }
         if (fromColumns == null || fromColumns.isEmpty()) {
             if (instruction.getWildcardTable() == null && !partiallyKnown
@@ -203,13 +211,19 @@ public class Instruction {
             }
             if (instruction.isToTemporary()) {
                 int at = Math.max(instruction.getOrdinal(), 0);
-                List<Column> columns = tempColumns.computeIfAbsent(toTable,
-                        key -> new ArrayList<Column>());
-                while (columns.size() <= at) {
-                    columns.add(null);
-                }
                 if (instruction.isWildcardWidthKnown()) {
-                    columns.set(at, UNNAMED);
+                    // Position known, name unknown: remember it separately so a known
+                    // column from another UNION branch can still be mapped.
+                    tempWildcardKnown.computeIfAbsent(toTable,
+                            key -> new HashSet<Integer>()).add(at);
+                    List<Column> columns = tempColumns.computeIfAbsent(toTable,
+                            key -> new ArrayList<Column>());
+                    while (columns.size() <= at) {
+                        columns.add(null);
+                    }
+                    if (columns.get(at) == null) {
+                        columns.set(at, UNNAMED);
+                    }
                 } else {
                     markUnknownTempColumn(tempColumns, toTable, instruction.getOrdinal());
                     tempUnknown.computeIfAbsent(toTable,
@@ -391,7 +405,7 @@ public class Instruction {
 
     private static void keepWildcardEdge(Instruction instruction, String fromTable,
             Map<String, List<Column>> tempColumns, Map<String, Set<Integer>> tempUnknown,
-            List<Instruction> result) {
+            Map<String, Set<Integer>> tempWildcardKnown, List<Instruction> result) {
         String target = instruction.getWildcardTable() != null
                 ? instruction.getWildcardTable()
                 : instruction.getTo();
@@ -405,9 +419,15 @@ public class Instruction {
         edge.setWildcardTable(target);
         result.add(edge);
         if (instruction.isToTemporary()) {
-            markUnknownTempColumn(tempColumns, target, instruction.getOrdinal());
-            tempUnknown.computeIfAbsent(target, key -> new HashSet<Integer>())
-                    .add(Math.max(instruction.getOrdinal(), 0));
+            int at = Math.max(instruction.getOrdinal(), 0);
+            if (instruction.isWildcardWidthKnown()) {
+                tempWildcardKnown.computeIfAbsent(target,
+                        key -> new HashSet<Integer>()).add(at);
+            } else {
+                markUnknownTempColumn(tempColumns, target, instruction.getOrdinal());
+                tempUnknown.computeIfAbsent(target, key -> new HashSet<Integer>())
+                        .add(at);
+            }
         }
     }
 

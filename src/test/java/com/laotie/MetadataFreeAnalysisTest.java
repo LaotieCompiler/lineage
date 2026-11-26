@@ -729,6 +729,71 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void unionBranchOrderKeepsWildcardAndKnownColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT, v INT);"
+                + " CREATE TABLE b (k INT, q INT, v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        for (String sql : new String[] {
+                "INSERT INTO t(c1,c2,c3) SELECT k,q,v FROM b"
+                        + " UNION ALL SELECT * FROM missing RIGHT JOIN a USING(k);",
+                "INSERT INTO t(c1,c2,c3) SELECT * FROM missing RIGHT JOIN a USING(k)"
+                        + " UNION ALL SELECT k,q,v FROM b;" }) {
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(sql);
+
+            assertEquals(0, result.getFailures().size());
+            assertTrue("wildcard edge lost: " + sql,
+                    result.getGraph().getSources(new Column("t.*"))
+                            .contains(new Column("missing.*")));
+            assertEquals("known column edge lost: " + sql,
+                    new HashSet<>(java.util.Arrays.asList(new Column("b.q"))),
+                    result.getGraph().getSources(new Column("t.c2")));
+        }
+    }
+
+    @Test
+    public void twoUnknownRemaindersDoNotGuessColumnPositions() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT, v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3,c4)"
+                        + " SELECT * FROM m1 RIGHT JOIN a USING(k) LEFT JOIN m2 USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(new Column("t.c2")));
+        assertTrue(result.getGraph().getSources(new Column("t.*"))
+                .contains(new Column("m1.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.*"))
+                .contains(new Column("m2.*")));
+    }
+
+    @Test
+    public void aliasedQualifiedTablesKeepPhysicalIdentity() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t SELECT x.* FROM s1.a AS x;"
+                        + " INSERT INTO u SELECT x.* FROM s2.a AS x;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("s1.a.*"))),
+                result.getGraph().getSources(new Column("t.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("s2.a.*"))),
+                result.getGraph().getSources(new Column("u.*")));
+    }
+
+    @Test
+    public void strictModeKeepsUnqualifiedTableIdentity() {
+        ScanResult result = new LineageScanner(DbType.postgresql)
+                .scan("SELECT k FROM s.a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

@@ -707,7 +707,8 @@ public class DmlLineage {
                 new java.util.IdentityHashMap<>();
         for (SQLWithSubqueryClause.Entry entry : entries) {
             java.util.Set<String> refs = new java.util.LinkedHashSet<>();
-            collectSelectReferences(entry.getSubQuery(), refs);
+            collectSelectReferences(entry.getSubQuery(), refs,
+                    java.util.Collections.<String>emptySet());
             entryRefs.put(entry, refs);
         }
         java.util.List<SQLWithSubqueryClause.Entry> ordered = new java.util.ArrayList<>();
@@ -754,46 +755,78 @@ public class DmlLineage {
         return ordered;
     }
 
-    private void collectSelectReferences(SQLSelect select, Set<String> refs) {
+    private void collectSelectReferences(SQLSelect select, Set<String> refs,
+            Set<String> shadowed) {
         if (select == null) {
             return;
         }
         SQLWithSubqueryClause with = select.getWithSubQuery();
+        Set<String> scope = shadowed;
         if (with != null) {
+            Set<String> local = new java.util.LinkedHashSet<>();
             for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
-                collectSelectReferences(entry.getSubQuery(), refs);
+                if (entry.getAlias() != null) {
+                    local.add(identifierKey(entry.getAlias()));
+                }
             }
+            boolean recursive = Boolean.TRUE.equals(with.getRecursive());
+            Set<String> bodyScope = new HashSet<>(shadowed);
+            if (recursive) {
+                // Every local name shadows an outer sibling inside any local body.
+                bodyScope.addAll(local);
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    collectSelectReferences(entry.getSubQuery(), refs, bodyScope);
+                }
+            } else {
+                // A non-recursive body only sees earlier local names.
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    collectSelectReferences(entry.getSubQuery(), refs, bodyScope);
+                    if (entry.getAlias() != null) {
+                        bodyScope.add(identifierKey(entry.getAlias()));
+                    }
+                }
+            }
+            scope = new HashSet<>(shadowed);
+            scope.addAll(local);
         }
-        collectQueryReferences(select.getQuery(), refs);
+        collectQueryReferences(select.getQuery(), refs, scope);
     }
 
-    private void collectQueryReferences(SQLSelectQuery query, Set<String> refs) {
+    private void collectQueryReferences(SQLSelectQuery query, Set<String> refs,
+            Set<String> shadowed) {
         if (query instanceof SQLSelectQueryBlock) {
-            collectSourceReferences(((SQLSelectQueryBlock) query).getFrom(), refs);
+            collectSourceReferences(((SQLSelectQueryBlock) query).getFrom(), refs,
+                    shadowed);
         } else if (query instanceof SQLUnionQuery) {
             SQLUnionQuery union = (SQLUnionQuery) query;
-            collectQueryReferences(union.getLeft(), refs);
-            collectQueryReferences(union.getRight(), refs);
+            collectQueryReferences(union.getLeft(), refs, shadowed);
+            collectQueryReferences(union.getRight(), refs, shadowed);
         }
     }
 
-    private void collectSourceReferences(SQLTableSource from, Set<String> refs) {
+    private void collectSourceReferences(SQLTableSource from, Set<String> refs,
+            Set<String> shadowed) {
         if (from == null) {
             return;
         }
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;
-            collectSourceReferences(join.getLeft(), refs);
-            collectSourceReferences(join.getRight(), refs);
+            collectSourceReferences(join.getLeft(), refs, shadowed);
+            collectSourceReferences(join.getRight(), refs, shadowed);
         } else if (from instanceof SQLExprTableSource) {
             String name = extractTableName((SQLExprTableSource) from);
             if (name != null && isSingleSegmentName(name)) {
-                refs.add(identifierKey(name));
+                String key = identifierKey(name);
+                if (!shadowed.contains(key)) {
+                    refs.add(key);
+                }
             }
         } else if (from instanceof SQLSubqueryTableSource) {
-            collectSelectReferences(((SQLSubqueryTableSource) from).getSelect(), refs);
+            collectSelectReferences(((SQLSubqueryTableSource) from).getSelect(), refs,
+                    shadowed);
         } else if (from instanceof SQLUnionQueryTableSource) {
-            collectQueryReferences(((SQLUnionQueryTableSource) from).getUnion(), refs);
+            collectQueryReferences(((SQLUnionQueryTableSource) from).getUnion(), refs,
+                    shadowed);
         }
     }
 

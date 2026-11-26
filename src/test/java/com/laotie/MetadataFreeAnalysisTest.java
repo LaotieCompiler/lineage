@@ -2378,6 +2378,24 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void recursiveCteForwardReferenceResolvesInPrepass() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.x (v INT);"
+                + " CREATE TABLE s2.x (v INT); CREATE TABLE s.b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT 1 UNION ALL SELECT * FROM ("
+                        + "WITH RECURSIVE y AS (SELECT s.b.* FROM x CROSS JOIN s.b),"
+                        + " x AS (SELECT 0)"
+                        + " SELECT * FROM y) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.\"1\""))
+                .contains(new Column("s.b.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

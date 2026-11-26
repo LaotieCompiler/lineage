@@ -688,11 +688,33 @@ public class DmlLineage {
             return;
         }
         boolean recursive = Boolean.TRUE.equals(withSubQuery.getRecursive());
+        Map<SQLWithSubqueryClause.Entry, String> prebound = new HashMap<>();
+        if (recursive) {
+            // WITH RECURSIVE makes every sibling visible to every body, including
+            // ones declared later, so bind all names first.
+            for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
+                String alias = entry.getAlias();
+                if (alias == null) {
+                    continue;
+                }
+                String target = uniqueTarget(normalizeIdentifier(alias));
+                tempTables.add(target);
+                prebound.put(entry, target);
+                if (!cteScopes.isEmpty()) {
+                    cteScopes.peek().put(identifierKey(alias), target);
+                }
+            }
+        }
         for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
             String alias = entry.getAlias();
-            String target = alias != null
-                    ? uniqueTarget(normalizeIdentifier(alias)) : getTempTableName();
-            tempTables.add(target);
+            String target = prebound.containsKey(entry)
+                    ? prebound.get(entry)
+                    : alias != null
+                            ? uniqueTarget(normalizeIdentifier(alias))
+                            : getTempTableName();
+            if (!prebound.containsKey(entry)) {
+                tempTables.add(target);
+            }
 
             List<String> declaredColumns = new ArrayList<>();
             List<String> declaredKeys = new ArrayList<>();
@@ -711,11 +733,6 @@ public class DmlLineage {
             }
             targetColumnAliases.push(aliases);
 
-            // A non-recursive CTE body sees the outer binding, not itself; a recursive CTE
-            // is visible inside its own definition.
-            if (recursive && alias != null && !cteScopes.isEmpty()) {
-                cteScopes.peek().put(identifierKey(alias), target);
-            }
             try {
                 stackTargetTable.push(target);
                 processSelect(entry.getSubQuery());
@@ -830,18 +847,22 @@ public class DmlLineage {
             DbType dialect = currentDialect();
             boolean exactCount = dialect == DbType.mysql || dialect == DbType.mariadb;
             boolean recursive = Boolean.TRUE.equals(with.getRecursive());
+            if (recursive) {
+                // WITH RECURSIVE binds every sibling before any body runs, including
+                // forward references.
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    String alias = entry.getAlias();
+                    if (alias != null) {
+                        scope.put(identifierKey(alias), -1);
+                    }
+                }
+            }
             for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
                 String alias = entry.getAlias();
                 if (alias == null) {
                     continue;
                 }
                 String aliasKey = identifierKey(alias);
-                if (recursive) {
-                    // A recursive CTE is visible inside its own definition; register
-                    // the name (width still unknown) so it is never looked up in the
-                    // catalog while pre-sizing its body.
-                    scope.put(aliasKey, -1);
-                }
                 int declared = entry.getColumns() == null ? 0 : entry.getColumns().size();
                 int width = staticSelectWidth(entry.getSubQuery(), scope);
                 if (width < 0 && declared > 0 && exactCount) {

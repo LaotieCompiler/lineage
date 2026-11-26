@@ -545,6 +545,66 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void unionKnownBranchDoesNotHideUnknownWildcardInInsert() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT); CREATE TABLE t (c1 INT);");
+        for (String sql : new String[] {
+                "INSERT INTO t(c1) SELECT * FROM missing UNION ALL SELECT k FROM a;",
+                "INSERT INTO t(c1) SELECT k FROM a UNION ALL SELECT * FROM missing;" }) {
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(sql);
+
+            assertEquals(0, result.getFailures().size());
+            assertTrue("missing table edge lost: " + sql,
+                    result.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
+            assertTrue(result.getGraph().getSources(new Column("t.*"))
+                    .contains(new Column("missing.*")));
+        }
+    }
+
+    @Test
+    public void usingWithNameUnknownSideIsNotAmbiguous() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH x AS (SELECT * FROM missing UNION ALL SELECT k AS z FROM a)"
+                        + " SELECT k FROM x RIGHT JOIN a USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void searchPathSeparatorsArePreserved() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE dummy (x INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), inferring()).scan(
+                "SET search_path TO \"s1,s2\"; SELECT p.c1,q.c2 FROM p,q;"
+                        + " SET search_path TO s1,s2; SELECT c1 FROM p,q;");
+
+        assertTrue(result.getResults().get(3).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void unboundStarAliasIsRejected() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("SELECT z.* FROM a; SELECT k FROM a;");
+
+        assertEquals(2, result.getResults().size());
+        assertTrue(result.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+        assertTrue(result.getResults().get(0).getInstructions().isEmpty());
+        assertNull(result.getResults().get(1).getError());
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

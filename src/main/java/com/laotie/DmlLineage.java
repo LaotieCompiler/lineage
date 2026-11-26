@@ -324,7 +324,7 @@ public class DmlLineage {
         this.tempTableNum = 0;
         this.sessionDatabase = session.database;
         this.sessionSchema = session.schemas.isEmpty() ? null
-                : String.join(",", session.schemas);
+                : String.join("\u0001", session.schemas);
         this.pendingLearned = new HashMap<>();
         try {
             init(true);
@@ -1427,6 +1427,10 @@ public class DmlLineage {
                     plan = planFromSource(source);
                 } else {
                     SourceNode binding = joinBinding(owner);
+                    if (binding == null && context != null) {
+                        throw new MetadataNotFoundException(owner == null
+                                ? "*" : owner.toString());
+                    }
                     plan = binding == null ? new ArrayList<StarOutput>() : binding.plan;
                 }
                 int width = emitDetachedPlan(targetTable, plan, currentOrdinal);
@@ -2354,7 +2358,7 @@ public class DmlLineage {
 
     private void addUnknownSources(List<SourceTable> target, List<SourceTable> candidates) {
         for (SourceTable source : candidates) {
-            if (!sourceColumnsKnown(source) && !target.contains(source)) {
+            if (!sourceNamesKnown(source) && !target.contains(source)) {
                 target.add(source);
             }
         }

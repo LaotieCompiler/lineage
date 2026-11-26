@@ -3,8 +3,10 @@ package com.laotie.model;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -97,11 +99,13 @@ public class Instruction {
 
         List<Instruction> result = new ArrayList<>();
         Map<String, List<Column>> tempColumns = new HashMap<>();
+        Map<String, Set<Integer>> tempUnknown = new HashMap<>();
 
         for (Instruction instruction : sourceInstructions) {
             switch (instruction.getOperation()) {
                 case COLUMNS_INJECT:
-                    expandColumnsInject(instruction, context, targetOutputs, tempColumns, result);
+                    expandColumnsInject(instruction, context, targetOutputs, tempColumns,
+                            tempUnknown, result);
                     break;
                 case COLUMN_MAPPING:
                 case EXPR_MAPPING:
@@ -160,7 +164,7 @@ public class Instruction {
 
     private static void expandColumnsInject(Instruction instruction, MetadataContext context,
             Map<String, List<String>> targetOutputs, Map<String, List<Column>> tempColumns,
-            List<Instruction> result) {
+            Map<String, Set<Integer>> tempUnknown, List<Instruction> result) {
         String fromTable = instruction.getFrom();
         String toTable = instruction.getTo();
 
@@ -176,23 +180,23 @@ public class Instruction {
                 }
             }
         }
-        if (fromColumns == null || fromColumns.isEmpty() || partiallyKnown) {
-            // The source columns are unknown: keep the wildcard so that the table-level
-            // edge survives instead of being dropped. An explicit target column list is
-            // not a table identity, so the edge points at the target table.
-            if (instruction.getWildcardTable() != null) {
-                Instruction edge = new Instruction(OperationType.COLUMNS_INJECT, fromTable,
-                        instruction.getWildcardTable(), instruction.getOrdinal(),
-                        instruction.isFromTemporary(), instruction.isToTemporary());
-                edge.setWildcardTable(instruction.getWildcardTable());
-                result.add(edge);
-            } else {
+        Set<Integer> unknownPositions = instruction.isFromTemporary()
+                ? tempUnknown.get(fromTable) : null;
+        if (partiallyKnown || unknownPositions != null && !unknownPositions.isEmpty()) {
+            // The source still has unexpanded wildcard positions: keep a table-level edge
+            // even when some columns are known.
+            keepWildcardEdge(instruction, fromTable, tempColumns, tempUnknown, result);
+        }
+        if (fromColumns == null || fromColumns.isEmpty()) {
+            if (instruction.getWildcardTable() == null && !partiallyKnown
+                    && (unknownPositions == null || unknownPositions.isEmpty())) {
                 result.add(instruction);
             }
             if (instruction.isToTemporary()) {
-                // Remember that this position of the temporary table is unknown, so a
-                // later expansion keeps a wildcard instead of mapping a partial list.
                 markUnknownTempColumn(tempColumns, toTable, instruction.getOrdinal());
+                tempUnknown.computeIfAbsent(toTable,
+                        key -> new HashSet<Integer>())
+                        .add(Math.max(instruction.getOrdinal(), 0));
             }
             return;
         }
@@ -231,6 +235,8 @@ public class Instruction {
                         targetTable, instruction.getOrdinal(),
                         instruction.isFromTemporary(), instruction.isToTemporary()));
                 markUnknownTempColumn(tempColumns, targetTable, instruction.getOrdinal());
+                tempUnknown.computeIfAbsent(targetTable,
+                        key -> new HashSet<Integer>()).add(Math.max(start, 0));
                 return;
             }
         }
@@ -287,8 +293,14 @@ public class Instruction {
 
         int size = Math.min(fromColumns.size(), targets.size());
         for (int i = 0; i < size; i++) {
+            Column from = fromColumns.get(i);
+            if (from == null) {
+                // This position is an unresolved wildcard; the table-level edge above
+                // already covers it.
+                continue;
+            }
             result.add(new Instruction(OperationType.COLUMN_MAPPING,
-                    fromTable + "." + renderIdentifier(fromColumns.get(i).getColumnName()),
+                    fromTable + "." + renderIdentifier(from.getColumnName()),
                     targetTable + "." + renderIdentifier(targets.get(i)), -1,
                     instruction.isFromTemporary(), instruction.isToTemporary()));
         }
@@ -347,6 +359,28 @@ public class Instruction {
         int at = ordinal >= 0 ? ordinal : columns.size();
         while (columns.size() <= at) {
             columns.add(null);
+        }
+    }
+
+    private static void keepWildcardEdge(Instruction instruction, String fromTable,
+            Map<String, List<Column>> tempColumns, Map<String, Set<Integer>> tempUnknown,
+            List<Instruction> result) {
+        String target = instruction.getWildcardTable() != null
+                ? instruction.getWildcardTable()
+                : instruction.getTo();
+        int lparen = findColumnListStart(target);
+        if (lparen > 0) {
+            target = target.substring(0, lparen);
+        }
+        Instruction edge = new Instruction(OperationType.COLUMNS_INJECT, fromTable, target,
+                instruction.getOrdinal(), instruction.isFromTemporary(),
+                instruction.isToTemporary());
+        edge.setWildcardTable(target);
+        result.add(edge);
+        if (instruction.isToTemporary()) {
+            markUnknownTempColumn(tempColumns, target, instruction.getOrdinal());
+            tempUnknown.computeIfAbsent(target, key -> new HashSet<Integer>())
+                    .add(Math.max(instruction.getOrdinal(), 0));
         }
     }
 

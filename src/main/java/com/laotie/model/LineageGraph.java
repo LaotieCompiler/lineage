@@ -60,8 +60,7 @@ public class LineageGraph {
         Map<String, Map<Integer, String>> tempColumnsByPosition = new HashMap<>();
         Map<String, Integer> tempMaxPosition = new HashMap<>();
         Map<String, Integer> tempProjectionWidth = new HashMap<>();
-        Map<String, java.util.List<int[]>> tempWildcardRanges = new HashMap<>();
-        Map<String, Map<Integer, Column>> tempWildcardSources = new HashMap<>();
+        Map<String, java.util.List<WildcardRegion>> tempWildcardRegions = new HashMap<>();
         Set<String> tempWidthKnown = new HashSet<>();
         java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
@@ -102,17 +101,15 @@ public class LineageGraph {
                                 tempProjectionWidth.merge(key, end, Math::max);
                             }
                         }
-                        tempWildcardRanges
+                        java.util.List<WildcardRegion> regions = tempWildcardRegions
                                 .computeIfAbsent(key,
-                                        k -> new java.util.ArrayList<int[]>())
-                                .add(new int[] {start, end});
-                        Map<Integer, Column> sourcesByPosition = tempWildcardSources
-                                .computeIfAbsent(key,
-                                        k -> new HashMap<Integer, Column>());
-                        int limit = end == Integer.MAX_VALUE ? start + 1 : end;
-                        for (int position = start; position < limit; position++) {
-                            sourcesByPosition.putIfAbsent(position, from);
+                                        k -> new java.util.ArrayList<WildcardRegion>());
+                        WildcardRegion region = coveringRegion(regions, start);
+                        if (region == null) {
+                            region = new WildcardRegion(start, end);
+                            regions.add(region);
                         }
+                        region.sources.add(from);
                     }
                     if (!instruction.isToTemporary()) {
                         // Only writes establish which columns a table-level wildcard
@@ -129,7 +126,7 @@ public class LineageGraph {
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
                                         source, columns, prefix, fromTable, fromTemporary,
                                         tempColumnsByPosition, tempWidthKnown,
-                                        tempWildcardRanges, tempWildcardSources));
+                                        tempWildcardRegions));
                             }
                         } else if (!to.isTemporary() && result.getContext() != null) {
                             java.util.List<String> targetColumns =
@@ -162,7 +159,7 @@ public class LineageGraph {
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
                                         source, names, prefix, fromTable, fromTemporary,
                                         tempColumnsByPosition, tempWidthKnown,
-                                        tempWildcardRanges, tempWildcardSources));
+                                        tempWildcardRegions));
                             }
                     }
                     reverseGraph.addVertex(from);
@@ -264,11 +261,10 @@ public class LineageGraph {
             String prefix, String fromTable, boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
             Set<String> tempWidthKnown,
-            Map<String, java.util.List<int[]>> tempWildcardRanges,
-            Map<String, Map<Integer, Column>> tempWildcardSources) {
+            Map<String, java.util.List<WildcardRegion>> tempWildcardRegions) {
         linkPopulatedColumns(target, sourceWildcard, splitColumns(columns), prefix,
                 fromTable, fromTemporary, tempColumnsByPosition, tempWidthKnown,
-                tempWildcardRanges, tempWildcardSources);
+                tempWildcardRegions);
     }
 
     private void linkPopulatedColumns(Column target, Column sourceWildcard,
@@ -276,8 +272,7 @@ public class LineageGraph {
             boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
             Set<String> tempWidthKnown,
-            Map<String, java.util.List<int[]>> tempWildcardRanges,
-            Map<String, Map<Integer, Column>> tempWildcardSources) {
+            Map<String, java.util.List<WildcardRegion>> tempWildcardRegions) {
         Map<Integer, String> tempPositions = fromTemporary
                 ? tempColumnsByPosition.get(prefix + fromTable) : null;
         for (int i = 0; i < names.size(); i++) {
@@ -291,15 +286,12 @@ public class LineageGraph {
             String tempColumn = tempPositions != null && tempPositions.containsKey(i)
                     ? tempPositions.get(i) : null;
             String tempKey = prefix + fromTable;
-            java.util.List<int[]> ranges = tempWildcardRanges.get(tempKey);
-            boolean inRange = inAnyRange(ranges, i);
-            Column positionalSource = positionalWildcardSource(tempKey, i,
-                    tempWildcardSources);
+            java.util.List<WildcardRegion> regions = tempWildcardRegions.get(tempKey);
+            java.util.List<Column> positionalSources = positionalWildcardSources(regions, i);
             if (CONSTANT_COLUMN.equals(tempColumn)) {
-                if (inRange) {
+                for (Column positionalSource : positionalSources) {
                     // Another UNION branch feeds this position from an unknown table.
-                    reverseGraph.addEdge(columnVertex,
-                            positionalSource != null ? positionalSource : sourceWildcard);
+                    reverseGraph.addEdge(columnVertex, positionalSource);
                 }
                 continue;
             }
@@ -312,36 +304,58 @@ public class LineageGraph {
                 }
                 continue;
             }
-            if (ranges != null && !ranges.isEmpty()) {
-                if (!inRange) {
+            if (regions != null && !regions.isEmpty()) {
+                if (positionalSources.isEmpty()) {
                     // Known widths bound the projection: this position is not fed by
                     // the write's wildcard.
                     continue;
                 }
-                reverseGraph.addEdge(columnVertex,
-                        positionalSource != null ? positionalSource : sourceWildcard);
+                for (Column positionalSource : positionalSources) {
+                    reverseGraph.addEdge(columnVertex, positionalSource);
+                }
                 continue;
             }
             reverseGraph.addEdge(columnVertex, sourceWildcard);
         }
     }
 
-    private static Column positionalWildcardSource(String tempKey, int position,
-            Map<String, Map<Integer, Column>> tempWildcardSources) {
-        Map<Integer, Column> sources = tempWildcardSources.get(tempKey);
-        return sources == null ? null : sources.get(position);
-    }
-
-    private static boolean inAnyRange(java.util.List<int[]> ranges, int position) {
-        if (ranges == null) {
-            return false;
+    private static java.util.List<Column> positionalWildcardSources(
+            java.util.List<WildcardRegion> regions, int position) {
+        java.util.List<Column> sources = new java.util.ArrayList<>();
+        if (regions == null) {
+            return sources;
         }
-        for (int[] range : ranges) {
-            if (position >= range[0] && position < range[1]) {
-                return true;
+        for (WildcardRegion region : regions) {
+            if (position >= region.start && position < region.end) {
+                for (Column source : region.sources) {
+                    if (!sources.contains(source)) {
+                        sources.add(source);
+                    }
+                }
             }
         }
-        return false;
+        return sources;
+    }
+
+    private static WildcardRegion coveringRegion(java.util.List<WildcardRegion> regions,
+            int position) {
+        for (WildcardRegion region : regions) {
+            if (position >= region.start && position < region.end) {
+                return region;
+            }
+        }
+        return null;
+    }
+
+    private static final class WildcardRegion {
+        private final int start;
+        private final int end;
+        private final java.util.List<Column> sources = new java.util.ArrayList<>();
+
+        private WildcardRegion(int start, int end) {
+            this.start = start;
+            this.end = end;
+        }
     }
 
     private static java.util.List<String> splitColumns(String columns) {

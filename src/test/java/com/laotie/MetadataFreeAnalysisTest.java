@@ -1560,6 +1560,77 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void overlappingUnionWildcardRangesAccumulateSources() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        for (String sql : new String[] {
+                "INSERT INTO t(c1) SELECT * FROM m1"
+                        + " UNION ALL SELECT * FROM m2 UNION ALL SELECT 1;",
+                "INSERT INTO t(c1) SELECT * FROM m2"
+                        + " UNION ALL SELECT * FROM m1 UNION ALL SELECT 1;" }) {
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(sql);
+            assertEquals(0, result.getFailures().size());
+            assertEquals("wildcard sources lost: " + sql,
+                    new HashSet<>(java.util.Arrays.asList(
+                            new Column("m1.*"), new Column("m2.*"))),
+                    result.getGraph().getSources(new Column("t.c1")));
+        }
+    }
+
+    @Test
+    public void openRangeStartsAtItsOwnPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3) SELECT x.*, y.* FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN m2 AS y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c3")));
+    }
+
+    @Test
+    public void usingMergedWidthBoundsWholeTableWrite() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM ("
+                        + "SELECT * FROM missing UNION ALL SELECT 1) AS x"
+                        + " JOIN b USING(k); SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        if (result.getGraph().getReverseGraph().containsVertex(new Column("t.c2"))) {
+            assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                    .contains(new Column("missing.*")));
+        }
+    }
+
+    @Test
+    public void contributionDoesNotCoverNextConstant() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT q.k, 42 AS fixed FROM ("
+                        + "SELECT k FROM b UNION ALL SELECT * FROM missing) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        if (result.getGraph().getReverseGraph().containsVertex(new Column("t.c2"))) {
+            assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                    .contains(new Column("missing.*")));
+        }
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

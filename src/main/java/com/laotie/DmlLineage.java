@@ -3402,6 +3402,9 @@ public class DmlLineage {
                     lineageTableName(column.source), targetTable, currentOrdinal,
                     column.source.temporary, tempTables.contains(targetTable));
             wildcard.setPositionalWildcard(true);
+            // The contribution only covers the named column's own position.
+            wildcard.setWildcardWidthKnown(true);
+            wildcard.setWildcardWidth(1);
             instructions.add(wildcard);
             targetWildcardContribution.put(targetTable, Boolean.TRUE);
         }
@@ -4224,6 +4227,8 @@ public class DmlLineage {
                     lineageTableName(source), target, currentOrdinal,
                     source.temporary, tempTables.contains(target));
             wildcard.setPositionalWildcard(true);
+            wildcard.setWildcardWidthKnown(true);
+            wildcard.setWildcardWidth(1);
             instructions.add(wildcard);
             targetWildcardContribution.put(target, Boolean.TRUE);
         }

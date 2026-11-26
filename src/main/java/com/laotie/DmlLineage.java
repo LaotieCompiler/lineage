@@ -807,7 +807,14 @@ public class DmlLineage {
                 List<String> outputs = target == null ? null : targetOutputs.get(target);
                 boolean known = target != null
                         && Boolean.TRUE.equals(targetWidthKnown.get(target));
-                scope.put(entry.getKey(), known && outputs != null ? outputs.size() : -1);
+                int width = outputs == null ? 0 : outputs.size();
+                if (known) {
+                    Integer min = targetMinWidth.get(target);
+                    if (min != null && min > 0) {
+                        width = Math.max(width, min);
+                    }
+                }
+                scope.put(entry.getKey(), known ? width : -1);
             }
         }
         return scope;
@@ -1025,11 +1032,25 @@ public class DmlLineage {
             return scope.get(key);
         }
         String cteTarget = findCteTarget(key);
-        if (cteTarget == null || !Boolean.TRUE.equals(targetWidthKnown.get(cteTarget))) {
+        if (cteTarget == null) {
+            if (context != null) {
+                TableLocation location = resolveMetadataTable(rawName);
+                if (location != null) {
+                    return Math.max(location.getTable().getFields().size(), 1);
+                }
+            }
+            return -1;
+        }
+        if (!Boolean.TRUE.equals(targetWidthKnown.get(cteTarget))) {
             return -1;
         }
         List<String> outputs = targetOutputs.get(cteTarget);
-        return outputs == null ? -1 : outputs.size();
+        int width = outputs == null ? 0 : outputs.size();
+        Integer min = targetMinWidth.get(cteTarget);
+        if (min != null && min > 0) {
+            width = Math.max(width, min);
+        }
+        return width > 0 ? width : -1;
     }
 
     private void processQueryBlock(SQLSelectQueryBlock queryBlock) {

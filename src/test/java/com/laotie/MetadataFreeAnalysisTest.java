@@ -2182,6 +2182,42 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void ctePartialNamesWidthDrivesUnionPrecheck() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT * FROM m UNION ALL SELECT 1, 2),"
+                        + " r AS (SELECT 42 AS head, q.* FROM q)"
+                        + " SELECT * FROM n UNION ALL SELECT * FROM r;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(1, result.getResults().size());
+        Set<Column> sources = result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.*"));
+        assertTrue(sources.contains(new Column("n.*")));
+        assertTrue(sources.contains(new Column("m.*")));
+    }
+
+    @Test
+    public void knownBranchWidthBoundsEarlierStar() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM m UNION ALL SELECT * FROM b;"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        // The union is one column wide; the second target column keeps its default.
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

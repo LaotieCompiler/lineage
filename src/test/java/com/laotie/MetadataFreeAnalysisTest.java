@@ -2614,6 +2614,71 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void nestedNonRecursiveCteSeesBothLocalEntries() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.k FROM x),"
+                        + " x AS (WITH a AS (SELECT 0), b AS (SELECT 1 AS k)"
+                        + " SELECT * FROM b) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                Column.temporary("stmt0.b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.x.k")));
+    }
+
+    @Test
+    public void partialDeclaredColumnsPadToKnownUnionWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM x UNION ALL SELECT 3, 4),"
+                        + " x(v) AS (SELECT * FROM m UNION ALL SELECT 1, 2)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                Column.temporary("stmt0.x.v"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.v")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                Column.temporary("stmt0.x.col2"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.col2")));
+    }
+
+    @Test
+    public void recursiveCteAliasWithEscapedQuotesResolves() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.\"a\"\"b\" FROM x),"
+                        + " x AS (SELECT k AS \"a\"\"b\" FROM b) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
+    @Test
+    public void recursiveCteDirectQuotedColumnKeepsKeyIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (\"K\" INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.\"K\" FROM x),"
+                        + " x AS (SELECT \"K\" FROM b) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.K"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.K")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

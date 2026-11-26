@@ -716,9 +716,12 @@ public class DmlLineage {
                     if (alias == null) {
                         continue;
                     }
-                    List<String> names = mergeDeclaredColumns(
-                            rawDeclaredColumns(entry),
-                            staticOutputNames(entry.getSubQuery(), nameScope));
+                    List<String> names = staticOutputNames(entry.getSubQuery(), nameScope);
+                    List<String> declared = rawDeclaredColumns(entry);
+                    if (names == null && declared != null) {
+                        names = padToStaticWidth(declared, entry.getSubQuery());
+                    }
+                    names = mergeDeclaredColumns(declared, names);
                     if (names != null) {
                         String key = identifierKey(alias);
                         if (!names.equals(nameScope.get(key))) {
@@ -755,8 +758,9 @@ public class DmlLineage {
                             usedKeys.add(identifierKey(display));
                             key = CONSTANT_OUTPUT_PREFIX + i;
                         } else {
-                            display = canonicalIdentifier(raw);
-                            key = identifierKey(raw);
+                            String spelling = unescapeQuotedName(raw);
+                            display = canonicalIdentifier(spelling);
+                            key = identifierKey(spelling);
                         }
                         setTargetOutput(target, i, display, key);
                         markOutputNameKnown(target, i, true);
@@ -981,26 +985,38 @@ public class DmlLineage {
                     }
                 }
             }
-            int guard = with.getEntries().size() + 1;
-            boolean changed = true;
-            while (changed && guard-- > 0) {
-                changed = false;
+            if (recursive) {
+                int guard = with.getEntries().size() + 1;
+                boolean changed = true;
+                while (changed && guard-- > 0) {
+                    changed = false;
+                    for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                        String alias = entry.getAlias();
+                        if (alias == null) {
+                            continue;
+                        }
+                        String key = identifierKey(alias);
+                        List<String> names = mergeDeclaredColumns(
+                                rawDeclaredColumns(entry),
+                                staticOutputNames(entry.getSubQuery(), nested));
+                        if (names != null && !names.equals(nested.get(key))) {
+                            nested.put(key, names);
+                            changed = true;
+                        }
+                    }
+                }
+            } else {
+                // A non-recursive WITH only sees earlier entries, so one ordered pass.
                 for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
                     String alias = entry.getAlias();
                     if (alias == null) {
                         continue;
                     }
-                    String key = identifierKey(alias);
                     List<String> names = mergeDeclaredColumns(
                             rawDeclaredColumns(entry),
                             staticOutputNames(entry.getSubQuery(), nested));
-                    if (names != null && !names.equals(nested.get(key))) {
-                        nested.put(key, names);
-                        changed = true;
-                    }
-                    if (!recursive) {
-                        // A non-recursive WITH only sees earlier entries.
-                        break;
+                    if (names != null) {
+                        nested.put(identifierKey(alias), names);
                     }
                 }
             }
@@ -1014,7 +1030,7 @@ public class DmlLineage {
             return derived;
         }
         if (derived == null) {
-            return declared;
+            return new ArrayList<>(declared);
         }
         List<String> merged = new ArrayList<>(derived);
         for (int i = 0; i < declared.size(); i++) {
@@ -1025,6 +1041,23 @@ public class DmlLineage {
             }
         }
         return merged;
+    }
+
+    private List<String> padToStaticWidth(List<String> declared, SQLSelect select) {
+        int width;
+        try {
+            width = staticSelectWidth(select, new HashMap<String, Integer>());
+        } catch (RuntimeException e) {
+            width = -1;
+        }
+        if (width <= declared.size()) {
+            return new ArrayList<>(declared);
+        }
+        List<String> names = new ArrayList<>(declared);
+        while (names.size() < width) {
+            names.add(null);
+        }
+        return names;
     }
 
     private static List<String> rawDeclaredColumns(SQLWithSubqueryClause.Entry entry) {
@@ -1038,31 +1071,31 @@ public class DmlLineage {
         return names;
     }
 
+    private static String unescapeQuotedName(String raw) {
+        return raw.replace("\"\"", "\"").replace("``", "`");
+    }
+
+    private static String rawProjectionName(SQLPropertyExpr expr) {
+        String[] parts = MetadataCatalog.splitQualifiedNamePreservingQuotes(
+                expr.toString());
+        return parts.length == 0 ? expr.getName() : parts[parts.length - 1];
+    }
+
     private static String rawAlias(SQLSelectItem item) {
         String alias = item.getAlias();
         if (alias == null) {
             return null;
         }
         String text = item.toString().trim();
-        if (!text.isEmpty()) {
-            char last = text.charAt(text.length() - 1);
-            if (last == '"' || last == '`' || last == ']') {
-                char open = last == '"' ? '"' : last == '`' ? '`' : '[';
-                for (int i = text.length() - 2; i >= 0; i--) {
-                    if (text.charAt(i) == open) {
-                        return text.substring(i);
-                    }
-                }
-            } else {
-                int i = text.length() - 1;
-                while (i >= 0 && !Character.isWhitespace(text.charAt(i))
-                        && text.charAt(i) != '.') {
-                    i--;
-                }
-                String token = text.substring(i + 1);
-                if (!token.isEmpty()) {
-                    return token;
-                }
+        String exprText = item.getExpr().toString();
+        if (text.startsWith(exprText)) {
+            String rest = text.substring(exprText.length()).trim();
+            if (rest.regionMatches(true, 0, "AS ", 0, 3)
+                    || rest.regionMatches(true, 0, "AS\t", 0, 3)) {
+                rest = rest.substring(3).trim();
+            }
+            if (!rest.isEmpty()) {
+                return rest;
             }
         }
         return alias;
@@ -1081,10 +1114,10 @@ public class DmlLineage {
                 if (item.getAlias() != null) {
                     names.add(rawAlias(item));
                 } else if (expr instanceof SQLIdentifierExpr) {
-                    names.add(canonicalIdentifier(((SQLIdentifierExpr) expr).getName()));
+                    names.add(expr.toString());
                 } else if (expr instanceof SQLPropertyExpr
                         && !isStarProperty(expr)) {
-                    names.add(canonicalIdentifier(((SQLPropertyExpr) expr).getName()));
+                    names.add(rawProjectionName((SQLPropertyExpr) expr));
                 } else if (expr instanceof SQLAllColumnExpr) {
                     List<String> star = staticFromNames(block.getFrom(), scope);
                     if (star == null) {

@@ -910,6 +910,62 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void joinAliasExplicitColumnAfterUnknownWildcardResolves() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (v INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT *, a.v AS z FROM a, missing)"
+                        + " SELECT j.z FROM (q CROSS JOIN b) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                Column.temporary("stmt0.q.z"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.z")));
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt0.q.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void explicitDerivedColumnKeepsWildcardContribution() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1) SELECT q.k FROM ("
+                        + "SELECT k FROM b UNION ALL SELECT * FROM missing) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertTrue(result.getGraph().getSources(new Column("t.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void optionalInsertTargetMissingFromCatalogKeepsEdge() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("INSERT INTO t SELECT * FROM missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.*")));
+    }
+
+    @Test
+    public void quotedInsertTargetMatchesLaterRead() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO \"s.a\" SELECT * FROM missing; SELECT * FROM \"s.a\";");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

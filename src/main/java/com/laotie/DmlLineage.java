@@ -2383,7 +2383,7 @@ public class DmlLineage {
         for (StarOutput output : plan) {
             boolean matched = false;
             for (StarColumn column : output.sources) {
-                if (column.key.equals(key)) {
+                if (column.key != null && column.key.equals(key)) {
                     matched = true;
                 }
             }
@@ -2419,7 +2419,7 @@ public class DmlLineage {
         for (StarOutput output : plan) {
             boolean matched = false;
             for (StarColumn column : output.sources) {
-                if (column.key.equals(key)) {
+                if (column.key != null && column.key.equals(key)) {
                     matched = true;
                     break;
                 }
@@ -2441,7 +2441,7 @@ public class DmlLineage {
         for (StarOutput output : plan) {
             List<SourceTable> sources = new ArrayList<>();
             for (StarColumn column : output.sources) {
-                if (column.key.equals(key) && column.nameKnown
+                if (column.key != null && column.key.equals(key) && column.nameKnown
                         && !sources.contains(column.source)) {
                     sources.add(column.source);
                 }
@@ -2564,7 +2564,7 @@ public class DmlLineage {
                 continue;
             }
             for (StarColumn column : output.sources) {
-                if (column.key.equals(key)) {
+                if (column.key != null && column.key.equals(key)) {
                     count++;
                     break;
                 }
@@ -2577,7 +2577,8 @@ public class DmlLineage {
         for (int i = 0; i < plan.size(); i++) {
             StarOutput output = plan.get(i);
             for (StarColumn column : output.sources) {
-                if (column.key.equals(key) && (column.nameKnown || output.nameKnown)) {
+                if (column.key != null && column.key.equals(key)
+                        && (column.nameKnown || output.nameKnown)) {
                     return plan.remove(i);
                 }
             }
@@ -3295,7 +3296,7 @@ public class DmlLineage {
         List<StarOutput> matches = new ArrayList<>();
         for (StarOutput output : binding.plan) {
             for (StarColumn column : output.sources) {
-                if (column.key.equals(key)) {
+                if (column.key != null && column.key.equals(key)) {
                     matches.add(output);
                     break;
                 }
@@ -4126,6 +4127,14 @@ public class DmlLineage {
     }
 
     private void addColumnMapping(SourceTable source, String columnName) {
+        if (source.wildcardContribution && source.temporary) {
+            // Reading one named column from a derived table that also carries unknown
+            // rows must not cut the table-level lineage.
+            String target = stackTargetTable.peek();
+            instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
+                    lineageTableName(source), target, currentOrdinal,
+                    source.temporary, tempTables.contains(target)));
+        }
         if (!source.outputColumns.isEmpty()) {
             String key = identifierKey(columnName);
             if (key == null) {
@@ -4203,12 +4212,21 @@ public class DmlLineage {
         SQLExprTableSource tableSource = insert.getTableSource();
         String rawName = extractTableName(tableSource);
         String written = normalizeQualifiedName(rawName);
-        String tableName = written;
+        // The graph identity of an unaliased target keeps its written reference when
+        // metadata is not available, so later reads resolve to the same vertex.
+        String tableName = detachedMetadata() && context == null && rawName != null
+                ? rawName : written;
         Table targetMetadata = null;
         if (context != null && findCteTarget(identifierKey(rawName)) == null) {
             TableLocation location = resolveMetadataTable(rawName);
-            tableName = location.getDisplayName();
-            targetMetadata = location.getTable();
+            if (location != null) {
+                tableName = location.getDisplayName();
+                targetMetadata = location.getTable();
+            } else if (detachedMetadata() && rawName != null) {
+                // The target table is missing from the catalog: keep its written
+                // identity so the table-level edge matches later reads.
+                tableName = rawName;
+            }
         }
         registerTable(written, tableName, tableName, tableSource.getAlias() == null
                 ? null : normalizeIdentifier(tableSource.getAlias()),

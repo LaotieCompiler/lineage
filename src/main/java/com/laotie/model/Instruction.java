@@ -338,8 +338,10 @@ public class Instruction {
                 }
             } else {
                 targets = new ArrayList<>();
-                for (Column column : fromColumns) {
-                    targets.add(column.getColumnName());
+                for (int i = 0; i < fromColumns.size(); i++) {
+                    Column column = fromColumns.get(i);
+                    targets.add(column == null ? "col" + (i + 1)
+                            : column.getColumnName());
                 }
             }
         }

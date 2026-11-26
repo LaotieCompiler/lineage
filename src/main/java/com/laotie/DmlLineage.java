@@ -829,17 +829,25 @@ public class DmlLineage {
         if (with != null) {
             DbType dialect = currentDialect();
             boolean exactCount = dialect == DbType.mysql || dialect == DbType.mariadb;
+            boolean recursive = Boolean.TRUE.equals(with.getRecursive());
             for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
                 String alias = entry.getAlias();
                 if (alias == null) {
                     continue;
+                }
+                String aliasKey = identifierKey(alias);
+                if (recursive) {
+                    // A recursive CTE is visible inside its own definition; register
+                    // the name (width still unknown) so it is never looked up in the
+                    // catalog while pre-sizing its body.
+                    scope.put(aliasKey, -1);
                 }
                 int declared = entry.getColumns() == null ? 0 : entry.getColumns().size();
                 int width = staticSelectWidth(entry.getSubQuery(), scope);
                 if (width < 0 && declared > 0 && exactCount) {
                     width = declared;
                 }
-                scope.put(identifierKey(alias), width);
+                scope.put(aliasKey, width);
             }
         }
         return staticUnionWidth(select.getQuery(), scope);

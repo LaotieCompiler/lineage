@@ -716,10 +716,9 @@ public class DmlLineage {
                     if (alias == null) {
                         continue;
                     }
-                    List<String> names = rawDeclaredColumns(entry);
-                    if (names == null) {
-                        names = staticOutputNames(entry.getSubQuery(), nameScope);
-                    }
+                    List<String> names = mergeDeclaredColumns(
+                            rawDeclaredColumns(entry),
+                            staticOutputNames(entry.getSubQuery(), nameScope));
                     if (names != null) {
                         String key = identifierKey(alias);
                         if (!names.equals(nameScope.get(key))) {
@@ -735,14 +734,25 @@ public class DmlLineage {
                         : nameScope.get(identifierKey(alias));
                 String target = prebound.get(entry);
                 if (names != null && target != null) {
+                    Set<String> usedKeys = new HashSet<>();
+                    for (String raw : names) {
+                        if (raw != null) {
+                            usedKeys.add(identifierKey(raw));
+                        }
+                    }
                     for (int i = 0; i < names.size(); i++) {
                         String raw = names.get(i);
                         String key;
                         String display;
                         if (raw == null) {
                             // A constant owns a position but can never match a column
-                            // reference, so give it an unmatchable key.
+                            // reference, so give it an unmatchable key and a display
+                            // name that cannot shadow an explicit alias.
                             display = "col" + (i + 1);
+                            while (usedKeys.contains(identifierKey(display))) {
+                                display = display + "_";
+                            }
+                            usedKeys.add(identifierKey(display));
                             key = CONSTANT_OUTPUT_PREFIX + i;
                         } else {
                             display = canonicalIdentifier(raw);
@@ -981,18 +991,40 @@ public class DmlLineage {
                         continue;
                     }
                     String key = identifierKey(alias);
-                    List<String> names = rawDeclaredColumns(entry);
-                    if (names == null) {
-                        names = staticOutputNames(entry.getSubQuery(), nested);
-                    }
+                    List<String> names = mergeDeclaredColumns(
+                            rawDeclaredColumns(entry),
+                            staticOutputNames(entry.getSubQuery(), nested));
                     if (names != null && !names.equals(nested.get(key))) {
                         nested.put(key, names);
                         changed = true;
+                    }
+                    if (!recursive) {
+                        // A non-recursive WITH only sees earlier entries.
+                        break;
                     }
                 }
             }
         }
         return staticOutputNames(select.getQuery(), nested);
+    }
+
+    private static List<String> mergeDeclaredColumns(List<String> declared,
+            List<String> derived) {
+        if (declared == null) {
+            return derived;
+        }
+        if (derived == null) {
+            return declared;
+        }
+        List<String> merged = new ArrayList<>(derived);
+        for (int i = 0; i < declared.size(); i++) {
+            if (i < merged.size()) {
+                merged.set(i, declared.get(i));
+            } else {
+                merged.add(declared.get(i));
+            }
+        }
+        return merged;
     }
 
     private static List<String> rawDeclaredColumns(SQLWithSubqueryClause.Entry entry) {
@@ -1011,12 +1043,26 @@ public class DmlLineage {
         if (alias == null) {
             return null;
         }
-        String text = item.toString();
-        int index = text.toUpperCase().lastIndexOf(" AS ");
-        if (index >= 0) {
-            String tail = text.substring(index + 4).trim();
-            if (!tail.isEmpty()) {
-                return tail;
+        String text = item.toString().trim();
+        if (!text.isEmpty()) {
+            char last = text.charAt(text.length() - 1);
+            if (last == '"' || last == '`' || last == ']') {
+                char open = last == '"' ? '"' : last == '`' ? '`' : '[';
+                for (int i = text.length() - 2; i >= 0; i--) {
+                    if (text.charAt(i) == open) {
+                        return text.substring(i);
+                    }
+                }
+            } else {
+                int i = text.length() - 1;
+                while (i >= 0 && !Character.isWhitespace(text.charAt(i))
+                        && text.charAt(i) != '.') {
+                    i--;
+                }
+                String token = text.substring(i + 1);
+                if (!token.isEmpty()) {
+                    return token;
+                }
             }
         }
         return alias;
@@ -1119,6 +1165,14 @@ public class DmlLineage {
         return null;
     }
 
+    private String quoteCatalogName(String name) {
+        DbType dialect = currentDialect();
+        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
+            return "`" + name + "`";
+        }
+        return "\"" + name + "\"";
+    }
+
     private List<String> staticTableNames(SQLTableSource table,
             Map<String, List<String>> scope) {
         if (table instanceof SQLExprTableSource) {
@@ -1154,7 +1208,9 @@ public class DmlLineage {
             if (location != null) {
                 List<String> names = new ArrayList<>();
                 for (Column column : location.getTable().getFields()) {
-                    names.add(column.getColumnName());
+                    names.add(column.isQuoted()
+                            ? quoteCatalogName(column.getColumnName())
+                            : column.getColumnName());
                 }
                 return names;
             }

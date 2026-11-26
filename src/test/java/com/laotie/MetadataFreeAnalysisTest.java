@@ -2532,6 +2532,88 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void recursiveCtePartialDeclaredColumnsKeepRemainingNames() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, w INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.w FROM x),"
+                        + " x(v) AS (SELECT k, w FROM b) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.w"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.w")));
+    }
+
+    @Test
+    public void recursiveCteQuotedUsingMergesOnce() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (\"K\" INT);"
+                + " CREATE TABLE c (\"K\" INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM x UNION ALL SELECT 1),"
+                        + " x AS (SELECT * FROM b JOIN c USING(\"K\"))"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.K"));
+        assertTrue(sources.contains(new Column("b.K")));
+        assertTrue(sources.contains(new Column("c.K")));
+    }
+
+    @Test
+    public void recursiveCteAliasContainingAsKeywordResolves() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT x.\"a AS b\" FROM x),"
+                        + " x AS (SELECT k AS \"a AS b\" FROM b) SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.x.\"a AS b\"")));
+    }
+
+    @Test
+    public void nestedNonRecursiveCteKeepsLocalVisibilityOrder() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE out AS (SELECT x.k FROM x),"
+                        + " x AS (WITH y AS (SELECT * FROM b), b AS (SELECT v FROM c)"
+                        + " SELECT * FROM y) SELECT * FROM out;");
+
+        assertEquals(0, result.getFailures().size());
+        // `y` is defined before the local `b`, so it binds to the physical table.
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void recursiveCteConstantNameDoesNotShadowExplicitAlias() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE x AS ("
+                        + "SELECT 1, k AS col1 FROM b"
+                        + " UNION ALL SELECT 2, k FROM b)"
+                        + " SELECT x.col1 FROM x;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.x.col1")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

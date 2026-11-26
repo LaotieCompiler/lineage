@@ -109,13 +109,9 @@ public class LineageGraph {
      * The vertex of a table-level wildcard: {@code db.schema.table.*}.
      */
     private static Column wildcardColumn(String reference, String prefix, boolean temporary) {
-        String target = reference;
-        int columns = target.indexOf('(');
-        if (columns > 0 && target.endsWith(")")) {
-            // An explicit target column list is not part of the table identity.
-            target = target.substring(0, columns);
-        }
-        String qualified = temporary ? prefix + target : target;
+        // The reference is already a table identity: an INSERT column list is stripped
+        // when instructions are expanded, so a table name containing parentheses stays.
+        String qualified = temporary ? prefix + reference : reference;
         return temporary
                 ? Column.temporary(qualified + ".*")
                 : new Column(qualified + ".*");

@@ -182,6 +182,11 @@ public class Instruction {
             } else {
                 result.add(instruction);
             }
+            if (instruction.isToTemporary()) {
+                // Remember that this position of the temporary table is unknown, so a
+                // later expansion keeps a wildcard instead of mapping a partial list.
+                markUnknownTempColumn(tempColumns, toTable, instruction.getOrdinal());
+            }
             return;
         }
 
@@ -196,6 +201,20 @@ public class Instruction {
             }
         } else {
             targetTable = toTable;
+        }
+
+        if (instruction.isToTemporary() && explicitTargets.isEmpty()
+                && instruction.getOrdinal() >= 0) {
+            List<String> named = targetOutputs.get(targetTable);
+            if (named != null && instruction.getOrdinal() >= named.size()) {
+                // The projection's target names are not all known: keep the wildcard
+                // rather than inventing positional names.
+                result.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable,
+                        targetTable, instruction.getOrdinal(),
+                        instruction.isFromTemporary(), instruction.isToTemporary()));
+                markUnknownTempColumn(tempColumns, targetTable, instruction.getOrdinal());
+                return;
+            }
         }
 
         List<String> targets;
@@ -301,6 +320,16 @@ public class Instruction {
             }
         }
         return depth == 0 ? candidate : -1;
+    }
+
+    private static void markUnknownTempColumn(Map<String, List<Column>> tempColumns,
+            String table, int ordinal) {
+        List<Column> columns = tempColumns.computeIfAbsent(table,
+                key -> new ArrayList<Column>());
+        int at = ordinal >= 0 ? ordinal : columns.size();
+        while (columns.size() <= at) {
+            columns.add(null);
+        }
     }
 
     private static void registerTempTarget(String target, int ordinal, boolean toTemporary,

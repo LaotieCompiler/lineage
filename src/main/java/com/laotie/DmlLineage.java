@@ -126,6 +126,7 @@ public class DmlLineage {
     private final LineageOptions options;
     private LearnedMetadata learnedMetadata;
     private String sessionDatabase;
+    private String sessionSchema;
     private Map<String, Set<String>> pendingLearned = new HashMap<>();
 
     private MetadataContext context;
@@ -197,7 +198,15 @@ public class DmlLineage {
      * observations from one database do not leak into another.
      */
     private String learnedTableKey(String rawName) {
-        return sessionDatabase == null ? rawName : sessionDatabase + "." + rawName;
+        StringBuilder key = new StringBuilder();
+        if (sessionDatabase != null) {
+            key.append(sessionDatabase).append('.');
+        }
+        if (sessionSchema != null) {
+            key.append(sessionSchema).append('.');
+        }
+        key.append(rawName);
+        return key.toString();
     }
 
     /**
@@ -307,6 +316,7 @@ public class DmlLineage {
         this.context = working;
         this.tempTableNum = 0;
         this.sessionDatabase = session.database;
+        this.sessionSchema = session.schemas.isEmpty() ? null : session.schemas.get(0);
         this.pendingLearned = new HashMap<>();
         try {
             init(true);
@@ -1404,16 +1414,14 @@ public class DmlLineage {
             SQLExpr owner = ((SQLPropertyExpr) item.getExpr()).getOwner();
             if (detachedMetadata()) {
                 SourceTable source = findByOwner(owner);
-                List<SourceTable> starSources = new ArrayList<>();
+                List<StarOutput> plan;
                 if (source != null) {
-                    starSources.add(source);
+                    plan = planFromSource(source);
                 } else {
                     SourceNode binding = joinBinding(owner);
-                    if (binding != null) {
-                        starSources.addAll(binding.sources);
-                    }
+                    plan = binding == null ? new ArrayList<StarOutput>() : binding.plan;
                 }
-                int width = emitDetachedStar(targetTable, starSources, currentOrdinal);
+                int width = emitDetachedPlan(targetTable, plan, currentOrdinal);
                 return Math.max(width, 1);
             }
             SourceTable source = findByOwner(owner);
@@ -2039,9 +2047,6 @@ public class DmlLineage {
         }
         if (!source.outputColumns.isEmpty()) {
             return source.outputKeys;
-        }
-        if (detachedMetadata()) {
-            return java.util.Collections.emptyList();
         }
         return java.util.Collections.singletonList(identifierKey("col1"));
     }
@@ -2884,10 +2889,6 @@ public class DmlLineage {
         if (!source.outputColumns.isEmpty()) {
             return source.outputColumns;
         }
-        if (detachedMetadata()) {
-            // The columns are unknown: do not invent names for them.
-            return java.util.Collections.emptyList();
-        }
         return java.util.Collections.singletonList("col1");
     }
 
@@ -3104,9 +3105,7 @@ public class DmlLineage {
             }
             String targetTable = stackTargetTable.peek();
             if (detachedMetadata()) {
-                List<SourceTable> starSources = new ArrayList<>();
-                starSources.add(source);
-                emitDetachedStar(targetTable, starSources, currentOrdinal);
+                emitDetachedPlan(targetTable, planFromSource(source), currentOrdinal);
                 return;
             }
             SourceNode expanded = currentExpandedSourceNodes.get(source);
@@ -3361,42 +3360,69 @@ public class DmlLineage {
      * Projection in metadata-free mode: known sources are mapped column by column, unknown
      * ones stay table-level wildcards instead of being expanded into invented names.
      */
+    /**
+     * Projection in metadata-free mode. Known columns follow the visible plan (so JOIN
+     * USING merges and UNION names still apply), while unknown sources stay table-level
+     * wildcards. Placeholder names are never registered.
+     */
     private int emitDetachedStar(String targetTable, List<SourceTable> sources,
+            int startPosition) {
+        return emitDetachedPlan(targetTable, currentStarPlan(sources), startPosition);
+    }
+
+    private int emitDetachedPlan(String targetTable, List<StarOutput> plan,
             int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean targetTemporary = tempTables.contains(targetTable);
+        Set<String> used = new HashSet<>();
         int position = startPosition;
-        for (SourceTable source : sources) {
-            if (sourceNamesKnown(source) && uniqueOutputNames(source,
-                    targetTable, position)) {
-                List<String> names = sourceColumnNames(source);
-                List<String> keys = sourceColumnKeys(source);
-                for (int i = 0; i < names.size(); i++) {
-                    String name = declared != null && position < declared.size()
-                            ? declared.get(position) : names.get(i);
-                    String key = i < keys.size() ? keys.get(i) : identifierKey(name);
-                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                            source.displayName + "." + renderIdentifier(names.get(i)),
-                            targetTable + "." + renderIdentifier(name), position,
-                            source.temporary, targetTemporary));
-                    setTargetOutput(targetTable, position, name, key);
-                    markOutputNameKnown(targetTable, position, true);
-                    position++;
-                }
-            } else {
-                instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                        source.displayName, targetTable, position, source.temporary,
-                        targetTemporary));
-                position++;
+        for (StarOutput output : plan) {
+            if (output.sources.isEmpty()) {
+                continue;
             }
+            String lockedName = lockedOutputName(targetTable, position);
+            String name = lockedName != null ? lockedName
+                    : declared != null && position < declared.size()
+                            ? declared.get(position)
+                    : output.nameKnown ? output.sources.get(0).column : null;
+            boolean exact = name != null && output.nameKnown;
+            if (exact) {
+                for (StarColumn column : output.sources) {
+                    if (!column.nameKnown) {
+                        exact = false;
+                        break;
+                    }
+                }
+            }
+            // One output position, even when USING merges several columns into it.
+            if (exact && !used.add(name)) {
+                exact = false;
+            }
+            if (exact && isExistingOutput(targetOutputs.get(targetTable), name, position)) {
+                exact = false;
+            }
+            if (exact) {
+                for (StarColumn column : output.sources) {
+                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                            column.source.displayName + "."
+                                    + renderSourceColumn(column),
+                            targetTable + "." + renderIdentifier(name), position,
+                            column.source.temporary, targetTemporary));
+                }
+                setTargetOutput(targetTable, position, name, output.sources.get(0).key);
+                markOutputNameKnown(targetTable, position, true);
+            } else {
+                for (SourceTable source : starOutputSources(output)) {
+                    instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
+                            source.displayName, targetTable, position, source.temporary,
+                            targetTemporary));
+                }
+            }
+            position++;
         }
         return position - startPosition;
     }
 
-    /**
-     * A source whose output names repeat cannot be mapped column by column: the two
-     * positions would collapse onto the same vertex.
-     */
     private boolean uniqueOutputNames(SourceTable source, String targetTable, int position) {
         List<String> names = sourceColumnNames(source);
         Set<String> seen = new HashSet<>();
@@ -3528,8 +3554,10 @@ public class DmlLineage {
             }
             if (matches.size() == 1) {
                 if (detachedMetadata()) {
-                    // A source whose column set is unknown may also own the column.
-                    List<SourceTable> unknown = unknownColumnSources(sources, matchedSources);
+                    // A source whose column set is unknown may also own the column,
+                    // unless the learned metadata proves it cannot.
+                    List<SourceTable> unknown = refineWithLearned(
+                            unknownColumnSources(sources, matchedSources), rawColumn);
                     if (!unknown.isEmpty()) {
                         throw new AmbiguousColumnException(columnName,
                                 displayNames(allSources(matchedSources, unknown)));
@@ -3621,8 +3649,9 @@ public class DmlLineage {
                         }
                     } else if (learnedMetadata != null
                             && source.rawName != null
-                            && learnedMetadata.knowsTable(source.rawName)) {
-                        if (learnedMetadata.hasColumn(source.rawName, rawColumn)) {
+                            && learnedMetadata.knowsTable(learnedTableKey(source.rawName))) {
+                        if (learnedMetadata.hasColumn(learnedTableKey(source.rawName),
+                                rawColumn)) {
                             owners.add(source);
                         }
                     } else {

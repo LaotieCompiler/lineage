@@ -349,6 +349,121 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void optionalModeKeepsUsingMergeForKnownColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("SELECT * FROM a FULL JOIN b USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("a.k"), new Column("b.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(
+                Column.temporary("stmt0.temp0.col2")));
+    }
+
+    @Test
+    public void optionalModeKeepsUnionNamesForKnownColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("SELECT a.k AS q FROM a UNION ALL SELECT * FROM b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("a.k"), new Column("b.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.q")));
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(
+                Column.temporary("stmt0.temp0.col1")));
+    }
+
+    @Test
+    public void optionalModeKeepsTargetTableEdgeForMixedProjection() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE target (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("INSERT INTO target(c1) SELECT c1,* FROM missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(new Column("target.*")));
+        Set<Column> sources = result.getGraph().getSources(new Column("target.*"));
+        assertTrue(sources.contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void degradedTemporaryIsNotReexpandedIntoColumnNames() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("WITH q AS (SELECT a.k AS c,b.k AS c FROM a,b) SELECT q.* FROM q;");
+
+        assertEquals(0, result.getFailures().size());
+        for (Instruction instruction : result.getResults().get(0).getInstructions()) {
+            assertFalse("degraded temporary re-expanded: " + instruction,
+                    "temp0.col1".equals(instruction.getTo())
+                            || "temp0.col2".equals(instruction.getTo()));
+        }
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(
+                Column.temporary("stmt0.q.*")));
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(
+                Column.temporary("stmt0.temp0.*")));
+    }
+
+    @Test
+    public void tableNameWithParenthesesKeepsItsIdentity() {
+        ScanResult result = LineageScanner.withoutMetadata(optional())
+                .scan("SELECT * FROM \"X(y)\";");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(
+                new Column("X(y).*")));
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(
+                new Column("X.*")));
+    }
+
+    @Test
+    public void learnedMetadataNarrowsUnknownSourceNextToCatalog() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), inferring())
+                .scan("SELECT missing.c2 FROM missing; SELECT k FROM a,missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
+    public void learnedMetadataIsUsedAfterUseSwitch() {
+        ScanResult result = LineageScanner.withoutMetadata(inferring()).scan(
+                "SELECT A.c2,B.c1 FROM A,B; USE db2;"
+                        + " SELECT A.c1,B.c2 FROM A,B; SELECT c1 FROM A,B;");
+
+        assertNull(result.getResults().get(3).getError());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("A.c1"))),
+                result.getGraph().getSources(Column.temporary("stmt3.temp0.c1")));
+    }
+
+    @Test
+    public void learnedMetadataIsScopedToTheCurrentSearchPath() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE dummy (x INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), inferring()).scan(
+                "SET search_path TO s1; SELECT p.c1,q.c2 FROM p,q;"
+                        + " SET search_path TO s2; SELECT c1 FROM p,q;");
+
+        assertTrue(result.getResults().get(3).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

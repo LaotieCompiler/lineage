@@ -3410,8 +3410,11 @@ public class DmlLineage {
             return;
         }
         for (StarColumn column : columns) {
+            String sourceColumn = column.quoted
+                    ? renderSourceColumn(column)
+                    : renderIdentifier(canonicalColumnName(column.column));
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                    lineageTableName(column.source) + "." + renderSourceColumn(column),
+                    lineageTableName(column.source) + "." + sourceColumn,
                     targetTable + "." + targetColumn, currentOrdinal,
                     column.source.temporary, tempTables.contains(targetTable)));
         }

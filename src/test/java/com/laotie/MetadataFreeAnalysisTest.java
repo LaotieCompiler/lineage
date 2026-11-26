@@ -1264,6 +1264,60 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void duplicateProjectionNamesKeepSeparatePositions() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT a.k, b.k FROM a, b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void constantPrefixColumnHasNoWildcardSource() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT 1 AS fixed, missing.* FROM missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("missing.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void joinUsingColumnCaseIsCanonicalized() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t1(k) SELECT k FROM b;"
+                        + " SELECT j.K FROM (t1 AS x LEFT JOIN b USING(K)) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.K"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void tableLevelWriteCoversColumnsWithPreciseWrites() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM m1;"
+                        + " INSERT INTO t(c1) SELECT * FROM m2;"
+                        + " SELECT * FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("m1.*"), new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

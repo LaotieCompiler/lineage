@@ -57,7 +57,9 @@ public class LineageGraph {
     public void buildByResults(List<LineageResult> results) {
         init();
         Map<String, Set<String>> populatedColumns = new HashMap<>();
+        Set<String> allColumnTables = new HashSet<>();
         Map<String, Map<Integer, String>> tempColumnsByPosition = new HashMap<>();
+        Map<String, Map<String, Integer>> tempColumnOwners = new HashMap<>();
         java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
             LineageResult result = results.get(i);
@@ -96,9 +98,8 @@ public class LineageGraph {
                                         source, columns, prefix, fromTable, fromTemporary,
                                         tempColumnsByPosition));
                             }
-                        } else {
-                            populatedColumns.computeIfAbsent(to.getTableName(),
-                                    key -> new HashSet<String>());
+                        } else if (!to.isTemporary()) {
+                            allColumnTables.add(to.getTableName());
                         }
                     }
                     reverseGraph.addVertex(from);
@@ -108,21 +109,48 @@ public class LineageGraph {
                     }
                     continue;
                 }
+                if (instruction.getOperation() == OperationType.EXPR_MAPPING) {
+                    if (instruction.isToTemporary() && instruction.getOrdinal() >= 0) {
+                        String[] parts = splitReference(instruction.getTo());
+                        if (parts != null) {
+                            tempColumnsByPosition
+                                    .computeIfAbsent(prefix + parts[0],
+                                            key -> new HashMap<Integer, String>())
+                                    .put(instruction.getOrdinal(), CONSTANT_COLUMN);
+                        }
+                    }
+                    continue;
+                }
                 if (instruction.getOperation() != OperationType.COLUMN_MAPPING) {
                     continue;
                 }
+                String toReference = instruction.getTo();
                 if (instruction.isToTemporary() && instruction.getOrdinal() >= 0) {
-                    String[] parts = splitReference(instruction.getTo());
+                    String[] parts = splitReference(toReference);
                     if (parts != null) {
-                        tempColumnsByPosition
-                                .computeIfAbsent(prefix + parts[0],
-                                        key -> new HashMap<Integer, String>())
-                                .put(instruction.getOrdinal(), parts[1]);
+                        String tableKey = prefix + parts[0];
+                        Map<Integer, String> positions = tempColumnsByPosition
+                                .computeIfAbsent(tableKey,
+                                        key -> new HashMap<Integer, String>());
+                        Map<String, Integer> owners = tempColumnOwners
+                                .computeIfAbsent(tableKey,
+                                        key -> new HashMap<String, Integer>());
+                        String columnName = parts[1];
+                        Integer owner = owners.get(columnName);
+                        if (owner != null && owner != instruction.getOrdinal()) {
+                            // Two positions cannot share one temporary vertex.
+                            columnName = "col" + (instruction.getOrdinal() + 1);
+                            owners.put(columnName, instruction.getOrdinal());
+                            toReference = parts[0] + "." + columnName;
+                        } else {
+                            owners.put(columnName, instruction.getOrdinal());
+                        }
+                        positions.put(instruction.getOrdinal(), columnName);
                     }
                 }
                 Column from = graphColumn(instruction.getFrom(), prefix,
                         instruction.isFromTemporary());
-                Column to = graphColumn(instruction.getTo(), prefix,
+                Column to = graphColumn(toReference, prefix,
                         instruction.isToTemporary());
                 reverseGraph.addVertex(from);
                 reverseGraph.addVertex(to);
@@ -135,7 +163,7 @@ public class LineageGraph {
         for (Runnable link : pendingWildcardLinks) {
             link.run();
         }
-        attachTableWildcards(populatedColumns);
+        attachTableWildcards(populatedColumns, allColumnTables);
     }
 
     /**
@@ -143,7 +171,8 @@ public class LineageGraph {
      * (for example a table populated by INSERT ... SELECT * FROM an unknown table) is
      * connected to that wildcard, so cross-statement lineage stays intact.
      */
-    private void attachTableWildcards(Map<String, Set<String>> populatedColumns) {
+    private void attachTableWildcards(Map<String, Set<String>> populatedColumns,
+            Set<String> allColumnTables) {
         Map<String, Column> wildcards = new HashMap<>();
         for (Column vertex : reverseGraph.vertexSet()) {
             if (vertex.isWildcard() && !vertex.isTemporary()) {
@@ -155,24 +184,26 @@ public class LineageGraph {
         }
         for (Column vertex : new ArrayList<>(reverseGraph.vertexSet())) {
             if (vertex.isWildcard() || vertex.isTemporary()
-                    || vertex.getTableName() == null
-                    || reverseGraph.outDegreeOf(vertex) != 0) {
+                    || vertex.getTableName() == null) {
                 continue;
             }
             Column wildcard = wildcards.get(vertex.getTableName());
             if (wildcard == null || wildcard.equals(vertex)) {
                 continue;
             }
+            if (allColumnTables.contains(vertex.getTableName())) {
+                // A table-level write covers every column, including columns that also
+                // have precise sources from other statements.
+                reverseGraph.addEdge(vertex, wildcard);
+                continue;
+            }
+            if (reverseGraph.outDegreeOf(vertex) != 0) {
+                continue;
+            }
             Set<String> populated = populatedColumns.get(vertex.getTableName());
-            if (populated == null) {
-                // Nothing was written through a wildcard into this table.
-                continue;
+            if (populated != null && populated.isEmpty()) {
+                reverseGraph.addEdge(vertex, wildcard);
             }
-            if (!populated.isEmpty()) {
-                // Written columns are linked directly to the writing wildcard.
-                continue;
-            }
-            reverseGraph.addEdge(vertex, wildcard);
         }
     }
 
@@ -194,7 +225,12 @@ public class LineageGraph {
             if (columnVertex.equals(sourceWildcard)) {
                 continue;
             }
-            String tempColumn = tempPositions == null ? null : tempPositions.get(i);
+            String tempColumn = tempPositions != null && tempPositions.containsKey(i)
+                    ? tempPositions.get(i) : null;
+            if (CONSTANT_COLUMN.equals(tempColumn)) {
+                // The position is an explicit constant: it has no source.
+                continue;
+            }
             if (tempColumn != null) {
                 Column precise = graphColumn(fromTable + "." + tempColumn, prefix,
                         fromTemporary);
@@ -314,6 +350,8 @@ public class LineageGraph {
         }
         return value;
     }
+
+    private static final String CONSTANT_COLUMN = "\u0000constant";
 
     private static Column graphColumn(String reference, String prefix, boolean temporary) {
         if (temporary) {

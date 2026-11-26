@@ -2485,14 +2485,24 @@ public class DmlLineage {
                 for (int i = 0; i < names.size() && sourceOutputNameKnown(source, i);
                         i++) {
                     String name = names.get(i);
-                    String outputName = declared != null
-                            && position + i < declared.size()
-                                    ? declared.get(position + i) : name;
-                    setTargetOutput(target, position + i, outputName,
-                            identifierKey(outputName));
+                    String outputName;
+                    String outputKey;
+                    Boolean quoted = Boolean.FALSE;
+                    if (declared != null && position + i < declared.size()) {
+                        outputName = declared.get(position + i);
+                        outputKey = identifierKey(outputName);
+                    } else {
+                        outputName = name;
+                        outputKey = i < source.outputKeys.size()
+                                && source.outputKeys.get(i) != null
+                                        ? source.outputKeys.get(i)
+                                        : identifierKey(name);
+                        quoted = !outputKey.equals(identifierKey(name));
+                    }
+                    setTargetOutput(target, position + i, outputName, outputKey);
                     markOutputNameKnown(target, position + i, true);
                     addOuterColumnMapping(source, name, target, outputName,
-                            position + i, Boolean.FALSE);
+                            position + i, quoted);
                     knownPrefix = i + 1;
                 }
                 if (!spans.isEmpty()) {
@@ -2758,7 +2768,9 @@ public class DmlLineage {
                 source.temporary, tempTables.contains(target)));
         if (source.wildcardContribution && source.temporary) {
             int relative = -1;
-            String key = identifierKey(column);
+            String key = quoted != null && quoted
+                    ? identifierKey("\"" + column.replace("\"", "\"\"") + "\"")
+                    : identifierKey(column);
             for (int i = 0; i < source.outputKeys.size(); i++) {
                 if (key != null && key.equals(source.outputKeys.get(i))) {
                     relative = i;
@@ -2980,11 +2992,20 @@ public class DmlLineage {
         }
         if (source.outputNamesKnown) {
             String key = identifierKey(rawName);
+            int found = -1;
             for (int i = 0; i < source.outputKeys.size(); i++) {
                 if (key != null && key.equals(source.outputKeys.get(i))) {
-                    return i < source.outputColumns.size()
-                            ? source.outputColumns.get(i) : normalizeIdentifier(rawName);
+                    if (found >= 0) {
+                        throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                                displayNames(visibleSources()));
+                    }
+                    found = i;
                 }
+            }
+            if (found >= 0) {
+                return found < source.outputColumns.size()
+                        ? source.outputColumns.get(found)
+                        : normalizeIdentifier(rawName);
             }
             throw new ColumnNotFoundException(normalizeIdentifier(rawName),
                     displayNames(visibleSources()));
@@ -5309,20 +5330,48 @@ public class DmlLineage {
                     ? stackHiddenSources.get(frame)
                     : java.util.Collections.<SourceTable>emptySet();
             // An explicit alias wins over a same-spelled table name in this frame.
+            List<SourceTable> aliasMatches = new ArrayList<>();
             for (SourceTable source : stackSources.get(frame)) {
                 if (!hidden.contains(source) && source.alias != null
                         && qualifiedKey(source.alias).equals(ownerKey)) {
-                    return new CorrelatedOwner(source, null);
+                    aliasMatches.add(source);
                 }
             }
+            if (aliasMatches.size() > 1) {
+                throw new AmbiguousColumnException(
+                        normalizeIdentifier(lastSegment(rawOwner)),
+                        displayNames(aliasMatches));
+            }
+            if (aliasMatches.size() == 1) {
+                return new CorrelatedOwner(aliasMatches.get(0), null);
+            }
+            List<SourceTable> frameMatches = new ArrayList<>();
             for (SourceTable source : stackSources.get(frame)) {
                 if (!hidden.contains(source) && source.alias == null
                         && matchesOwner(source, ownerKey, ownerParts)) {
-                    return new CorrelatedOwner(source, null);
+                    frameMatches.add(source);
                 }
+            }
+            if (frameMatches.size() > 1) {
+                throw new AmbiguousColumnException(
+                        normalizeIdentifier(lastSegment(rawOwner)),
+                        displayNames(frameMatches));
+            }
+            if (frameMatches.size() == 1) {
+                return new CorrelatedOwner(frameMatches.get(0), null);
             }
         }
         return null;
+    }
+
+    private static boolean hasQuotedSegment(String reference) {
+        for (String part : MetadataCatalog
+                .splitQualifiedNamePreservingQuotes(reference)) {
+            if (MetadataCatalog.isQuotedIdentifier(part)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<SourceTable> visibleOwnerMatches(SQLExpr owner) {
@@ -5344,8 +5393,7 @@ public class DmlLineage {
                 matched = qualifiedKey(reference).equals(ownerKey);
                 if (!matched && source.displayName != null
                         && (source.rawName == null
-                                || !MetadataCatalog.isQuotedIdentifier(
-                                        source.rawName))) {
+                                || !hasQuotedSegment(source.rawName))) {
                     matched = qualifiedKey(source.displayName).equals(ownerKey);
                 }
                 if (!matched && ownerParts.length > 0) {
@@ -5407,26 +5455,30 @@ public class DmlLineage {
 
     private boolean matchesOwner(SourceTable source, String ownerKey,
             String[] ownerParts) {
-        if (source.alias != null && qualifiedKey(source.alias).equals(ownerKey)) {
+        if (source.alias != null) {
+            return qualifiedKey(source.alias).equals(ownerKey);
+        }
+        String reference = source.rawName != null
+                ? source.rawName : source.displayName;
+        if (reference == null) {
+            return false;
+        }
+        if (qualifiedKey(reference).equals(ownerKey)) {
             return true;
         }
-        if (source.temporary) {
-            return source.rawName != null
-                    && qualifiedKey(source.rawName).equals(ownerKey);
-        }
-        String rawIdentifier = source.rawName != null
-                ? source.rawName : source.writtenName;
-        if (qualifiedKey(source.displayName).equals(ownerKey)
-                || rawIdentifier != null
-                        && qualifiedKey(rawIdentifier).equals(ownerKey)) {
+        if (source.displayName != null
+                && (source.rawName == null
+                        || !hasQuotedSegment(source.rawName))
+                && qualifiedKey(source.displayName).equals(ownerKey)) {
             return true;
         }
-        String[] displayParts = MetadataCatalog
-                .splitQualifiedNamePreservingQuotes(source.displayName);
-        if (ownerParts.length > 0 && ownerParts.length <= displayParts.length) {
+        String[] referenceParts = MetadataCatalog
+                .splitQualifiedNamePreservingQuotes(reference);
+        if (ownerParts.length > 0 && ownerParts.length <= referenceParts.length) {
             for (int i = 0; i < ownerParts.length; i++) {
                 if (!identifierKey(ownerParts[i]).equals(identifierKey(
-                        displayParts[displayParts.length - ownerParts.length + i]))) {
+                        referenceParts[referenceParts.length - ownerParts.length
+                                + i]))) {
                     return false;
                 }
             }

@@ -3877,6 +3877,94 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void quotedCorrelatedColumnUsesQuotedSpanKey() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT); CREATE TABLE e (\"K\" INT);");
+        ScanResult first = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH x AS (SELECT b.k AS \"K\" FROM b"
+                        + " UNION ALL SELECT * FROM missing)"
+                        + " SELECT q.v FROM x CROSS JOIN"
+                        + " LATERAL (SELECT x.\"K\" AS v) AS q;");
+        assertEquals(0, first.getFailures().size());
+        assertTrue(first.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+
+        ScanResult second = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH x AS (SELECT b.k AS \"K\", c.v AS k"
+                        + " FROM b CROSS JOIN c"
+                        + " UNION ALL SELECT 0, m2.* FROM m2)"
+                        + " SELECT q.z FROM x CROSS JOIN"
+                        + " LATERAL (SELECT x.\"K\" AS z) AS q;");
+        assertEquals(0, second.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                second.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.z")));
+    }
+
+    @Test
+    public void unknownWidthPrefixKeepsQuotedKeys() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT); CREATE TABLE e (\"K\" INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT r.k FROM e CROSS JOIN b CROSS JOIN missing"
+                        + " CROSS JOIN LATERAL (SELECT e.\"K\", b.k, missing.*) AS q"
+                        + " CROSS JOIN LATERAL (SELECT q.*) AS r;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void ancestorDuplicateQualifiersAreAmbiguous() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.b (k INT);"
+                + " CREATE TABLE s2.b (k INT); CREATE TABLE c (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM s1.b CROSS JOIN s2.b"
+                        + " CROSS JOIN LATERAL (SELECT b.k FROM c) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void quotedPhysicalTableRejectsUnquotedReference() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.\"B\" (k INT);"
+                + " CREATE TABLE c (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM s.\"B\" CROSS JOIN"
+                        + " LATERAL (SELECT s.b.k) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+    }
+
+    @Test
+    public void duplicateDerivedOutputNamesAreAmbiguous() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT); CREATE TABLE e (\"K\" INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (SELECT b.k, d.k FROM b CROSS JOIN d) AS x"
+                        + " CROSS JOIN LATERAL (SELECT x.k) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

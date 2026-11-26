@@ -2980,6 +2980,78 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void lateralAncestorJoinAliasAndHidingApply() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult visible = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (b CROSS JOIN c) AS j"
+                        + " CROSS JOIN LATERAL (SELECT j.k FROM d) AS q;");
+        assertEquals(0, visible.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                visible.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+
+        ScanResult hidden = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (b CROSS JOIN c) AS j"
+                        + " CROSS JOIN LATERAL (SELECT b.k FROM d) AS q;");
+        assertTrue(hidden.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+    }
+
+    @Test
+    public void lateralDuplicateJoinAliasColumnsAreAmbiguous() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (b CROSS JOIN d) AS j"
+                        + " CROSS JOIN LATERAL (SELECT j.k) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void lateralInListKeepsLineageAndValidatesOwner() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult traced = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.ok FROM b CROSS JOIN"
+                        + " LATERAL (SELECT b.k IN (1, 2) AS ok) AS q;");
+        assertEquals(0, traced.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                traced.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.ok")));
+
+        ScanResult unbound = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.ok FROM b CROSS JOIN"
+                        + " LATERAL (SELECT bad.k IN (1, 2) AS ok) AS q;");
+        assertTrue(unbound.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+    }
+
+    @Test
+    public void lateralUnqualifiedCorrelatedColumnIsAmbiguous() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM b CROSS JOIN d"
+                        + " CROSS JOIN LATERAL (SELECT k) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

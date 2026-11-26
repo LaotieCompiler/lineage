@@ -2167,6 +2167,17 @@ public class DmlLineage {
             for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
                 recordOuterExpression(element, target, targetName, position);
             }
+        } else if (expr instanceof SQLInListExpr) {
+            SQLInListExpr in = (SQLInListExpr) expr;
+            recordOuterExpression(in.getExpr(), target, targetName, position);
+            if (in.getTargetList() != null) {
+                for (SQLExpr element : in.getTargetList()) {
+                    recordOuterExpression(element, target, targetName, position);
+                }
+            }
+        } else if (expr instanceof SQLIdentifierExpr) {
+            recordOuterIdentifier(((SQLIdentifierExpr) expr).getName(), target,
+                    targetName, position);
         } else if (expr instanceof SQLExtractExpr) {
             recordOuterExpression(((SQLExtractExpr) expr).getValue(), target,
                     targetName, position);
@@ -2185,21 +2196,34 @@ public class DmlLineage {
                     source.temporary, tempTables.contains(target)));
             return;
         }
-        SourceNode binding = joinBinding(property.getOwner());
+        SourceNode binding = findCorrelatedBinding(property.getOwner());
         if (binding != null) {
             String key = identifierKey(rawName);
-            boolean matched = false;
+            List<StarColumn> matchedColumns = new ArrayList<>();
             for (StarOutput output : binding.plan) {
                 for (StarColumn column : output.sources) {
                     if (key != null && key.equals(column.key)) {
-                        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                                column.source.displayName + "."
-                                        + renderSourceColumn(column),
-                                target + "." + renderIdentifier(targetName), position,
-                                column.source.temporary, tempTables.contains(target)));
-                        matched = true;
+                        matchedColumns.add(column);
                     }
                 }
+            }
+            if (matchedColumns.size() > 1) {
+                List<SourceTable> owners = new ArrayList<>();
+                for (StarColumn column : matchedColumns) {
+                    if (!owners.contains(column.source)) {
+                        owners.add(column.source);
+                    }
+                }
+                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                        displayNames(owners));
+            }
+            boolean matched = false;
+            for (StarColumn column : matchedColumns) {
+                instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                        column.source.displayName + "." + renderSourceColumn(column),
+                        target + "." + renderIdentifier(targetName), position,
+                        column.source.temporary, tempTables.contains(target)));
+                matched = true;
             }
             if (!matched) {
                 if (nodeNamesKnown(binding)) {
@@ -2220,6 +2244,61 @@ public class DmlLineage {
         }
         throw new MetadataNotFoundException(property.getOwner() == null
                 ? "*" : property.getOwner().toString());
+    }
+
+    private void recordOuterIdentifier(String rawName, String target,
+            String targetName, int position) {
+        String key = identifierKey(rawName);
+        List<SourceTable> owners = new ArrayList<>();
+        List<SourceTable> unknown = new ArrayList<>();
+        for (SourceTable source : currentSources()) {
+            if (ownsOuterColumn(source, key)) {
+                owners.add(source);
+            } else if (!sourceColumnNamesKnown(source)) {
+                unknown.add(source);
+            }
+        }
+        if (owners.size() > 1) {
+            throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                    displayNames(owners));
+        }
+        if (owners.isEmpty()) {
+            if (!unknown.isEmpty()) {
+                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                        displayNames(unknown));
+            }
+            throw new ColumnNotFoundException(normalizeIdentifier(rawName),
+                    displayNames(currentSources()));
+        }
+        SourceTable source = owners.get(0);
+        String column = resolveOuterColumn(source, rawName);
+        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                source.displayName + "." + renderIdentifier(column),
+                target + "." + renderIdentifier(targetName), position,
+                source.temporary, tempTables.contains(target)));
+    }
+
+    private boolean ownsOuterColumn(SourceTable source, String key) {
+        if (key == null) {
+            return false;
+        }
+        if (source.metadataTable != null) {
+            for (int i = 0; i < source.metadataTable.getFields().size(); i++) {
+                if (key.equals(identifierKey(
+                        source.metadataTable.getFields().get(i).getColumnName()))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (!source.outputNamesKnown) {
+            return false;
+        }
+        return source.outputKeys.contains(key);
+    }
+
+    private boolean sourceColumnNamesKnown(SourceTable source) {
+        return source.metadataTable != null || source.outputNamesKnown;
     }
 
     private String resolveOuterColumn(SourceTable source, String rawName) {
@@ -2355,12 +2434,12 @@ public class DmlLineage {
                 if (source != null) {
                     plan = planFromSource(source);
                 } else {
-                    SourceNode binding = joinBinding(owner);
+                    SourceNode binding = findCorrelatedBinding(owner);
                     if (binding == null) {
                         throw new MetadataNotFoundException(owner == null
                                 ? "*" : owner.toString());
                     }
-                    plan = binding == null ? new ArrayList<StarOutput>() : binding.plan;
+                    plan = binding.plan;
                 }
                 List<SourceTable> planSources = new ArrayList<>();
                 if (source != null) {
@@ -2664,16 +2743,30 @@ public class DmlLineage {
             SourceNode left = buildSourceNode(join.getLeft(), using);
             boolean lateralRight = isLateralSource(join.getRight());
             if (lateralRight) {
-                // A correlated LATERAL body can read the left side's columns.
+                // A correlated LATERAL body can read the left side's columns,
+                // bindings, and hidden-name set.
                 stackSources.push(left.sources);
                 stackUsing.push(using);
                 stackStarPlan.push(left.plan);
+                stackSourceNode.push(left);
+                stackSourceTable.push(left.sources.isEmpty()
+                        ? "" : left.sources.get(0).displayName);
+                stackHiddenSources.push(stackHiddenSources.isEmpty()
+                        ? new HashSet<SourceTable>()
+                        : new HashSet<>(stackHiddenSources.peek()));
+                stackJoinBindings.push(stackJoinBindings.isEmpty()
+                        ? new HashMap<String, SourceNode>()
+                        : new HashMap<>(stackJoinBindings.peek()));
             }
             SourceNode right;
             try {
                 right = buildSourceNode(join.getRight(), using);
             } finally {
                 if (lateralRight) {
+                    stackJoinBindings.pop();
+                    stackHiddenSources.pop();
+                    stackSourceTable.pop();
+                    stackSourceNode.pop();
                     stackStarPlan.pop();
                     stackUsing.pop();
                     stackSources.pop();
@@ -4355,10 +4448,32 @@ public class DmlLineage {
         String ownerKey = qualifiedKey(rawOwner);
         String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
         for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
+            Set<SourceTable> hidden = frame < stackHiddenSources.size()
+                    ? stackHiddenSources.get(frame)
+                    : java.util.Collections.<SourceTable>emptySet();
             for (SourceTable source : stackSources.get(frame)) {
-                if (matchesOwner(source, ownerKey, ownerParts)) {
+                if (!hidden.contains(source)
+                        && matchesOwner(source, ownerKey, ownerParts)) {
                     return source;
                 }
+            }
+        }
+        return null;
+    }
+
+    private SourceNode findCorrelatedBinding(SQLExpr owner) {
+        SourceNode direct = joinBinding(owner);
+        if (direct != null || owner == null) {
+            return direct;
+        }
+        String key = identifierKey(lastSegment(owner.toString()));
+        if (key == null) {
+            return null;
+        }
+        for (int frame = stackJoinBindings.size() - 2; frame >= 0; frame--) {
+            SourceNode found = stackJoinBindings.get(frame).get(key);
+            if (found != null) {
+                return found;
             }
         }
         return null;
@@ -4412,7 +4527,7 @@ public class DmlLineage {
             }
             SourceTable source = findCorrelatedSource(property.getOwner());
             if (source == null) {
-                SourceNode binding = joinBinding(property.getOwner());
+                SourceNode binding = findCorrelatedBinding(property.getOwner());
                 if (binding != null) {
                     mapBindingStar(stackTargetTable.peek(), binding, currentOrdinal);
                     return;
@@ -4459,7 +4574,7 @@ public class DmlLineage {
         }
         SourceTable source = findCorrelatedSource(property.getOwner());
         if (source == null) {
-            SourceNode binding = joinBinding(property.getOwner());
+            SourceNode binding = findCorrelatedBinding(property.getOwner());
             if (binding != null) {
                 bindJoinProperty(binding, rawName, name);
                 return;

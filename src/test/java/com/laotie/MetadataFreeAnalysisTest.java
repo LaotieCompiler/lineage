@@ -2290,6 +2290,40 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void aliasedCteDoesNotShadowQualifiedTable() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH b AS (SELECT 1, 2)"
+                        + " SELECT * FROM m UNION ALL"
+                        + " SELECT s.b.* FROM b AS x CROSS JOIN s.b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("s.b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void quotedUppercaseQualifiedStarMatchesWrittenName() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);"
+                + " CREATE TABLE s.\"B\" (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM m UNION ALL"
+                        + " SELECT s.\"B\".* FROM s.\"B\"; SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("s.B.k")));
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

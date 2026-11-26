@@ -912,12 +912,19 @@ public class DmlLineage {
             return null;
         }
         if (from instanceof SQLExprTableSource) {
-            String name = extractTableName((SQLExprTableSource) from);
+            SQLExprTableSource table = (SQLExprTableSource) from;
+            if (table.getAlias() != null) {
+                // An alias hides the original table name, and a qualified owner can
+                // never refer to an alias.
+                return null;
+            }
+            String name = extractTableName(table);
             if (name == null) {
                 return null;
             }
             // Compare the bound identity, which honors search_path and per-segment
-            // quoting, not only the spelling used in this FROM clause.
+            // quoting, and keep the written spelling for quoted names whose display
+            // form drops the quotes.
             String bound = name;
             if (context != null) {
                 TableLocation location = resolveMetadataTable(name);
@@ -925,7 +932,8 @@ public class DmlLineage {
                     bound = location.getDisplayName();
                 }
             }
-            return key.equals(qualifiedKey(bound)) ? from : null;
+            return key.equals(qualifiedKey(bound)) || key.equals(qualifiedKey(name))
+                    ? from : null;
         }
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;

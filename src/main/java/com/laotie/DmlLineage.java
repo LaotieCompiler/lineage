@@ -113,6 +113,7 @@ public class DmlLineage {
     private Map<String, Boolean> targetNamesKnown;
     private Map<String, List<SourceTable>> targetOutputUnknownGroup;
     private Map<String, Boolean> targetWildcardContribution;
+    private Map<String, Set<Integer>> targetWildcardPositions;
     private Map<String, List<Boolean>> targetOutputNameKnown;
     private Map<String, Integer> targetMinWidth;
     private Map<String, Integer> targetWidthOverride;
@@ -2666,6 +2667,20 @@ public class DmlLineage {
         return minimum == null ? 0 : minimum;
     }
 
+    private void recordWildcardPosition(String target, int position) {
+        if (target == null || position < 0) {
+            return;
+        }
+        targetWildcardPositions.computeIfAbsent(target,
+                key -> new HashSet<Integer>()).add(position);
+    }
+
+    private Set<Integer> wildcardPositionsOf(String target) {
+        Set<Integer> positions = targetWildcardPositions.get(target);
+        return positions == null ? java.util.Collections.<Integer>emptySet()
+                : new HashSet<>(positions);
+    }
+
     private boolean hasWildcardContribution(String target) {
         return target != null && Boolean.TRUE.equals(targetWildcardContribution.get(target));
     }
@@ -3536,24 +3551,61 @@ public class DmlLineage {
         }
         if (!determinate) {
             targetWildcardContribution.put(targetTable, Boolean.TRUE);
-            // Contract: when any participating source's columns are unknown the
-            // projection positions cannot be determined. Keep table-level edges only
-            // and never guess a column.
+            // Contract: positions cannot be derived from column names. Use the visible
+            // plan's positions for table-level edges when its width is known; otherwise
+            // keep one open-ended edge per source.
+            if (sources.size() == 1 && sources.get(0).temporary
+                    && !wildcardPositionsOf(sources.get(0).displayName).isEmpty()) {
+                // The derived source's wildcard covers only the positions its own
+                // unknown projections produced; constants and named columns after them
+                // get no table-level edge.
+                Set<Integer> positions = wildcardPositionsOf(sources.get(0).displayName);
+                SourceTable source = sources.get(0);
+                for (Integer relative : positions) {
+                    Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                            lineageTableName(source), targetTable,
+                            startPosition + relative, source.temporary, targetTemporary);
+                    wildcard.setPositionalWildcard(true);
+                    wildcard.setWildcardWidthKnown(true);
+                    wildcard.setWildcardWidth(1);
+                    instructions.add(wildcard);
+                    recordWildcardPosition(targetTable, startPosition + relative);
+                }
+                return Math.max(node != null && node.widthKnown ? node.width
+                        : positions.size(), 1);
+            }
+            if (node != null && node.widthKnown && !node.plan.isEmpty()) {
+                int position = startPosition;
+                int limit = startPosition + node.width;
+                for (StarOutput output : node.plan) {
+                    if (position >= limit || output.sources.isEmpty()) {
+                        continue;
+                    }
+                    for (SourceTable source : starOutputSources(output)) {
+                        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                                lineageTableName(source), targetTable, position,
+                                source.temporary, targetTemporary);
+                        wildcard.setPositionalWildcard(true);
+                        wildcard.setWildcardWidthKnown(true);
+                        wildcard.setWildcardWidth(1);
+                        instructions.add(wildcard);
+                    }
+                    recordWildcardPosition(targetTable, position);
+                    position++;
+                }
+                return Math.max(node.width, 1);
+            }
             boolean allKnown = !sources.isEmpty() && allWidthKnown(sources);
-            boolean mergedWidthKnown = node != null && node.widthKnown;
             int position = startPosition;
             for (int index = 0; index < sources.size(); index++) {
                 SourceTable source = sources.get(index);
-                int sourceStart = allKnown && !mergedWidthKnown ? position : startPosition;
+                int sourceStart = allKnown ? position : startPosition;
                 Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                         lineageTableName(source), targetTable, sourceStart,
                         source.temporary, targetTemporary);
                 wildcard.setPositionalWildcard(true);
                 int sourceWidth = -1;
-                if (mergedWidthKnown) {
-                    // The visible plan already accounts for JOIN USING merges.
-                    sourceWidth = Math.max(node.width, 1);
-                } else if (allKnown) {
+                if (allKnown) {
                     sourceWidth = Math.max(sourceColumnNames(source).size(), 1);
                 } else if (sources.size() == 1 && currentStarBudget > 0) {
                     sourceWidth = currentStarBudget;
@@ -3561,7 +3613,12 @@ public class DmlLineage {
                 if (sourceWidth > 0) {
                     wildcard.setWildcardWidthKnown(true);
                     wildcard.setWildcardWidth(sourceWidth);
+                    for (int offset = 0; offset < sourceWidth; offset++) {
+                        recordWildcardPosition(targetTable, sourceStart + offset);
+                    }
                     position += sourceWidth;
+                } else {
+                    recordWildcardPosition(targetTable, sourceStart);
                 }
                 instructions.add(wildcard);
             }
@@ -4234,6 +4291,7 @@ public class DmlLineage {
             wildcard.setWildcardWidthKnown(true);
             wildcard.setWildcardWidth(1);
             instructions.add(wildcard);
+            recordWildcardPosition(target, currentOrdinal);
             targetWildcardContribution.put(target, Boolean.TRUE);
         }
         if (!source.outputColumns.isEmpty()) {
@@ -4532,6 +4590,7 @@ public class DmlLineage {
         targetNamesKnown = new HashMap<>();
         targetOutputUnknownGroup = new HashMap<>();
         targetWildcardContribution = new HashMap<>();
+        targetWildcardPositions = new HashMap<>();
         targetOutputNameKnown = new HashMap<>();
         targetMinWidth = new HashMap<>();
         targetWidthOverride = new HashMap<>();

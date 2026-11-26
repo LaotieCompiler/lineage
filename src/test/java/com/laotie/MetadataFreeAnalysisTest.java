@@ -822,7 +822,14 @@ public class MetadataFreeAnalysisTest {
         Set<Column> sources = unknownNamesFirst.getGraph()
                 .getSources(new Column("t.*"));
         assertTrue(sources.contains(new Column("missing.*")));
-        assertOnlyWildcardSources(unknownNamesFirst.getGraph(), new Column("t.c2"));
+        Column target = new Column("t.c2");
+        for (Column source : unknownNamesFirst.getGraph().getSources(target)) {
+            if (source.equals(target)) {
+                continue;
+            }
+            assertTrue("unexpected position guess: " + source,
+                    source.isWildcard() || source.equals(new Column("b.q")));
+        }
 
         ScanResult knownNamesFirst = LineageScanner.withMetadata(
                 MetadataContext.of(catalog), optional()).scan(
@@ -1657,6 +1664,58 @@ public class MetadataFreeAnalysisTest {
                 .contains(new Column("m2.*")));
         assertFalse(wider.getGraph().getSources(new Column("t.c2"))
                 .contains(new Column("m1.*")));
+    }
+
+    @Test
+    public void bareStarOverWidthKnownSourcesKeepsPerSourcePositions() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT * FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN (SELECT * FROM m2 UNION ALL SELECT 2) AS y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void usingLeftKeepsRightOnlyColumn() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT, w INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM ("
+                        + "SELECT * FROM missing UNION ALL SELECT 1) AS x"
+                        + " LEFT JOIN b USING(k); SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void derivedStarExcludesConstantTailPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT q.* FROM ("
+                        + "SELECT *, 42 AS tail FROM ("
+                        + "SELECT * FROM missing UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN (SELECT 2) AS y) AS q;"
+                        + " SELECT c3 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("missing.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("missing.*")));
     }
 
     @Test

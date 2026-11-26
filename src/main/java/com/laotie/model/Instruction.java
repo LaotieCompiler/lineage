@@ -197,10 +197,15 @@ public class Instruction {
                     instruction.getOrdinal(), instruction.isFromTemporary(),
                     instruction.isToTemporary()));
             if (instruction.isToTemporary()) {
-                markUnknownTempColumn(tempColumns, target, instruction.getOrdinal());
-                tempUnknown.computeIfAbsent(target,
-                        key -> new HashSet<Integer>())
-                        .add(Math.max(instruction.getOrdinal(), 0));
+                int at = Math.max(instruction.getOrdinal(), 0);
+                if (instruction.isWildcardWidthKnown()) {
+                    tempWildcardKnown.computeIfAbsent(target,
+                            key -> new HashSet<Integer>()).add(at);
+                } else {
+                    markUnknownTempColumn(tempColumns, target, instruction.getOrdinal());
+                    tempUnknown.computeIfAbsent(target,
+                            key -> new HashSet<Integer>()).add(at);
+                }
             }
             return;
         }

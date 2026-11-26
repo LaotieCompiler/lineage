@@ -825,6 +825,61 @@ public class MetadataFreeAnalysisTest {
                 knownNamesFirst.getGraph().getSources(new Column("t.c1")));
         assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.q"))),
                 knownNamesFirst.getGraph().getSources(new Column("t.c2")));
+        // The unknown UNION branch still contributes a table-level edge.
+        assertTrue(knownNamesFirst.getGraph().getSources(new Column("t.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void contractThroughKnownUnionBranch() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1) SELECT q.* FROM ("
+                        + "SELECT k FROM b UNION ALL SELECT * FROM missing) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertTrue(result.getGraph().getSources(new Column("t.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void wildcardAfterUnknownStarStaysTableLevel() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("SELECT missing.*, a.* FROM missing, a;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.*"));
+        assertTrue(sources.contains(new Column("missing.*")));
+        assertTrue(sources.contains(new Column("a.*")));
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(Column.temporary("stmt0.temp0.v")));
+    }
+
+    @Test
+    public void explicitAliasAfterUnknownWildcardResolvesWithoutGuessing() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT *, a.v AS z FROM a, missing) SELECT q.z FROM q;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.z"));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                Column.temporary("stmt0.q.z"))), sources);
+        assertFalse(sources.contains(new Column("a.v")));
+        Set<Column> wildcards = result.getGraph()
+                .getSources(Column.temporary("stmt0.q.*"));
+        assertTrue(wildcards.contains(new Column("missing.*")));
     }
 
     @Test

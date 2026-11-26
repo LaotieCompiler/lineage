@@ -112,6 +112,7 @@ public class DmlLineage {
     private Map<String, Boolean> targetWidthKnown;
     private Map<String, Boolean> targetNamesKnown;
     private Map<String, List<SourceTable>> targetOutputUnknownGroup;
+    private Map<String, Boolean> targetWildcardContribution;
     private Map<String, List<Boolean>> targetOutputNameKnown;
     private Map<String, Integer> targetMinWidth;
     private Map<String, Integer> targetWidthOverride;
@@ -1929,7 +1930,8 @@ public class DmlLineage {
                     widthKnown, namesKnown, derivedOutputs, copyKeys(target),
                     copyNameKnown(target, derivedOutputs.size()),
                     targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    copyUnknownGroups(target, derivedOutputs.size()));
+                    copyUnknownGroups(target, derivedOutputs.size()), false,
+                    hasWildcardContribution(target));
             return new SourceNode(java.util.Collections.singletonList(source),
                     planFromSource(source), namesKnown, widthKnown, derivedOutputs.size(),
                     targetMinimumColumns(target, widthKnown, derivedOutputs.size()), 0,
@@ -1952,7 +1954,8 @@ public class DmlLineage {
                     widthKnown, namesKnown, derivedOutputs, copyKeys(target),
                     copyNameKnown(target, derivedOutputs.size()),
                     targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    copyUnknownGroups(target, derivedOutputs.size()));
+                    copyUnknownGroups(target, derivedOutputs.size()), false,
+                    hasWildcardContribution(target));
             return new SourceNode(java.util.Collections.singletonList(source),
                     planFromSource(source), namesKnown, widthKnown, derivedOutputs.size(),
                     targetMinimumColumns(target, widthKnown, derivedOutputs.size()), 0,
@@ -2330,7 +2333,8 @@ public class DmlLineage {
             return true;
         }
         for (int i = 0; i < source.outputKeys.size(); i++) {
-            if (source.outputKeys.get(i).equals(key)
+            if (source.outputKeys.get(i) != null
+                    && source.outputKeys.get(i).equals(key)
                     && i < source.outputNameKnown.size()
                     && Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
                 return true;
@@ -2648,7 +2652,8 @@ public class DmlLineage {
                         : copyNameKnown(cteTarget, outputColumns.size()),
                 minOutputColumns,
                 metadataTable != null ? java.util.Collections.<SourceTable>emptyList()
-                        : copyUnknownGroups(cteTarget, outputColumns.size()));
+                        : copyUnknownGroups(cteTarget, outputColumns.size()),
+                false, hasWildcardContribution(cteTarget));
     }
 
     private int targetMinimumColumns(String target, boolean widthKnown, int outputCount) {
@@ -2657,6 +2662,10 @@ public class DmlLineage {
         }
         Integer minimum = target == null ? null : targetMinWidth.get(target);
         return minimum == null ? 0 : minimum;
+    }
+
+    private boolean hasWildcardContribution(String target) {
+        return target != null && Boolean.TRUE.equals(targetWildcardContribution.get(target));
     }
 
     private List<SourceTable> copyUnknownGroups(String target, int size) {
@@ -3494,7 +3503,8 @@ public class DmlLineage {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean targetTemporary = tempTables.contains(targetTable);
 
-        boolean determinate = !sources.isEmpty();
+        boolean determinate = !sources.isEmpty()
+                && !(uncertainOrdinal >= 0 && uncertainOrdinal == startPosition);
         for (SourceTable source : sources) {
             if (!sourceNamesKnown(source)) {
                 determinate = false;
@@ -3502,6 +3512,7 @@ public class DmlLineage {
             }
         }
         if (!determinate) {
+            targetWildcardContribution.put(targetTable, Boolean.TRUE);
             // Contract: when any participating source's columns are unknown the
             // projection positions cannot be determined. Keep table-level edges only
             // and never guess a column.
@@ -3570,6 +3581,22 @@ public class DmlLineage {
                 }
             }
             position++;
+        }
+        for (SourceTable source : sources) {
+            if (!source.wildcardContribution) {
+                continue;
+            }
+            // The source also carries rows from an unknown table: keep a table-level
+            // edge next to the precise column mappings.
+            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                    lineageTableName(source), targetTable, startPosition,
+                    source.temporary, targetTemporary);
+            wildcard.setPositionalWildcard(true);
+            // The union's names (and hence positions) are known even though another
+            // branch contributes unknown rows.
+            wildcard.setWildcardWidthKnown(true);
+            instructions.add(wildcard);
+            targetWildcardContribution.put(targetTable, Boolean.TRUE);
         }
         return position - startPosition;
     }
@@ -3706,7 +3733,7 @@ public class DmlLineage {
             for (StarOutput output : stackStarPlan.peek()) {
                 boolean matched = false;
                 for (StarColumn column : output.sources) {
-                    if (column.key.equals(columnKey)) {
+                    if (column.key != null && column.key.equals(columnKey)) {
                         matched = true;
                         if (!matchedSources.contains(column.source)) {
                             matchedSources.add(column.source);
@@ -3748,7 +3775,7 @@ public class DmlLineage {
             for (StarOutput output : stackStarPlan.peek()) {
                 boolean matched = false;
                 for (StarColumn column : output.sources) {
-                    if (column.key.equals(columnKey)) {
+                    if (column.key != null && column.key.equals(columnKey)) {
                         matched = true;
                     }
                 }
@@ -3774,7 +3801,7 @@ public class DmlLineage {
             List<StarOutput> matches = new ArrayList<>();
             for (StarOutput output : stackStarPlan.peek()) {
                 for (StarColumn column : output.sources) {
-                    if (column.key.equals(columnKey)) {
+                    if (column.key != null && column.key.equals(columnKey)) {
                         matches.add(output);
                         break;
                     }
@@ -3784,7 +3811,7 @@ public class DmlLineage {
                 // Only sources whose column identity is confirmed may become edges.
                 List<SourceTable> resolved = new ArrayList<>();
                 for (StarColumn column : matches.get(0).sources) {
-                    if (column.key.equals(columnKey) && column.nameKnown
+                    if (column.key != null && column.key.equals(columnKey) && column.nameKnown
                             && !resolved.contains(column.source)) {
                         resolved.add(column.source);
                     }
@@ -4101,9 +4128,13 @@ public class DmlLineage {
     private void addColumnMapping(SourceTable source, String columnName) {
         if (!source.outputColumns.isEmpty()) {
             String key = identifierKey(columnName);
+            if (key == null) {
+                return;
+            }
             String canonical = null;
             for (int i = 0; i < source.outputKeys.size(); i++) {
-                if (source.outputKeys.get(i).equals(key)) {
+                if (source.outputKeys.get(i) != null
+                    && source.outputKeys.get(i).equals(key)) {
                     canonical = source.outputColumns.get(i);
                     break;
                 }
@@ -4378,6 +4409,7 @@ public class DmlLineage {
         targetWidthKnown = new HashMap<>();
         targetNamesKnown = new HashMap<>();
         targetOutputUnknownGroup = new HashMap<>();
+        targetWildcardContribution = new HashMap<>();
         targetOutputNameKnown = new HashMap<>();
         targetMinWidth = new HashMap<>();
         targetWidthOverride = new HashMap<>();
@@ -4480,6 +4512,7 @@ public class DmlLineage {
         private final List<SourceTable> outputUnknownGroups;
         private final int minOutputColumns;
         private final boolean wildcardOnly;
+        private final boolean wildcardContribution;
 
         private SourceTable(String displayName, String writtenName, String rawName, String alias,
                 Table metadataTable, boolean temporary, boolean outputWidthKnown,
@@ -4488,14 +4521,15 @@ public class DmlLineage {
                 List<SourceTable> outputUnknownGroups) {
             this(displayName, writtenName, rawName, alias, metadataTable, temporary,
                     outputWidthKnown, outputNamesKnown, outputColumns, outputKeys,
-                    outputNameKnown, minOutputColumns, outputUnknownGroups, false);
+                    outputNameKnown, minOutputColumns, outputUnknownGroups, false, false);
         }
 
         private SourceTable(String displayName, String writtenName, String rawName, String alias,
                 Table metadataTable, boolean temporary, boolean outputWidthKnown,
                 boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
                 List<Boolean> outputNameKnown, int minOutputColumns,
-                List<SourceTable> outputUnknownGroups, boolean wildcardOnly) {
+                List<SourceTable> outputUnknownGroups, boolean wildcardOnly,
+                boolean wildcardContribution) {
             this.displayName = displayName;
             this.writtenName = writtenName;
             this.rawName = rawName;
@@ -4514,6 +4548,7 @@ public class DmlLineage {
             this.outputUnknownGroups = outputUnknownGroups == null
                     ? java.util.Collections.<SourceTable>emptyList() : outputUnknownGroups;
             this.wildcardOnly = wildcardOnly;
+            this.wildcardContribution = wildcardContribution;
         }
     }
 

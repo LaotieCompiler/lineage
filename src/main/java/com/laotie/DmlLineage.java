@@ -3541,11 +3541,16 @@ public class DmlLineage {
                         lineageTableName(source), targetTable, startPosition,
                         source.temporary, targetTemporary);
                 wildcard.setPositionalWildcard(true);
-                if (currentStarBudget > 0) {
-                    // A UNION sibling fixed the width of this projection, so its
-                    // position count is known.
+                int starWidth = currentStarBudget;
+                if (starWidth <= 0 && sources.size() == 1
+                        && sourceColumnsKnown(sources.get(0))) {
+                    // The source's own width is known (for example a derived table
+                    // whose UNION branches fixed it).
+                    starWidth = Math.max(sourceColumnNames(sources.get(0)).size(), 1);
+                }
+                if (starWidth > 0) {
                     wildcard.setWildcardWidthKnown(true);
-                    wildcard.setWildcardWidth(currentStarBudget);
+                    wildcard.setWildcardWidth(starWidth);
                 }
                 instructions.add(wildcard);
             }

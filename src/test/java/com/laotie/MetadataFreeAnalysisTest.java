@@ -1458,6 +1458,58 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void wildcardWidthStartsAtItsProjectionPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT b.k, missing.* FROM b, missing"
+                        + " UNION ALL SELECT 1, 2; SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void wildcardDoesNotCoverEarlierConstantColumn() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT 1 AS fixed, missing.* FROM missing"
+                        + " UNION ALL SELECT 2, 3;");
+
+        assertEquals(0, result.getFailures().size());
+        if (result.getGraph().getReverseGraph().containsVertex(new Column("t.c1"))) {
+            assertFalse(result.getGraph().getSources(new Column("t.c1"))
+                    .contains(new Column("missing.*")));
+        }
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void derivedUnionWidthBoundsOuterWildcard() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM ("
+                        + "SELECT * FROM missing UNION ALL SELECT 1, 2) AS q;"
+                        + " SELECT c3 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        if (result.getGraph().getReverseGraph().containsVertex(new Column("t.c3"))) {
+            assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                    .contains(new Column("missing.*")));
+        }
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

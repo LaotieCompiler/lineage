@@ -59,7 +59,8 @@ public class LineageGraph {
         Map<String, Set<String>> populatedColumns = new HashMap<>();
         Map<String, Map<Integer, String>> tempColumnsByPosition = new HashMap<>();
         Map<String, Integer> tempMaxPosition = new HashMap<>();
-        Map<String, Integer> tempWidthValue = new HashMap<>();
+        Map<String, Integer> tempProjectionWidth = new HashMap<>();
+        Map<String, java.util.List<int[]>> tempWildcardRanges = new HashMap<>();
         Set<String> tempWidthKnown = new HashSet<>();
         java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
@@ -92,8 +93,13 @@ public class LineageGraph {
                         if (instruction.isWildcardWidthKnown()) {
                             tempWidthKnown.add(key);
                             if (instruction.getWildcardWidth() > 0) {
-                                tempWidthValue.merge(key,
-                                        instruction.getWildcardWidth(), Math::max);
+                                int start = instruction.getOrdinal();
+                                int end = start + instruction.getWildcardWidth();
+                                tempWildcardRanges
+                                        .computeIfAbsent(key,
+                                                k -> new java.util.ArrayList<int[]>())
+                                        .add(new int[] {start, end});
+                                tempProjectionWidth.merge(key, end, Math::max);
                             }
                         }
                     }
@@ -111,7 +117,8 @@ public class LineageGraph {
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
                                         source, columns, prefix, fromTable, fromTemporary,
-                                        tempColumnsByPosition, tempWidthKnown));
+                                        tempColumnsByPosition, tempWidthKnown,
+                                        tempWildcardRanges));
                             }
                         } else if (!to.isTemporary() && result.getContext() != null) {
                             java.util.List<String> targetColumns =
@@ -126,10 +133,10 @@ public class LineageGraph {
                                 targetColumns = targetColumns.subList(0,
                                         Math.min(projected.size(), targetColumns.size()));
                             } else if (tempWidthKnown.contains(fromKey)) {
-                                Integer declared = tempWidthValue.get(fromKey);
+                                Integer declared = tempProjectionWidth.get(fromKey);
                                 Integer max = tempMaxPosition.get(fromKey);
-                                int width = declared != null ? declared
-                                        : max == null ? 0 : max + 1;
+                                int width = Math.max(declared == null ? 0 : declared,
+                                        max == null ? 0 : max + 1);
                                 if (width > 0 && width < targetColumns.size()) {
                                     targetColumns = targetColumns.subList(0, width);
                                 }
@@ -143,7 +150,8 @@ public class LineageGraph {
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
                                         source, names, prefix, fromTable, fromTemporary,
-                                        tempColumnsByPosition, tempWidthKnown));
+                                        tempColumnsByPosition, tempWidthKnown,
+                                        tempWildcardRanges));
                             }
                     }
                     reverseGraph.addVertex(from);
@@ -244,16 +252,19 @@ public class LineageGraph {
     private void linkPopulatedColumns(Column target, Column sourceWildcard, String columns,
             String prefix, String fromTable, boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
-            Set<String> tempWidthKnown) {
+            Set<String> tempWidthKnown,
+            Map<String, java.util.List<int[]>> tempWildcardRanges) {
         linkPopulatedColumns(target, sourceWildcard, splitColumns(columns), prefix,
-                fromTable, fromTemporary, tempColumnsByPosition, tempWidthKnown);
+                fromTable, fromTemporary, tempColumnsByPosition, tempWidthKnown,
+                tempWildcardRanges);
     }
 
     private void linkPopulatedColumns(Column target, Column sourceWildcard,
             java.util.List<String> names, String prefix, String fromTable,
             boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
-            Set<String> tempWidthKnown) {
+            Set<String> tempWidthKnown,
+            Map<String, java.util.List<int[]>> tempWildcardRanges) {
         Map<Integer, String> tempPositions = fromTemporary
                 ? tempColumnsByPosition.get(prefix + fromTable) : null;
         for (int i = 0; i < names.size(); i++) {
@@ -266,8 +277,10 @@ public class LineageGraph {
             }
             String tempColumn = tempPositions != null && tempPositions.containsKey(i)
                     ? tempPositions.get(i) : null;
+            java.util.List<int[]> ranges = tempWildcardRanges.get(prefix + fromTable);
+            boolean inRange = inAnyRange(ranges, i);
             if (CONSTANT_COLUMN.equals(tempColumn)) {
-                if (tempWidthKnown.contains(prefix + fromTable)) {
+                if (inRange) {
                     // Another UNION branch feeds this position from an unknown table.
                     reverseGraph.addEdge(columnVertex, sourceWildcard);
                 }
@@ -282,8 +295,25 @@ public class LineageGraph {
                 }
                 continue;
             }
+            if (ranges != null && !ranges.isEmpty() && !inRange) {
+                // Known widths bound the projection: this position is not fed by the
+                // wildcard.
+                continue;
+            }
             reverseGraph.addEdge(columnVertex, sourceWildcard);
         }
+    }
+
+    private static boolean inAnyRange(java.util.List<int[]> ranges, int position) {
+        if (ranges == null) {
+            return false;
+        }
+        for (int[] range : ranges) {
+            if (position >= range[0] && position < range[1]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static java.util.List<String> splitColumns(String columns) {

@@ -1783,7 +1783,7 @@ public class DmlLineage {
                 }
                 int width = recordUnboundSelectItem(item, position);
                 if (!outerSources.isEmpty()) {
-                    recordOuterColumnMapping(item, position);
+                    recordOuterExpressionMappings(item, position);
                 }
                 position += width;
                 minWidth += minimumOutputColumns(item.getExpr());
@@ -2102,29 +2102,148 @@ public class DmlLineage {
         stackJoinBindings.pop();
     }
 
-    private void recordOuterColumnMapping(SQLSelectItem item, int position) {
-        SQLExpr base = item.getExpr();
-        while (base instanceof SQLCastExpr) {
-            base = ((SQLCastExpr) base).getExpr();
-        }
-        if (!(base instanceof SQLPropertyExpr) || isStarProperty(base)) {
+    private void recordOuterExpressionMappings(SQLSelectItem item, int position) {
+        SQLExpr expr = item.getExpr();
+        if (expr == null) {
             return;
-        }
-        SQLPropertyExpr property = (SQLPropertyExpr) base;
-        SourceTable source = findByOwner(property.getOwner());
-        if (source == null) {
-            throw new MetadataNotFoundException(property.getOwner() == null
-                    ? "*" : property.getOwner().toString());
         }
         String target = stackTargetTable.peek();
         List<String> outputs = targetOutputs.get(target);
         String name = outputs != null && position < outputs.size()
                 && outputs.get(position) != null
-                        ? outputs.get(position) : normalizeIdentifier(property.getName());
-        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                source.displayName + "." + renderIdentifier(property.getName()),
-                target + "." + renderIdentifier(name), position,
-                source.temporary, tempTables.contains(target)));
+                        ? outputs.get(position)
+                        : normalizeIdentifier(expr.toString());
+        recordOuterExpression(expr, target, name, position);
+    }
+
+    private void recordOuterExpression(SQLExpr expr, String target, String targetName,
+            int position) {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof SQLPropertyExpr) {
+            SQLPropertyExpr property = (SQLPropertyExpr) expr;
+            if (!isStarProperty(property)) {
+                recordOuterColumn(property, target, targetName, position);
+            }
+            return;
+        }
+        if (expr instanceof SQLBinaryOpExpr) {
+            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
+            recordOuterExpression(binary.getLeft(), target, targetName, position);
+            recordOuterExpression(binary.getRight(), target, targetName, position);
+        } else if (expr instanceof SQLMethodInvokeExpr) {
+            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
+                recordOuterExpression(argument, target, targetName, position);
+            }
+        } else if (expr instanceof SQLCastExpr) {
+            recordOuterExpression(((SQLCastExpr) expr).getExpr(), target, targetName,
+                    position);
+        } else if (expr instanceof SQLNotExpr) {
+            recordOuterExpression(((SQLNotExpr) expr).getExpr(), target, targetName,
+                    position);
+        } else if (expr instanceof SQLUnaryExpr) {
+            recordOuterExpression(((SQLUnaryExpr) expr).getExpr(), target, targetName,
+                    position);
+        } else if (expr instanceof SQLBetweenExpr) {
+            SQLBetweenExpr between = (SQLBetweenExpr) expr;
+            recordOuterExpression(between.getTestExpr(), target, targetName, position);
+            recordOuterExpression(between.getBeginExpr(), target, targetName, position);
+            recordOuterExpression(between.getEndExpr(), target, targetName, position);
+        } else if (expr instanceof SQLCaseExpr) {
+            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
+            recordOuterExpression(caseExpr.getValueExpr(), target, targetName,
+                    position);
+            if (caseExpr.getItems() != null) {
+                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
+                    recordOuterExpression(caseItem.getConditionExpr(), target,
+                            targetName, position);
+                    recordOuterExpression(caseItem.getValueExpr(), target, targetName,
+                            position);
+                }
+            }
+            recordOuterExpression(caseExpr.getElseExpr(), target, targetName, position);
+        } else if (expr instanceof SQLListExpr) {
+            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
+                recordOuterExpression(element, target, targetName, position);
+            }
+        } else if (expr instanceof SQLExtractExpr) {
+            recordOuterExpression(((SQLExtractExpr) expr).getValue(), target,
+                    targetName, position);
+        }
+    }
+
+    private void recordOuterColumn(SQLPropertyExpr property, String target,
+            String targetName, int position) {
+        String rawName = property.getName();
+        SourceTable source = findCorrelatedSource(property.getOwner());
+        if (source != null) {
+            String column = resolveOuterColumn(source, rawName);
+            instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                    source.displayName + "." + renderIdentifier(column),
+                    target + "." + renderIdentifier(targetName), position,
+                    source.temporary, tempTables.contains(target)));
+            return;
+        }
+        SourceNode binding = joinBinding(property.getOwner());
+        if (binding != null) {
+            String key = identifierKey(rawName);
+            boolean matched = false;
+            for (StarOutput output : binding.plan) {
+                for (StarColumn column : output.sources) {
+                    if (key != null && key.equals(column.key)) {
+                        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                                column.source.displayName + "."
+                                        + renderSourceColumn(column),
+                                target + "." + renderIdentifier(targetName), position,
+                                column.source.temporary, tempTables.contains(target)));
+                        matched = true;
+                    }
+                }
+            }
+            if (!matched) {
+                if (nodeNamesKnown(binding)) {
+                    throw new ColumnNotFoundException(normalizeIdentifier(rawName),
+                            displayNames(binding.sources));
+                }
+                for (SourceTable candidate : binding.sources) {
+                    Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                            lineageTableName(candidate), target, position,
+                            candidate.temporary, tempTables.contains(target));
+                    wildcard.setPositionalWildcard(true);
+                    wildcard.setWildcardWidthKnown(true);
+                    wildcard.setWildcardWidth(1);
+                    instructions.add(wildcard);
+                }
+            }
+            return;
+        }
+        throw new MetadataNotFoundException(property.getOwner() == null
+                ? "*" : property.getOwner().toString());
+    }
+
+    private String resolveOuterColumn(SourceTable source, String rawName) {
+        if (source.metadataTable != null) {
+            String resolved = MetadataCatalog.resolveColumnName(source.metadataTable,
+                    rawName, currentDialect());
+            if (resolved == null) {
+                throw new ColumnNotFoundException(normalizeIdentifier(rawName),
+                        displayNames(visibleSources()));
+            }
+            return resolved;
+        }
+        if (source.outputNamesKnown) {
+            String key = identifierKey(rawName);
+            for (int i = 0; i < source.outputKeys.size(); i++) {
+                if (key != null && key.equals(source.outputKeys.get(i))) {
+                    return i < source.outputColumns.size()
+                            ? source.outputColumns.get(i) : normalizeIdentifier(rawName);
+                }
+            }
+            throw new ColumnNotFoundException(normalizeIdentifier(rawName),
+                    displayNames(visibleSources()));
+        }
+        return normalizeIdentifier(rawName);
     }
 
     private int recordUnboundSelectItem(SQLSelectItem item, int position) {
@@ -4227,6 +4346,54 @@ public class DmlLineage {
         }
     }
 
+    private SourceTable findCorrelatedSource(SQLExpr owner) {
+        SourceTable direct = findByOwner(owner);
+        if (direct != null || owner == null || stackSources.size() < 2) {
+            return direct;
+        }
+        String rawOwner = owner.toString();
+        String ownerKey = qualifiedKey(rawOwner);
+        String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
+        for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
+            for (SourceTable source : stackSources.get(frame)) {
+                if (matchesOwner(source, ownerKey, ownerParts)) {
+                    return source;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean matchesOwner(SourceTable source, String ownerKey,
+            String[] ownerParts) {
+        if (source.alias != null && qualifiedKey(source.alias).equals(ownerKey)) {
+            return true;
+        }
+        if (source.temporary) {
+            return source.rawName != null
+                    && qualifiedKey(source.rawName).equals(ownerKey);
+        }
+        String rawIdentifier = source.rawName != null
+                ? source.rawName : source.writtenName;
+        if (qualifiedKey(source.displayName).equals(ownerKey)
+                || rawIdentifier != null
+                        && qualifiedKey(rawIdentifier).equals(ownerKey)) {
+            return true;
+        }
+        String[] displayParts = MetadataCatalog
+                .splitQualifiedNamePreservingQuotes(source.displayName);
+        if (ownerParts.length > 0 && ownerParts.length <= displayParts.length) {
+            for (int i = 0; i < ownerParts.length; i++) {
+                if (!identifierKey(ownerParts[i]).equals(identifierKey(
+                        displayParts[displayParts.length - ownerParts.length + i]))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
     private static boolean isStarProperty(SQLExpr expr) {
         if (!(expr instanceof SQLPropertyExpr)) {
             return false;
@@ -4243,7 +4410,7 @@ public class DmlLineage {
             if (!inTargetExpression) {
                 return;
             }
-            SourceTable source = findByOwner(property.getOwner());
+            SourceTable source = findCorrelatedSource(property.getOwner());
             if (source == null) {
                 SourceNode binding = joinBinding(property.getOwner());
                 if (binding != null) {
@@ -4290,7 +4457,7 @@ public class DmlLineage {
         if (!inTargetExpression) {
             return;
         }
-        SourceTable source = findByOwner(property.getOwner());
+        SourceTable source = findCorrelatedSource(property.getOwner());
         if (source == null) {
             SourceNode binding = joinBinding(property.getOwner());
             if (binding != null) {

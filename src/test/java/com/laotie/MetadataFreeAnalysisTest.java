@@ -1911,6 +1911,59 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void duplicateNamesAfterUsingStillKeepTableLevelEdge() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT * FROM (SELECT m.*, 0 AS k, 1 AS v FROM m"
+                        + " UNION ALL SELECT 2 AS v, 3 AS k, 4 AS v) AS q"
+                        + " LEFT JOIN b USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
+    public void ambiguousUsingKeepsTrailingProjectionPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);"
+                + " CREATE TABLE b (k INT, w INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3, c4) SELECT *, b.w FROM ("
+                        + "SELECT * FROM m UNION ALL SELECT 1, 2) AS q"
+                        + " LEFT JOIN b USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c4"))
+                .contains(new Column("b.w")));
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("b.w")));
+    }
+
+    @Test
+    public void physicalStarAfterOpenWildcardStaysTableLevel() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);"
+                + " CREATE TABLE b (k INT, w INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3, c4) SELECT a.*, b.*"
+                        + " FROM a CROSS JOIN b;");
+
+        assertEquals(0, result.getFailures().size());
+        // a has no catalog entry, so b's start is unknown: its contribution stays a
+        // table-level edge covering the remaining written positions.
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("b.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c4"))
+                .contains(new Column("b.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

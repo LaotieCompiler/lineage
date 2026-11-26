@@ -2136,7 +2136,7 @@ public class DmlLineage {
                     && source.metadataTable.getFields().get(i).isQuoted();
             boolean stable = sourceColumnsKnown(source) || i < firstUnknownIndex(source);
             plan.add(new StarOutput(java.util.Collections.singletonList(
-                    new StarColumn(source, names.get(i), key, nameKnown, quoted)),
+                    new StarColumn(source, names.get(i), key, nameKnown, quoted, i)),
                     nameKnown, stable));
         }
         return plan;
@@ -2437,7 +2437,8 @@ public class DmlLineage {
         String name = normalizeIdentifier(expr.toString());
         boolean quoted = MetadataCatalog.isQuotedIdentifier(expr.toString());
         for (StarColumn column : output.sources) {
-            columns.add(new StarColumn(column.source, name, key, certain, quoted));
+            columns.add(new StarColumn(column.source, name, key, certain, quoted,
+                    column.index));
         }
         return new StarOutput(columns, certain);
     }
@@ -2746,6 +2747,15 @@ public class DmlLineage {
                 : new ArrayList<>(spans);
     }
 
+    private int knownWidthSum(List<SourceTable> sources) {
+        int sum = 0;
+        for (SourceTable source : sources) {
+            sum += sourceColumnsKnown(source)
+                    ? Math.max(sourceColumnNames(source).size(), 1) : 1;
+        }
+        return Math.max(sum, 1);
+    }
+
     private static boolean hasAmbiguousOutput(List<StarOutput> plan, int limit) {
         int position = 0;
         for (StarOutput output : plan) {
@@ -2810,7 +2820,8 @@ public class DmlLineage {
             refs.add(new WildcardRef(lineageTableName(source), false));
             return refs;
         }
-        int relative = relativeColumnIndex(source, column);
+        int relative = column.index >= 0 ? column.index
+                : relativeColumnIndex(source, column);
         if (relative < 0) {
             relative = fallbackRelative;
         }
@@ -3730,8 +3741,9 @@ public class DmlLineage {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean targetTemporary = tempTables.contains(targetTable);
 
-        boolean determinate = !sources.isEmpty()
-                && !(uncertainOrdinal >= 0 && uncertainOrdinal == startPosition);
+        boolean uncertainPosition = uncertainOrdinal >= 0
+                && uncertainOrdinal == startPosition;
+        boolean determinate = !sources.isEmpty() && !uncertainPosition;
         for (SourceTable source : sources) {
             if (!sourceNamesKnown(source)) {
                 determinate = false;
@@ -3746,8 +3758,6 @@ public class DmlLineage {
                     && !wildcardSpansOf(sources.get(0).displayName).isEmpty()) {
                 SourceTable source = sources.get(0);
                 List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
-                boolean uncertainPosition = uncertainOrdinal >= 0
-                        && uncertainOrdinal == startPosition;
                 int sourceWidth = uncertainPosition ? -1
                         : sourceColumnsKnown(source)
                                 ? Math.max(sourceColumnNames(source).size(),
@@ -3817,8 +3827,8 @@ public class DmlLineage {
                 }
                 return Math.max(node.width, 1);
             }
-            boolean allKnown = !planAmbiguous && !sources.isEmpty()
-                    && allWidthKnown(sources);
+            boolean allKnown = !planAmbiguous && !uncertainPosition
+                    && !sources.isEmpty() && allWidthKnown(sources);
             int position = startPosition;
             for (int index = 0; index < sources.size(); index++) {
                 SourceTable source = sources.get(index);
@@ -3848,7 +3858,17 @@ public class DmlLineage {
                 }
                 instructions.add(wildcard);
             }
-            return Math.max(position - startPosition, sources.size());
+            int advance;
+            if (planAmbiguous && node != null && node.widthKnown) {
+                // The projection's total width is still fixed; only the per-position
+                // ownership is unknown, so later projections keep their place.
+                advance = node.width;
+            } else if (uncertainPosition) {
+                advance = knownWidthSum(sources);
+            } else {
+                advance = position - startPosition;
+            }
+            return Math.max(advance, sources.size());
         }
 
         Set<String> used = new HashSet<>();
@@ -5069,6 +5089,11 @@ public class DmlLineage {
         private final String key;
         private final boolean nameKnown;
         private final boolean quoted;
+        /**
+         * Position of this column inside its own source's output, or -1 when the plan
+         * does not track it (for example a synthesized placeholder).
+         */
+        private final int index;
 
         private StarColumn(SourceTable source, String column, String key) {
             this(source, column, key, true, false);
@@ -5076,11 +5101,17 @@ public class DmlLineage {
 
         private StarColumn(SourceTable source, String column, String key, boolean nameKnown,
                 boolean quoted) {
+            this(source, column, key, nameKnown, quoted, -1);
+        }
+
+        private StarColumn(SourceTable source, String column, String key, boolean nameKnown,
+                boolean quoted, int index) {
             this.source = source;
             this.column = column;
             this.key = key;
             this.nameKnown = nameKnown;
             this.quoted = quoted;
+            this.index = index;
         }
     }
 

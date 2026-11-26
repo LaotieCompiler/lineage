@@ -115,7 +115,7 @@ public class LineageGraph {
                     String[] parts = splitReference(instruction.getTo());
                     if (parts != null) {
                         tempColumnsByPosition
-                                .computeIfAbsent(parts[0],
+                                .computeIfAbsent(prefix + parts[0],
                                         key -> new HashMap<Integer, String>())
                                 .put(instruction.getOrdinal(), parts[1]);
                     }
@@ -185,17 +185,13 @@ public class LineageGraph {
             Map<String, Map<Integer, String>> tempColumnsByPosition) {
         java.util.List<String> names = splitColumns(columns);
         Map<Integer, String> tempPositions = fromTemporary
-                ? tempColumnsByPosition.get(fromTable) : null;
+                ? tempColumnsByPosition.get(prefix + fromTable) : null;
         for (int i = 0; i < names.size(); i++) {
             String column = names.get(i);
             Column columnVertex = new Column(target.getTableName(), column);
             reverseGraph.addVertex(columnVertex);
             reverseGraph.addVertex(sourceWildcard);
             if (columnVertex.equals(sourceWildcard)) {
-                continue;
-            }
-            if (hasPreciseSource(columnVertex)) {
-                // This column already has a precise non-wildcard source.
                 continue;
             }
             String tempColumn = tempPositions == null ? null : tempPositions.get(i);
@@ -210,15 +206,6 @@ public class LineageGraph {
             }
             reverseGraph.addEdge(columnVertex, sourceWildcard);
         }
-    }
-
-    private boolean hasPreciseSource(Column column) {
-        for (DefaultEdge edge : reverseGraph.outgoingEdgesOf(column)) {
-            if (!reverseGraph.getEdgeTarget(edge).isWildcard()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static java.util.List<String> splitColumns(String columns) {

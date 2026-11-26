@@ -1222,6 +1222,48 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void temporaryPositionsAreScopedPerStatement() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t(c1) SELECT * FROM missing;"
+                        + " INSERT INTO u(c1) SELECT b.k FROM b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("u.c1")));
+    }
+
+    @Test
+    public void preciseAndWildcardWritesAccumulate() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1) SELECT * FROM missing;"
+                        + " INSERT INTO t(c1) SELECT k FROM b;"
+                        + " SELECT c1 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("missing.*"), new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+    }
+
+    @Test
+    public void postgresUnquotedColumnCaseIsEquivalent() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(C1) SELECT k FROM b; SELECT c1 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.c1"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

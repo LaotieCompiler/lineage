@@ -3626,6 +3626,22 @@ public class DmlLineage {
      * A canonical physical table reference: dialect-equivalent spellings such as
      * PostgreSQL {@code "a"} and {@code a} map to the same identity.
      */
+    /**
+     * A canonical column identity: PostgreSQL folds unquoted column names to lower
+     * case, quoted names keep their case.
+     */
+    private String canonicalColumnName(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String name = normalizeIdentifier(raw);
+        if (!detachedMetadata() || MetadataCatalog.isQuotedIdentifier(raw)
+                || currentDialect() != DbType.postgresql) {
+            return name;
+        }
+        return name.toLowerCase();
+    }
+
     private String canonicalPhysicalReference(String raw) {
         String[] parts = MetadataCatalog.splitQualifiedNamePreservingQuotes(raw);
         StringBuilder reference = new StringBuilder();
@@ -4156,7 +4172,7 @@ public class DmlLineage {
     private String insertColumnName(Table metadata, String tableName, SQLExpr column) {
         String raw = column.toString();
         if (metadata == null) {
-            return normalizeIdentifier(raw);
+            return canonicalColumnName(raw);
         }
         String resolved = MetadataCatalog.resolveColumnName(metadata, raw, currentDialect());
         if (resolved == null) {
@@ -4211,7 +4227,9 @@ public class DmlLineage {
                     source.temporary, null);
             return;
         }
-        addColumnMapping(sourceName, columnName, source.temporary, source.metadataTable);
+        String mappedName = source.metadataTable == null
+                ? canonicalColumnName(columnName) : columnName;
+        addColumnMapping(sourceName, mappedName, source.temporary, source.metadataTable);
     }
 
     private void addColumnMapping(String sourceTable, String columnName,

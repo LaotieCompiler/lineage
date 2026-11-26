@@ -104,12 +104,11 @@ public class LineageGraph {
                         java.util.List<WildcardRegion> regions = tempWildcardRegions
                                 .computeIfAbsent(key,
                                         k -> new java.util.ArrayList<WildcardRegion>());
-                        WildcardRegion region = coveringRegion(regions, start);
-                        if (region == null) {
-                            region = new WildcardRegion(start, end);
-                            regions.add(region);
-                        }
+                        // Every wildcard instruction keeps its own bounds; overlapping
+                        // regions contribute their sources independently.
+                        WildcardRegion region = new WildcardRegion(start, end);
                         region.sources.add(from);
+                        regions.add(region);
                     }
                     if (!instruction.isToTemporary()) {
                         // Only writes establish which columns a table-level wildcard
@@ -335,16 +334,6 @@ public class LineageGraph {
             }
         }
         return sources;
-    }
-
-    private static WildcardRegion coveringRegion(java.util.List<WildcardRegion> regions,
-            int position) {
-        for (WildcardRegion region : regions) {
-            if (position >= region.start && position < region.end) {
-                return region;
-            }
-        }
-        return null;
     }
 
     private static final class WildcardRegion {

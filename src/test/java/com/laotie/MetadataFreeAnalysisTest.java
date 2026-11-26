@@ -1608,8 +1608,9 @@ public class MetadataFreeAnalysisTest {
 
         assertEquals(0, result.getFailures().size());
         if (result.getGraph().getReverseGraph().containsVertex(new Column("t.c2"))) {
-            assertFalse(result.getGraph().getSources(new Column("t.c2"))
-                    .contains(new Column("missing.*")));
+            Set<Column> sources = result.getGraph().getSources(new Column("t.c2"));
+            assertFalse(sources.contains(new Column("missing.*")));
+            assertFalse(sources.contains(new Column("b.*")));
         }
     }
 
@@ -1628,6 +1629,34 @@ public class MetadataFreeAnalysisTest {
             assertFalse(result.getGraph().getSources(new Column("t.c2"))
                     .contains(new Column("missing.*")));
         }
+    }
+
+    @Test
+    public void partiallyOverlappingWildcardRegionsStaySeparate() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+
+        ScanResult shifted = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT * FROM m1"
+                        + " UNION ALL SELECT 1 AS fixed, m2.* FROM m2"
+                        + " UNION ALL SELECT 2, 3;");
+        assertEquals(0, shifted.getFailures().size());
+        assertFalse(shifted.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("m2.*")));
+        assertTrue(shifted.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m2.*")));
+
+        ScanResult wider = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT m1.*, 0 FROM m1"
+                        + " UNION ALL SELECT * FROM m2"
+                        + " UNION ALL SELECT 1, 2;");
+        assertEquals(0, wider.getFailures().size());
+        assertTrue(wider.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m2.*")));
+        assertFalse(wider.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m1.*")));
     }
 
     @Test

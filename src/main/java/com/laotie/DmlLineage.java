@@ -3540,16 +3540,20 @@ public class DmlLineage {
             // projection positions cannot be determined. Keep table-level edges only
             // and never guess a column.
             boolean allKnown = !sources.isEmpty() && allWidthKnown(sources);
+            boolean mergedWidthKnown = node != null && node.widthKnown;
             int position = startPosition;
             for (int index = 0; index < sources.size(); index++) {
                 SourceTable source = sources.get(index);
-                int sourceStart = allKnown ? position : startPosition;
+                int sourceStart = allKnown && !mergedWidthKnown ? position : startPosition;
                 Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                         lineageTableName(source), targetTable, sourceStart,
                         source.temporary, targetTemporary);
                 wildcard.setPositionalWildcard(true);
                 int sourceWidth = -1;
-                if (allKnown) {
+                if (mergedWidthKnown) {
+                    // The visible plan already accounts for JOIN USING merges.
+                    sourceWidth = Math.max(node.width, 1);
+                } else if (allKnown) {
                     sourceWidth = Math.max(sourceColumnNames(source).size(), 1);
                 } else if (sources.size() == 1 && currentStarBudget > 0) {
                     sourceWidth = currentStarBudget;

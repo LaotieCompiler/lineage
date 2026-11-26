@@ -113,7 +113,7 @@ public class DmlLineage {
     private Map<String, Boolean> targetNamesKnown;
     private Map<String, List<SourceTable>> targetOutputUnknownGroup;
     private Map<String, Boolean> targetWildcardContribution;
-    private Map<String, Set<Integer>> targetWildcardPositions;
+    private Map<String, List<WildcardSpan>> targetWildcardSpans;
     private Map<String, List<Boolean>> targetOutputNameKnown;
     private Map<String, Integer> targetMinWidth;
     private Map<String, Integer> targetWidthOverride;
@@ -2667,18 +2667,74 @@ public class DmlLineage {
         return minimum == null ? 0 : minimum;
     }
 
-    private void recordWildcardPosition(String target, int position) {
-        if (target == null || position < 0) {
+    private void recordWildcardSpan(String target, int start, int end, String source,
+            boolean temporary) {
+        if (target == null || start < 0) {
             return;
         }
-        targetWildcardPositions.computeIfAbsent(target,
-                key -> new HashSet<Integer>()).add(position);
+        targetWildcardSpans.computeIfAbsent(target,
+                key -> new ArrayList<WildcardSpan>())
+                .add(new WildcardSpan(start, end, source, temporary));
     }
 
-    private Set<Integer> wildcardPositionsOf(String target) {
-        Set<Integer> positions = targetWildcardPositions.get(target);
-        return positions == null ? java.util.Collections.<Integer>emptySet()
-                : new HashSet<>(positions);
+    private List<WildcardSpan> wildcardSpansOf(String target) {
+        List<WildcardSpan> spans = targetWildcardSpans.get(target);
+        return spans == null ? java.util.Collections.<WildcardSpan>emptyList()
+                : new ArrayList<>(spans);
+    }
+
+    private static int maxSpanEnd(List<WildcardSpan> spans) {
+        int max = 0;
+        for (WildcardSpan span : spans) {
+            if (span.end != Integer.MAX_VALUE) {
+                max = Math.max(max, span.end);
+            } else {
+                max = Math.max(max, span.start + 1);
+            }
+        }
+        return max;
+    }
+
+    private WildcardRef wildcardSourceAt(SourceTable source, int relative) {
+        if (!source.temporary) {
+            return new WildcardRef(lineageTableName(source), false);
+        }
+        for (WildcardSpan span : wildcardSpansOf(source.displayName)) {
+            if (relative >= span.start && relative < span.end) {
+                return new WildcardRef(span.source, span.temporary);
+            }
+        }
+        return null;
+    }
+
+    private static final class WildcardRef {
+        private final String name;
+        private final boolean temporary;
+
+        private WildcardRef(String name, boolean temporary) {
+            this.name = name;
+            this.temporary = temporary;
+        }
+    }
+
+    private static final class WildcardSpan {
+        private final int start;
+        private final int end;
+        private final String source;
+        private final boolean temporary;
+
+        private WildcardSpan(int start, int end, String source, boolean temporary) {
+            this.start = start;
+            this.end = end;
+            this.source = source;
+            this.temporary = temporary;
+        }
+
+        @Override
+        public String toString() {
+            return "[" + start + "," + end + ")="
+                    + (temporary ? "temp:" : "") + source;
+        }
     }
 
     private boolean hasWildcardContribution(String target) {
@@ -3551,46 +3607,60 @@ public class DmlLineage {
         }
         if (!determinate) {
             targetWildcardContribution.put(targetTable, Boolean.TRUE);
-            // Contract: positions cannot be derived from column names. Use the visible
-            // plan's positions for table-level edges when its width is known; otherwise
-            // keep one open-ended edge per source.
+            // Contract: positions cannot be derived from column names. Propagate the
+            // unknown sources recorded at each visible position instead of guessing.
             if (sources.size() == 1 && sources.get(0).temporary
-                    && !wildcardPositionsOf(sources.get(0).displayName).isEmpty()) {
-                // The derived source's wildcard covers only the positions its own
-                // unknown projections produced; constants and named columns after them
-                // get no table-level edge.
-                Set<Integer> positions = wildcardPositionsOf(sources.get(0).displayName);
+                    && !wildcardSpansOf(sources.get(0).displayName).isEmpty()) {
                 SourceTable source = sources.get(0);
-                for (Integer relative : positions) {
-                    Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                            lineageTableName(source), targetTable,
-                            startPosition + relative, source.temporary, targetTemporary);
-                    wildcard.setPositionalWildcard(true);
-                    wildcard.setWildcardWidthKnown(true);
-                    wildcard.setWildcardWidth(1);
-                    instructions.add(wildcard);
-                    recordWildcardPosition(targetTable, startPosition + relative);
-                }
-                return Math.max(node != null && node.widthKnown ? node.width
-                        : positions.size(), 1);
-            }
-            if (node != null && node.widthKnown && !node.plan.isEmpty()) {
-                int position = startPosition;
-                int limit = startPosition + node.width;
-                for (StarOutput output : node.plan) {
-                    if (position >= limit || output.sources.isEmpty()) {
-                        continue;
-                    }
-                    for (SourceTable source : starOutputSources(output)) {
-                        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                                lineageTableName(source), targetTable, position,
-                                source.temporary, targetTemporary);
+                List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
+                int sourceWidth = sourceColumnsKnown(source)
+                        ? Math.max(sourceColumnNames(source).size(), maxSpanEnd(spans))
+                        : currentStarBudget > 0 ? currentStarBudget : maxSpanEnd(spans);
+                for (WildcardSpan span : spans) {
+                    int end = span.end == Integer.MAX_VALUE
+                            ? Math.max(sourceWidth, span.start + 1)
+                            : Math.min(span.end, Math.max(sourceWidth, span.start + 1));
+                    for (int position = span.start; position < end; position++) {
+                        Instruction wildcard = new Instruction(
+                                OperationType.COLUMNS_INJECT, span.source, targetTable,
+                                startPosition + position, span.temporary, targetTemporary);
                         wildcard.setPositionalWildcard(true);
                         wildcard.setWildcardWidthKnown(true);
                         wildcard.setWildcardWidth(1);
                         instructions.add(wildcard);
+                        recordWildcardSpan(targetTable, startPosition + position,
+                                startPosition + position + 1, span.source, span.temporary);
                     }
-                    recordWildcardPosition(targetTable, position);
+                }
+                return Math.max(sourceWidth, 1);
+            }
+            if (node != null && node.widthKnown && !node.plan.isEmpty()) {
+                int position = startPosition;
+                int limit = startPosition + node.width;
+                Map<SourceTable, Integer> seen = new java.util.IdentityHashMap<>();
+                for (StarOutput output : node.plan) {
+                    if (position >= limit || output.sources.isEmpty()) {
+                        continue;
+                    }
+                    for (StarColumn column : output.sources) {
+                        SourceTable source = column.source;
+                        int relative = seen.containsKey(source)
+                                ? seen.get(source) : 0;
+                        seen.put(source, relative + 1);
+                        WildcardRef ref = wildcardSourceAt(source, relative);
+                        if (ref == null) {
+                            continue;
+                        }
+                        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                                ref.name, targetTable, position,
+                                ref.temporary, targetTemporary);
+                        wildcard.setPositionalWildcard(true);
+                        wildcard.setWildcardWidthKnown(true);
+                        wildcard.setWildcardWidth(1);
+                        instructions.add(wildcard);
+                        recordWildcardSpan(targetTable, position, position + 1,
+                                ref.name, ref.temporary);
+                    }
                     position++;
                 }
                 return Math.max(node.width, 1);
@@ -3614,11 +3684,14 @@ public class DmlLineage {
                     wildcard.setWildcardWidthKnown(true);
                     wildcard.setWildcardWidth(sourceWidth);
                     for (int offset = 0; offset < sourceWidth; offset++) {
-                        recordWildcardPosition(targetTable, sourceStart + offset);
+                        recordWildcardSpan(targetTable, sourceStart + offset,
+                                sourceStart + offset + 1, lineageTableName(source),
+                                source.temporary);
                     }
                     position += sourceWidth;
                 } else {
-                    recordWildcardPosition(targetTable, sourceStart);
+                    recordWildcardSpan(targetTable, sourceStart, Integer.MAX_VALUE,
+                            lineageTableName(source), source.temporary);
                 }
                 instructions.add(wildcard);
             }
@@ -4291,7 +4364,8 @@ public class DmlLineage {
             wildcard.setWildcardWidthKnown(true);
             wildcard.setWildcardWidth(1);
             instructions.add(wildcard);
-            recordWildcardPosition(target, currentOrdinal);
+            recordWildcardSpan(target, currentOrdinal, currentOrdinal + 1,
+                    lineageTableName(source), source.temporary);
             targetWildcardContribution.put(target, Boolean.TRUE);
         }
         if (!source.outputColumns.isEmpty()) {
@@ -4590,7 +4664,7 @@ public class DmlLineage {
         targetNamesKnown = new HashMap<>();
         targetOutputUnknownGroup = new HashMap<>();
         targetWildcardContribution = new HashMap<>();
-        targetWildcardPositions = new HashMap<>();
+        targetWildcardSpans = new HashMap<>();
         targetOutputNameKnown = new HashMap<>();
         targetMinWidth = new HashMap<>();
         targetWidthOverride = new HashMap<>();

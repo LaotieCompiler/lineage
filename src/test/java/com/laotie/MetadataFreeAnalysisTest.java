@@ -1719,6 +1719,80 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void outerUnionWidthExtendsDerivedOpenWildcard() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT * FROM (SELECT * FROM missing) AS q"
+                        + " UNION ALL SELECT 1, 2;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void multiLayerDerivedStarKeepsPerSourcePositions() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT q.* FROM (SELECT x.*, y.* FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN (SELECT * FROM m2 UNION ALL SELECT 2) AS y"
+                        + ") AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void qualifiedStarAdvancesByItsOwnWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3) SELECT q.*, b.* FROM ("
+                        + "SELECT m1.*, 42 AS tail FROM m1"
+                        + " UNION ALL SELECT 1, 2) AS q CROSS JOIN b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m1.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.*"))),
+                result.getGraph().getSources(new Column("t.c3")));
+    }
+
+    @Test
+    public void joinPlanSkipsDerivedConstantPositions() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2, c3) SELECT * FROM ("
+                        + "SELECT m1.*, 42 AS tail FROM m1"
+                        + " UNION ALL SELECT 1, 2) AS q CROSS JOIN b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m1.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.*"))),
+                result.getGraph().getSources(new Column("t.c3")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

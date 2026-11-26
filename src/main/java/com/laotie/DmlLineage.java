@@ -894,8 +894,35 @@ public class DmlLineage {
         if (owner == null) {
             return staticFromWidth(from, scope);
         }
-        SQLTableSource table = findTableSource(from, lastSegment(owner.toString()));
+        String ownerName = owner.toString();
+        SQLTableSource table;
+        if (isSingleSegmentName(ownerName)) {
+            table = findTableSource(from, lastSegment(ownerName));
+        } else {
+            // A qualified owner must match the whole reference; taking the last
+            // segment could select a same-named table from another schema.
+            table = findQualifiedTable(from, identifierKey(ownerName), false);
+        }
         return table == null ? -1 : staticTableWidth(table, scope);
+    }
+
+    private SQLTableSource findQualifiedTable(SQLTableSource from, String key,
+            boolean hidden) {
+        if (from == null || hidden || key == null) {
+            return null;
+        }
+        if (from instanceof SQLExprTableSource) {
+            String name = extractTableName((SQLExprTableSource) from);
+            return name != null && key.equals(identifierKey(name)) ? from : null;
+        }
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            boolean childHidden = join.getAlias() != null;
+            SQLTableSource found = findQualifiedTable(join.getLeft(), key, childHidden);
+            return found != null ? found
+                    : findQualifiedTable(join.getRight(), key, childHidden);
+        }
+        return null;
     }
 
     private int staticTableWidth(SQLTableSource table, Map<String, Integer> scope) {

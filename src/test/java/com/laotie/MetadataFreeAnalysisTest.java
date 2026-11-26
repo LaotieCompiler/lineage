@@ -2235,6 +2235,26 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void qualifiedStarWidthUsesTheMatchingSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.b (k INT, w INT);"
+                + " CREATE TABLE s2.b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT * FROM m UNION ALL"
+                        + " SELECT s2.b.* FROM s1.b CROSS JOIN s2.b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("s2.b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

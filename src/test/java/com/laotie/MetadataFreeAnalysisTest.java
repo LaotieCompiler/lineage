@@ -3052,6 +3052,161 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void lateralUsingAliasKeepsMergedColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult merged = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (b JOIN d USING(k)) AS j"
+                        + " CROSS JOIN LATERAL (SELECT j.k) AS q;");
+        assertEquals(0, merged.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("b.k"), new Column("d.k"))),
+                merged.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+
+        ScanResult left = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (b LEFT JOIN d USING(k))"
+                        + " CROSS JOIN LATERAL (SELECT k) AS q;");
+        assertEquals(0, left.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                left.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void lateralUnqualifiedUnknownSourceRules() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult mixed = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM b CROSS JOIN missing"
+                        + " CROSS JOIN LATERAL (SELECT k) AS q;");
+        assertTrue(mixed.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+
+        ScanResult onlyUnknown = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM missing CROSS JOIN LATERAL (SELECT k) AS q;");
+        assertEquals(0, onlyUnknown.getFailures().size());
+        assertTrue(onlyUnknown.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void lateralQuotedColumnAndAncestorFallback() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT); CREATE TABLE e (\"K\" INT);");
+        ScanResult quoted = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.v FROM e CROSS JOIN"
+                        + " LATERAL (SELECT \"K\" AS v) AS q;");
+        assertEquals(0, quoted.getFailures().size());
+        assertTrue(quoted.getGraph().getSources(
+                Column.temporary("stmt0.temp0.v"))
+                .contains(new Column("e.K")));
+
+        ScanResult ancestor = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM b CROSS JOIN"
+                        + " LATERAL (SELECT k FROM c) AS q;");
+        assertEquals(0, ancestor.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                ancestor.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void lateralBindingOwnerPrecedence() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult invalid = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (b CROSS JOIN c) AS j"
+                        + " CROSS JOIN LATERAL (SELECT s.j.k) AS q;");
+        assertTrue(invalid.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+
+        ScanResult nearest = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM d AS j CROSS JOIN LATERAL ("
+                        + "SELECT r.k FROM (b CROSS JOIN c) AS j"
+                        + " CROSS JOIN LATERAL (SELECT j.k) AS r) AS q;");
+        assertEquals(0, nearest.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                nearest.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void lateralInSubqueryKeepsLeftOperand() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult traced = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.ok FROM b CROSS JOIN"
+                        + " LATERAL (SELECT b.k IN (SELECT 1) AS ok) AS q;");
+        assertEquals(0, traced.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                traced.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.ok")));
+
+        ScanResult unbound = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.ok FROM b CROSS JOIN"
+                        + " LATERAL (SELECT bad.k IN (SELECT 1) AS ok) AS q;");
+        assertTrue(unbound.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+    }
+
+    @Test
+    public void lateralCorrelatedStarExpandsKnownAndKeepsUnknown() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult known = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM b CROSS JOIN LATERAL (SELECT b.*) AS q;");
+        assertEquals(0, known.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                known.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+
+        ScanResult unknown = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.* FROM missing"
+                        + " CROSS JOIN LATERAL (SELECT missing.*) AS q;");
+        assertEquals(0, unknown.getFailures().size());
+        assertTrue(unknown.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void lateralExplicitDerivedReferenceKeepsContribution() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE d (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH x AS (SELECT k FROM b UNION ALL SELECT * FROM missing)"
+                        + " SELECT q.k FROM x CROSS JOIN"
+                        + " LATERAL (SELECT x.k) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

@@ -66,6 +66,11 @@ public class Instruction {
      */
     String populatedColumns;
 
+    /**
+     * The number of output positions a width-known wildcard occupies, or -1.
+     */
+    int wildcardWidth = -1;
+
     public enum OperationType {
         COLUMN_MAPPING, // select tb.col as A
         EXPR_MAPPING, // select tb.col as A
@@ -204,6 +209,7 @@ public class Instruction {
                     instruction.isToTemporary());
             kept.setPopulatedColumns(instruction.getPopulatedColumns());
             kept.setWildcardWidthKnown(instruction.isWildcardWidthKnown());
+            kept.setWildcardWidth(instruction.getWildcardWidth());
             kept.setPositionalWildcard(instruction.isPositionalWildcard());
             result.add(kept);
             if (instruction.isToTemporary()) {
@@ -460,6 +466,7 @@ public class Instruction {
         edge.setWildcardTable(target);
         edge.setPopulatedColumns(instruction.getPopulatedColumns());
         edge.setWildcardWidthKnown(instruction.isWildcardWidthKnown());
+        edge.setWildcardWidth(instruction.getWildcardWidth());
         result.add(edge);
         if (instruction.isToTemporary()) {
             int at = Math.max(instruction.getOrdinal(), 0);

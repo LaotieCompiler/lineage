@@ -59,6 +59,7 @@ public class LineageGraph {
         Map<String, Set<String>> populatedColumns = new HashMap<>();
         Map<String, Map<Integer, String>> tempColumnsByPosition = new HashMap<>();
         Map<String, Integer> tempMaxPosition = new HashMap<>();
+        Map<String, Integer> tempWidthValue = new HashMap<>();
         Set<String> tempWidthKnown = new HashSet<>();
         java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
@@ -90,6 +91,10 @@ public class LineageGraph {
                                 Math::max);
                         if (instruction.isWildcardWidthKnown()) {
                             tempWidthKnown.add(key);
+                            if (instruction.getWildcardWidth() > 0) {
+                                tempWidthValue.merge(key,
+                                        instruction.getWildcardWidth(), Math::max);
+                            }
                         }
                     }
                     if (!instruction.isToTemporary()) {
@@ -106,7 +111,7 @@ public class LineageGraph {
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
                                         source, columns, prefix, fromTable, fromTemporary,
-                                        tempColumnsByPosition));
+                                        tempColumnsByPosition, tempWidthKnown));
                             }
                         } else if (!to.isTemporary() && result.getContext() != null) {
                             java.util.List<String> targetColumns =
@@ -121,8 +126,10 @@ public class LineageGraph {
                                 targetColumns = targetColumns.subList(0,
                                         Math.min(projected.size(), targetColumns.size()));
                             } else if (tempWidthKnown.contains(fromKey)) {
+                                Integer declared = tempWidthValue.get(fromKey);
                                 Integer max = tempMaxPosition.get(fromKey);
-                                int width = max == null ? 0 : max + 1;
+                                int width = declared != null ? declared
+                                        : max == null ? 0 : max + 1;
                                 if (width > 0 && width < targetColumns.size()) {
                                     targetColumns = targetColumns.subList(0, width);
                                 }
@@ -136,7 +143,7 @@ public class LineageGraph {
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
                                         source, names, prefix, fromTable, fromTemporary,
-                                        tempColumnsByPosition));
+                                        tempColumnsByPosition, tempWidthKnown));
                             }
                     }
                     reverseGraph.addVertex(from);
@@ -236,16 +243,17 @@ public class LineageGraph {
      */
     private void linkPopulatedColumns(Column target, Column sourceWildcard, String columns,
             String prefix, String fromTable, boolean fromTemporary,
-            Map<String, Map<Integer, String>> tempColumnsByPosition) {
+            Map<String, Map<Integer, String>> tempColumnsByPosition,
+            Set<String> tempWidthKnown) {
         linkPopulatedColumns(target, sourceWildcard, splitColumns(columns), prefix,
-                fromTable, fromTemporary, tempColumnsByPosition);
+                fromTable, fromTemporary, tempColumnsByPosition, tempWidthKnown);
     }
 
     private void linkPopulatedColumns(Column target, Column sourceWildcard,
             java.util.List<String> names, String prefix, String fromTable,
             boolean fromTemporary,
-            Map<String, Map<Integer, String>> tempColumnsByPosition) {
-        System.err.println("DBGLINK " + target + " names=" + names + " from=" + fromTable);
+            Map<String, Map<Integer, String>> tempColumnsByPosition,
+            Set<String> tempWidthKnown) {
         Map<Integer, String> tempPositions = fromTemporary
                 ? tempColumnsByPosition.get(prefix + fromTable) : null;
         for (int i = 0; i < names.size(); i++) {
@@ -259,7 +267,10 @@ public class LineageGraph {
             String tempColumn = tempPositions != null && tempPositions.containsKey(i)
                     ? tempPositions.get(i) : null;
             if (CONSTANT_COLUMN.equals(tempColumn)) {
-                // The position is an explicit constant: it has no source.
+                if (tempWidthKnown.contains(prefix + fromTable)) {
+                    // Another UNION branch feeds this position from an unknown table.
+                    reverseGraph.addEdge(columnVertex, sourceWildcard);
+                }
                 continue;
             }
             if (tempColumn != null) {
@@ -411,9 +422,9 @@ public class LineageGraph {
             java.util.Set<String> usedNames = new java.util.HashSet<>();
             for (Map.Entry<String, java.util.Set<Integer>> byName : positionsByName.entrySet()) {
                 tableCounts.put(byName.getKey(), byName.getValue().size());
-                if (byName.getValue().size() == 1) {
-                    usedNames.add(byName.getKey());
-                }
+                // The name is kept by its first position, so a generated name must not
+                // take it, even when the group has several positions.
+                usedNames.add(byName.getKey());
             }
             java.util.List<Integer> positions = new java.util.ArrayList<>(
                     entry.getValue().keySet());

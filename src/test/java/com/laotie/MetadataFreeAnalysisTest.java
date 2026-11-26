@@ -1423,6 +1423,41 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void generatedNamesDoNotTakeReservedGroupNames() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t(c1,c2,c3,c4)"
+                        + " SELECT a.k, b.k, a.v AS col2, b.v AS col2 FROM a, b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c2")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.v"))),
+                result.getGraph().getSources(new Column("t.c3")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.v"))),
+                result.getGraph().getSources(new Column("t.c4")));
+    }
+
+    @Test
+    public void wholeTableWriteUsesDeclaredUnionWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM missing UNION ALL SELECT 1, 2;"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("missing.*")));
+        if (result.getGraph().getReverseGraph().containsVertex(new Column("t.c3"))) {
+            assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                    .contains(new Column("missing.*")));
+        }
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

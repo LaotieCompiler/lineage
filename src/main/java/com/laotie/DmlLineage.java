@@ -3542,9 +3542,10 @@ public class DmlLineage {
                         source.temporary, targetTemporary);
                 wildcard.setPositionalWildcard(true);
                 if (currentStarBudget > 0) {
-                    // A UNION sibling or INSERT target fixed the width of this
-                    // projection, so its position count is known.
+                    // A UNION sibling fixed the width of this projection, so its
+                    // position count is known.
                     wildcard.setWildcardWidthKnown(true);
+                    wildcard.setWildcardWidth(currentStarBudget);
                 }
                 instructions.add(wildcard);
             }

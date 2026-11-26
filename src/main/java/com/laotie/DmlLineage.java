@@ -2613,9 +2613,7 @@ public class DmlLineage {
         Table metadataTable = null;
         String display = alias != null ? alias
                 : detachedMetadata() && rawName != null
-                        && (!isSingleSegmentName(written)
-                                || MetadataCatalog.isQuotedIdentifier(rawName))
-                                        ? rawName
+                        ? canonicalPhysicalReference(rawName)
                         : lastIdentifier(written);
         String cteTarget = isSingleSegmentName(rawName)
                 ? findCteTarget(identifierKey(rawName)) : null;
@@ -3624,12 +3622,47 @@ public class DmlLineage {
      * The physical table identity of a source: an alias is only a SQL binding, not a
      * lineage vertex.
      */
-    private static String lineageTableName(SourceTable source) {
+    /**
+     * A canonical physical table reference: dialect-equivalent spellings such as
+     * PostgreSQL {@code "a"} and {@code a} map to the same identity.
+     */
+    private String canonicalPhysicalReference(String raw) {
+        String[] parts = MetadataCatalog.splitQualifiedNamePreservingQuotes(raw);
+        StringBuilder reference = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            if (i > 0) {
+                reference.append('.');
+            }
+            String part = parts[i];
+            boolean quoted = MetadataCatalog.isQuotedIdentifier(part);
+            String name = MetadataCatalog.normalizeIdentifier(part);
+            if (!quoted) {
+                // Unquoted references keep their spelling: the dialect already treats
+                // them equivalently.
+                reference.append(name);
+                continue;
+            }
+            // A quoted identifier that folds to itself is the same as the unquoted
+            // spelling (PostgreSQL "a" and a); one that does not is a distinct name.
+            boolean folds = !name.contains(".") && name.equals(foldName(name));
+            reference.append(folds ? name : part);
+        }
+        return reference.toString();
+    }
+
+    private String foldName(String name) {
+        DbType dialect = currentDialect();
+        return dialect == DbType.mysql || dialect == DbType.mariadb
+                || dialect == DbType.postgresql
+                        ? name.toLowerCase() : name.toUpperCase();
+    }
+
+    private String lineageTableName(SourceTable source) {
         if (source.temporary || source.metadataTable != null) {
             return source.displayName;
         }
         if (source.rawName != null) {
-            return source.rawName;
+            return canonicalPhysicalReference(source.rawName);
         }
         return source.writtenName == null ? source.displayName : source.writtenName;
     }
@@ -4236,7 +4269,7 @@ public class DmlLineage {
         // The graph identity of an unaliased target keeps its written reference when
         // metadata is not available, so later reads resolve to the same vertex.
         String tableName = detachedMetadata() && context == null && rawName != null
-                ? rawName : written;
+                ? canonicalPhysicalReference(rawName) : written;
         Table targetMetadata = null;
         if (context != null && findCteTarget(identifierKey(rawName)) == null) {
             TableLocation location = resolveMetadataTable(rawName);
@@ -4246,7 +4279,7 @@ public class DmlLineage {
             } else if (detachedMetadata() && rawName != null) {
                 // The target table is missing from the catalog: keep its written
                 // identity so the table-level edge matches later reads.
-                tableName = rawName;
+                tableName = canonicalPhysicalReference(rawName);
             }
         }
         registerTable(written, tableName, tableName, tableSource.getAlias() == null

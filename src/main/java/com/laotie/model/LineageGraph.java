@@ -76,14 +76,23 @@ public class LineageGraph {
                             instruction.isFromTemporary());
                     String toReference = instruction.getWildcardTable() != null
                             ? instruction.getWildcardTable() : instruction.getTo();
-                    if (instruction.getPopulatedColumns() != null) {
-                        recordPopulatedColumns(populatedColumns, toReference,
-                                instruction.getPopulatedColumns());
-                    } else {
-                        recordPopulatedColumns(populatedColumns, toReference);
-                    }
                     Column to = wildcardColumn(toReference, prefix,
                             instruction.isToTemporary());
+                    if (!instruction.isToTemporary()) {
+                        // Only writes establish which columns a table-level wildcard
+                        // covers; reads from a table are not writes.
+                        if (instruction.getPopulatedColumns() != null) {
+                            recordPopulatedColumns(populatedColumns, toReference,
+                                    instruction.getPopulatedColumns());
+                            if (!to.isTemporary()) {
+                                linkPopulatedColumns(to, from, instruction.getPopulatedColumns(),
+                                        prefix);
+                            }
+                        } else {
+                            populatedColumns.computeIfAbsent(to.getTableName(),
+                                    key -> new HashSet<String>());
+                        }
+                    }
                     reverseGraph.addVertex(from);
                     reverseGraph.addVertex(to);
                     if (!from.equals(to)) {
@@ -135,13 +144,57 @@ public class LineageGraph {
                 continue;
             }
             Set<String> populated = populatedColumns.get(vertex.getTableName());
-            if (populated != null && !populated.isEmpty()
-                    && !populated.contains(vertex.getColumnName())) {
-                // The wildcard only covers the columns the statement actually wrote.
+            if (populated == null) {
+                // Nothing was written through a wildcard into this table.
+                continue;
+            }
+            if (!populated.isEmpty()) {
+                // Written columns are linked directly to the writing wildcard.
                 continue;
             }
             reverseGraph.addEdge(vertex, wildcard);
         }
+    }
+
+    /**
+     * Link each explicitly written column to the wildcard that populated it, so two
+     * INSERTs into the same table keep their own sources.
+     */
+    private void linkPopulatedColumns(Column target, Column sourceWildcard, String columns,
+            String prefix) {
+        for (String column : splitColumns(columns)) {
+            Column columnVertex = new Column(target.getTableName(), column);
+            reverseGraph.addVertex(columnVertex);
+            reverseGraph.addVertex(sourceWildcard);
+            if (!columnVertex.equals(sourceWildcard)) {
+                reverseGraph.addEdge(columnVertex, sourceWildcard);
+            }
+        }
+    }
+
+    private static java.util.List<String> splitColumns(String columns) {
+        java.util.List<String> result = new java.util.ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        for (int i = 0; i < columns.length(); i++) {
+            char ch = columns.charAt(i);
+            if (quote != 0) {
+                current.append(ch);
+                if (ch == quote) {
+                    quote = 0;
+                }
+            } else if (ch == '"' || ch == '`') {
+                quote = ch;
+                current.append(ch);
+            } else if (ch == ',') {
+                result.add(stripQuotes(current.toString()));
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        result.add(stripQuotes(current.toString()));
+        return result;
     }
 
     /**

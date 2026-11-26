@@ -17,6 +17,7 @@ import com.laotie.exception.AmbiguousColumnException;
 import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.Instruction;
+import com.laotie.model.LineageGraph;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.ScanResult;
 import com.laotie.model.metadata.Column;
@@ -44,6 +45,15 @@ public class MetadataFreeAnalysisTest {
 
     private static LineageOptions inferring() {
         return LineageOptions.of(MetadataMode.OPTIONAL, true);
+    }
+
+    private static void assertOnlyWildcardSources(LineageGraph graph, Column target) {
+        if (!graph.getReverseGraph().containsVertex(target)) {
+            return;
+        }
+        for (Column source : graph.getSources(target)) {
+            assertTrue("column position was guessed: " + source, source.isWildcard());
+        }
     }
 
     private static MetadataContext catalog(String ddl) {
@@ -623,8 +633,8 @@ public class MetadataFreeAnalysisTest {
                 MetadataContext.of(catalog), optional())
                 .scan("INSERT INTO t(c1,c2,c3) SELECT k,* FROM missing;");
         assertEquals(0, beforeStar.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
-                beforeStar.getGraph().getSources(new Column("t.c1")));
+        assertTrue(beforeStar.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("missing.*")));
         assertTrue(beforeStar.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
     }
 
@@ -684,9 +694,9 @@ public class MetadataFreeAnalysisTest {
         Set<Column> wildcardSources = result.getGraph().getSources(new Column("t.*"));
         assertTrue(wildcardSources.contains(new Column("missing.*")));
         assertTrue(wildcardSources.contains(new Column("a.*")));
-        // No column position can be determined, so nothing is guessed.
-        assertFalse(result.getGraph().getReverseGraph().containsVertex(new Column("t.c2")));
-        assertFalse(result.getGraph().getReverseGraph().containsVertex(new Column("t.c3")));
+        // No column position can be determined, so attributions stay table-level.
+        assertOnlyWildcardSources(result.getGraph(), new Column("t.c2"));
+        assertOnlyWildcardSources(result.getGraph(), new Column("t.c3"));
     }
 
     @Test
@@ -748,10 +758,9 @@ public class MetadataFreeAnalysisTest {
             Set<Column> wildcardSources = result.getGraph().getSources(new Column("t.*"));
             assertTrue("wildcard edge lost: " + sql,
                     wildcardSources.contains(new Column("missing.*")));
-            // The derived table's output positions are unknown, so no column edge is
-            // guessed for it.
-            assertFalse("guessed column edge: " + sql,
-                    result.getGraph().getReverseGraph().containsVertex(new Column("t.c2")));
+            // The derived table's output positions are unknown: any attribution of
+            // t.c2 must stay table-level.
+            assertOnlyWildcardSources(result.getGraph(), new Column("t.c2"));
         }
     }
 
@@ -766,7 +775,7 @@ public class MetadataFreeAnalysisTest {
                         + " SELECT * FROM m1 RIGHT JOIN a USING(k) LEFT JOIN m2 USING(k);");
 
         assertEquals(0, result.getFailures().size());
-        assertFalse(result.getGraph().getReverseGraph().containsVertex(new Column("t.c2")));
+        assertOnlyWildcardSources(result.getGraph(), new Column("t.c2"));
         assertTrue(result.getGraph().getSources(new Column("t.*"))
                 .contains(new Column("m1.*")));
         assertTrue(result.getGraph().getSources(new Column("t.*"))
@@ -812,8 +821,7 @@ public class MetadataFreeAnalysisTest {
         Set<Column> sources = unknownNamesFirst.getGraph()
                 .getSources(new Column("t.*"));
         assertTrue(sources.contains(new Column("missing.*")));
-        assertFalse(unknownNamesFirst.getGraph().getReverseGraph()
-                .containsVertex(new Column("t.c2")));
+        assertOnlyWildcardSources(unknownNamesFirst.getGraph(), new Column("t.c2"));
 
         ScanResult knownNamesFirst = LineageScanner.withMetadata(
                 MetadataContext.of(catalog), optional()).scan(
@@ -821,10 +829,10 @@ public class MetadataFreeAnalysisTest {
                         + "SELECT k,q,v FROM b"
                         + " UNION ALL SELECT * FROM missing RIGHT JOIN a USING(k)) AS q;");
         assertEquals(0, knownNamesFirst.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
-                knownNamesFirst.getGraph().getSources(new Column("t.c1")));
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.q"))),
-                knownNamesFirst.getGraph().getSources(new Column("t.c2")));
+        assertTrue(knownNamesFirst.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("b.k")));
+        assertTrue(knownNamesFirst.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("b.q")));
         // The unknown UNION branch still contributes a table-level edge.
         assertTrue(knownNamesFirst.getGraph().getSources(new Column("t.*"))
                 .contains(new Column("missing.*")));
@@ -840,8 +848,8 @@ public class MetadataFreeAnalysisTest {
                         + "SELECT k FROM b UNION ALL SELECT * FROM missing) AS q;");
 
         assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
-                result.getGraph().getSources(new Column("t.c1")));
+        assertTrue(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("b.k")));
         assertTrue(result.getGraph().getSources(new Column("t.*"))
                 .contains(new Column("missing.*")));
     }
@@ -936,8 +944,8 @@ public class MetadataFreeAnalysisTest {
                         + "SELECT k FROM b UNION ALL SELECT * FROM missing) AS q;");
 
         assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
-                result.getGraph().getSources(new Column("t.c1")));
+        assertTrue(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("b.k")));
         assertTrue(result.getGraph().getSources(new Column("t.*"))
                 .contains(new Column("missing.*")));
     }
@@ -1066,6 +1074,48 @@ public class MetadataFreeAnalysisTest {
         ScanResult result = LineageScanner.withMetadata(
                 MetadataContext.of(catalog), optional()).scan(
                 "INSERT INTO \"A\" SELECT k FROM b; SELECT k FROM \"A\";");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void wildcardInsertsKeepDistinctColumnSources() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1) SELECT * FROM m1;"
+                        + " INSERT INTO t(c2) SELECT * FROM m2;"
+                        + " SELECT c1, c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void readOnlyWildcardDoesNotOverrideColumnSource() {
+        ScanResult result = LineageScanner.withoutMetadata(optional())
+                .scan("SELECT a.k, a.* FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.*"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.*")));
+    }
+
+    @Test
+    public void quotedLowercaseTableIsEquivalentToUnquoted() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO \"a\" SELECT k FROM b; SELECT k FROM a;");
 
         assertEquals(0, result.getFailures().size());
         assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))

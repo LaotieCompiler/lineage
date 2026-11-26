@@ -24,6 +24,9 @@ import lombok.Setter;
 public class Instruction {
     private static final Logger LOGGER = Logger.getLogger(Instruction.class.getName());
 
+    /** A column whose name is unknown but whose position is known. */
+    private static final Column UNNAMED = new Column(null, "\u0000unnamed");
+
     OperationType operation;
 
     String from;
@@ -42,6 +45,12 @@ public class Instruction {
      * edge really points at. Null when {@link #to} is already a table identity.
      */
     String wildcardTable;
+
+    /**
+     * True when the wildcard occupies a position count that is already known (for
+     * example from an INSERT target list), so later positions stay deterministic.
+     */
+    boolean wildcardWidthKnown;
 
     public enum OperationType {
         COLUMN_MAPPING, // select tb.col as A
@@ -174,7 +183,7 @@ public class Instruction {
         boolean partiallyKnown = false;
         if (fromColumns != null) {
             for (Column column : fromColumns) {
-                if (column == null) {
+                if (column == null || column == UNNAMED) {
                     partiallyKnown = true;
                     break;
                 }
@@ -193,10 +202,19 @@ public class Instruction {
                 result.add(instruction);
             }
             if (instruction.isToTemporary()) {
-                markUnknownTempColumn(tempColumns, toTable, instruction.getOrdinal());
-                tempUnknown.computeIfAbsent(toTable,
-                        key -> new HashSet<Integer>())
-                        .add(Math.max(instruction.getOrdinal(), 0));
+                int at = Math.max(instruction.getOrdinal(), 0);
+                List<Column> columns = tempColumns.computeIfAbsent(toTable,
+                        key -> new ArrayList<Column>());
+                while (columns.size() <= at) {
+                    columns.add(null);
+                }
+                if (instruction.isWildcardWidthKnown()) {
+                    columns.set(at, UNNAMED);
+                } else {
+                    markUnknownTempColumn(tempColumns, toTable, instruction.getOrdinal());
+                    tempUnknown.computeIfAbsent(toTable,
+                            key -> new HashSet<Integer>()).add(at);
+                }
             }
             return;
         }
@@ -302,9 +320,10 @@ public class Instruction {
         int size = Math.min(fromColumns.size(), targets.size());
         for (int i = 0; i < size; i++) {
             Column from = fromColumns.get(i);
-            if (from == null || firstUnknown >= 0 && i > firstUnknown) {
-                // This position follows an unresolved wildcard whose width is unknown,
-                // so a column-level edge would be a guess.
+            if (from == null || from == UNNAMED
+                    || firstUnknown >= 0 && i > firstUnknown) {
+                // This position is (or follows) an unresolved wildcard whose width is
+                // unknown, so a column-level edge would be a guess.
                 continue;
             }
             result.add(new Instruction(OperationType.COLUMN_MAPPING,

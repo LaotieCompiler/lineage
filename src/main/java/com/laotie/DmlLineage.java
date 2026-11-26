@@ -1038,7 +1038,7 @@ public class DmlLineage {
             int position = 0;
             int minWidth = 0;
             for (SQLSelectItem item : queryBlock.getSelectList()) {
-                if (context != null) {
+                if (context != null || detachedMetadata()) {
                     validateUnboundQualified(item.getExpr());
                 }
                 position += recordUnboundSelectItem(item, position);
@@ -1139,7 +1139,7 @@ public class DmlLineage {
             }
         }
         currentStarBudget = inferredUnknownWidth;
-        if (inferredUnknownWidth > 0 && unknownItemIndex >= 0) {
+        if (!detachedMetadata() && inferredUnknownWidth > 0 && unknownItemIndex >= 0) {
             SourceNode targetNode = node;
             SQLExpr unknownExpr = selectItems.get(unknownItemIndex).getExpr();
             if (isStarProperty(unknownExpr)) {
@@ -1466,7 +1466,9 @@ public class DmlLineage {
                         planSources.addAll(binding.sources);
                     }
                 }
-                int width = emitDetachedPlan(targetTable, plan, planSources, currentOrdinal);
+                SourceNode planNode = source != null ? null : joinBinding(owner);
+                int width = emitDetachedPlan(targetTable, plan, planSources, planNode,
+                        currentOrdinal);
                 return Math.max(width, 1);
             }
             SourceTable source = findByOwner(owner);
@@ -2593,7 +2595,8 @@ public class DmlLineage {
         String written = normalizeQualifiedName(rawName);
         String alias = table.getAlias();
         Table metadataTable = null;
-        String display = alias != null ? alias : lastIdentifier(written);
+        String display = alias != null ? alias
+                : isSingleSegmentName(written) ? lastIdentifier(written) : written;
         String cteTarget = isSingleSegmentName(rawName)
                 ? findCteTarget(identifierKey(rawName)) : null;
         boolean temporary = cteTarget != null;
@@ -3207,7 +3210,7 @@ public class DmlLineage {
             String targetTable = stackTargetTable.peek();
             if (detachedMetadata()) {
                 emitDetachedPlan(targetTable, planFromSource(source),
-                        java.util.Collections.singletonList(source), currentOrdinal);
+                        java.util.Collections.singletonList(source), null, currentOrdinal);
                 return;
             }
             SourceNode expanded = currentExpandedSourceNodes.get(source);
@@ -3469,23 +3472,46 @@ public class DmlLineage {
      */
     private int emitDetachedStar(String targetTable, List<SourceTable> sources,
             int startPosition) {
-        return emitDetachedPlan(targetTable, currentStarPlan(sources), sources,
+        SourceNode node = stackSourceNode.isEmpty() ? null : stackSourceNode.peek();
+        return emitDetachedPlan(targetTable, currentStarPlan(sources), sources, node,
                 startPosition);
     }
 
-    private int emitDetachedPlan(String targetTable, List<StarOutput> plan,
-            List<SourceTable> sources, int startPosition) {
+    private int emitDetachedPlan(String targetTable, List<StarOutput> template,
+            List<SourceTable> sources, SourceNode node, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean targetTemporary = tempTables.contains(targetTable);
         Set<String> used = new HashSet<>();
-        Set<SourceTable> covered = new HashSet<>();
+        int boundary = node == null ? template.size()
+                : Math.min(node.rightBoundary, template.size());
+        List<StarOutput> plan = new ArrayList<>(template);
+        Set<StarOutput> syntheticOutputs = new HashSet<>();
+        boolean budgetUsed = false;
+        for (SourceTable source : sources) {
+            if (sourceColumnsKnown(source) || coveredByUnknownOutput(plan, source)) {
+                continue;
+            }
+            // Its remaining columns are unknown: place a wildcard where this side's
+            // columns appear, so following known columns keep their positions. When the
+            // width is fixed (INSERT target list / UNION sibling), fill it exactly.
+            int count = 1;
+            if (!budgetUsed && currentStarBudget > 0) {
+                count = Math.max(1, currentStarBudget - plan.size());
+                budgetUsed = true;
+            }
+            for (int i = 0; i < count; i++) {
+                String name = "col" + (boundary + 1);
+                StarOutput placeholder = new StarOutput(
+                        java.util.Collections.singletonList(new StarColumn(source, name,
+                                identifierKey(name), false, false)), false, false);
+                plan.add(boundary++, placeholder);
+                syntheticOutputs.add(placeholder);
+            }
+        }
         int position = startPosition;
         for (StarOutput output : plan) {
             if (output.sources.isEmpty()) {
                 continue;
-            }
-            for (StarColumn column : output.sources) {
-                covered.add(column.source);
             }
             String lockedName = lockedOutputName(targetTable, position);
             String name = lockedName != null ? lockedName
@@ -3531,23 +3557,37 @@ public class DmlLineage {
                 markOutputNameKnown(targetTable, position, true);
             } else {
                 for (SourceTable source : starOutputSources(output)) {
-                    instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
+                    Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                             source.displayName, targetTable, position, source.temporary,
-                            targetTemporary));
+                            targetTemporary);
+                    if (syntheticOutputs.contains(output) && currentStarBudget > 0) {
+                        wildcard.setWildcardWidthKnown(true);
+                    }
+                    instructions.add(wildcard);
                 }
             }
             position++;
         }
-        // An unknown side consumed by a USING merge still owns columns that the merge
-        // did not name: keep its table-level edge.
-        for (SourceTable source : sources) {
-            if (!covered.contains(source) && !sourceNamesKnown(source)) {
-                instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                        source.displayName, targetTable, position, source.temporary,
-                        targetTemporary));
+        return position - startPosition;
+    }
+
+    /**
+     * Whether a source already contributed a column whose identity is known. Its other
+     * columns are then still unexpanded.
+     */
+    private static boolean coveredByUnknownOutput(List<StarOutput> plan,
+            SourceTable source) {
+        for (StarOutput output : plan) {
+            if (output.nameKnown) {
+                continue;
+            }
+            for (StarColumn column : output.sources) {
+                if (column.source == source) {
+                    return true;
+                }
             }
         }
-        return position - startPosition;
+        return false;
     }
 
     private boolean uniqueOutputNames(SourceTable source, String targetTable, int position) {
@@ -4161,7 +4201,20 @@ public class DmlLineage {
 
             SQLSelect select = insert.getQuery();
             if (select != null) {
-                processSelect(select);
+                List<SQLExpr> insertColumns = insert.getColumns();
+                Integer previousWidth = targetWidthOverride.get(insertTemp);
+                if (insertColumns != null && !insertColumns.isEmpty()) {
+                    targetWidthOverride.put(insertTemp, insertColumns.size());
+                }
+                try {
+                    processSelect(select);
+                } finally {
+                    if (previousWidth == null) {
+                        targetWidthOverride.remove(insertTemp);
+                    } else {
+                        targetWidthOverride.put(insertTemp, previousWidth);
+                    }
+                }
             }
 
             String fromTable = stackTargetTable.peek();

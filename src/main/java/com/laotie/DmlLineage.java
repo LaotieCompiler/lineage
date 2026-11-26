@@ -901,7 +901,7 @@ public class DmlLineage {
         } else {
             // A qualified owner must match the whole reference; taking the last
             // segment could select a same-named table from another schema.
-            table = findQualifiedTable(from, identifierKey(ownerName), false);
+            table = findQualifiedTable(from, qualifiedKey(ownerName), false);
         }
         return table == null ? -1 : staticTableWidth(table, scope);
     }
@@ -913,7 +913,19 @@ public class DmlLineage {
         }
         if (from instanceof SQLExprTableSource) {
             String name = extractTableName((SQLExprTableSource) from);
-            return name != null && key.equals(identifierKey(name)) ? from : null;
+            if (name == null) {
+                return null;
+            }
+            // Compare the bound identity, which honors search_path and per-segment
+            // quoting, not only the spelling used in this FROM clause.
+            String bound = name;
+            if (context != null) {
+                TableLocation location = resolveMetadataTable(name);
+                if (location != null) {
+                    bound = location.getDisplayName();
+                }
+            }
+            return key.equals(qualifiedKey(bound)) ? from : null;
         }
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;

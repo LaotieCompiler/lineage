@@ -1776,6 +1776,8 @@ public class DmlLineage {
         if (fromItem == null) {
             int position = 0;
             int minWidth = 0;
+            boolean widthKnown = true;
+            boolean unknownStarSeen = false;
             List<SourceTable> outerSources = currentSources();
             for (SQLSelectItem item : queryBlock.getSelectList()) {
                 if ((context != null || detachedMetadata())
@@ -1785,9 +1787,25 @@ public class DmlLineage {
                 SQLExpr itemExpr = item.getExpr();
                 if (!outerSources.isEmpty() && itemExpr instanceof SQLPropertyExpr
                         && isStarProperty(itemExpr)) {
-                    int width = recordOuterStar((SQLPropertyExpr) itemExpr, position);
+                    int recorded = recordOuterStar((SQLPropertyExpr) itemExpr,
+                            position);
+                    boolean unknownWidth = recorded < 0;
+                    int width = Math.abs(recorded);
                     position += width;
-                    minWidth += width;
+                    minWidth += unknownWidth ? 1 : width;
+                    if (unknownWidth) {
+                        widthKnown = false;
+                        unknownStarSeen = true;
+                    }
+                    continue;
+                }
+                if (!outerSources.isEmpty() && unknownStarSeen) {
+                    // The projection's position follows an unknown-width star, so no
+                    // fixed column edge may be written for it.
+                    recordUncertainOuterMappings(item, position);
+                    int width = Math.max(minimumOutputColumns(item.getExpr()), 1);
+                    position += width;
+                    minWidth += 1;
                     continue;
                 }
                 int width = recordUnboundSelectItem(item, position);
@@ -1798,8 +1816,8 @@ public class DmlLineage {
                 minWidth += minimumOutputColumns(item.getExpr());
             }
             lastQueryBlockWidth = position;
-            lastQueryBlockWidthKnown = true;
-            lastQueryBlockNamesKnown = true;
+            lastQueryBlockWidthKnown = widthKnown;
+            lastQueryBlockNamesKnown = widthKnown;
             lastQueryBlockMinWidth = minWidth;
             return;
         }
@@ -2113,6 +2131,109 @@ public class DmlLineage {
         stackJoinBindings.pop();
     }
 
+    private void recordUncertainOuterMappings(SQLSelectItem item, int position) {
+        SQLExpr expr = item.getExpr();
+        if (expr == null) {
+            return;
+        }
+        String target = stackTargetTable.peek();
+        recordUncertainOuterExpression(expr, target, position);
+    }
+
+    private void recordUncertainOuterExpression(SQLExpr expr, String target,
+            int position) {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof SQLPropertyExpr) {
+            SQLPropertyExpr property = (SQLPropertyExpr) expr;
+            if (isStarProperty(property)) {
+                return;
+            }
+            CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
+            if (correlated == null) {
+                throw new MetadataNotFoundException(property.getOwner() == null
+                        ? "*" : property.getOwner().toString());
+            }
+            if (correlated.source != null) {
+                addOuterWildcard(correlated.source, target, position);
+            } else {
+                for (SourceTable candidate : correlated.binding.sources) {
+                    addOuterWildcard(candidate, target, position);
+                }
+            }
+            return;
+        }
+        if (expr instanceof SQLIdentifierExpr) {
+            List<SourceTable> owners;
+            try {
+                owners = resolveUnqualified(((SQLIdentifierExpr) expr).getName());
+            } catch (ColumnNotFoundException e) {
+                owners = hasLateralAncestorScope()
+                        ? resolveCorrelatedUnqualified(((SQLIdentifierExpr) expr).getName())
+                        : new ArrayList<SourceTable>();
+            }
+            for (SourceTable source : owners) {
+                addOuterWildcard(source, target, position);
+            }
+            return;
+        }
+        if (expr instanceof SQLBinaryOpExpr) {
+            recordUncertainOuterExpression(((SQLBinaryOpExpr) expr).getLeft(), target,
+                    position);
+            recordUncertainOuterExpression(((SQLBinaryOpExpr) expr).getRight(), target,
+                    position);
+        } else if (expr instanceof SQLMethodInvokeExpr) {
+            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
+                recordUncertainOuterExpression(argument, target, position);
+            }
+        } else if (expr instanceof SQLCastExpr) {
+            recordUncertainOuterExpression(((SQLCastExpr) expr).getExpr(), target,
+                    position);
+        } else if (expr instanceof SQLNotExpr) {
+            recordUncertainOuterExpression(((SQLNotExpr) expr).getExpr(), target,
+                    position);
+        } else if (expr instanceof SQLUnaryExpr) {
+            recordUncertainOuterExpression(((SQLUnaryExpr) expr).getExpr(), target,
+                    position);
+        } else if (expr instanceof SQLBetweenExpr) {
+            SQLBetweenExpr between = (SQLBetweenExpr) expr;
+            recordUncertainOuterExpression(between.getTestExpr(), target, position);
+            recordUncertainOuterExpression(between.getBeginExpr(), target, position);
+            recordUncertainOuterExpression(between.getEndExpr(), target, position);
+        } else if (expr instanceof SQLCaseExpr) {
+            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
+            recordUncertainOuterExpression(caseExpr.getValueExpr(), target, position);
+            if (caseExpr.getItems() != null) {
+                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
+                    recordUncertainOuterExpression(caseItem.getConditionExpr(),
+                            target, position);
+                    recordUncertainOuterExpression(caseItem.getValueExpr(), target,
+                            position);
+                }
+            }
+            recordUncertainOuterExpression(caseExpr.getElseExpr(), target, position);
+        } else if (expr instanceof SQLListExpr) {
+            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
+                recordUncertainOuterExpression(element, target, position);
+            }
+        } else if (expr instanceof SQLInListExpr) {
+            SQLInListExpr in = (SQLInListExpr) expr;
+            recordUncertainOuterExpression(in.getExpr(), target, position);
+            if (in.getTargetList() != null) {
+                for (SQLExpr element : in.getTargetList()) {
+                    recordUncertainOuterExpression(element, target, position);
+                }
+            }
+        } else if (expr instanceof SQLInSubQueryExpr) {
+            recordUncertainOuterExpression(((SQLInSubQueryExpr) expr).getExpr(),
+                    target, position);
+        } else if (expr instanceof SQLExtractExpr) {
+            recordUncertainOuterExpression(((SQLExtractExpr) expr).getValue(), target,
+                    position);
+        }
+    }
+
     private void recordOuterExpressionMappings(SQLSelectItem item, int position) {
         SQLExpr expr = item.getExpr();
         if (expr == null) {
@@ -2206,12 +2327,34 @@ public class DmlLineage {
             int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
             if (width > 0 && sourceColumnNamesKnown(source)) {
                 List<String> names = sourceColumnNames(source);
+                List<String> declared = currentTargetColumnAliases(target);
+                List<String> declaredKeys = currentDeclaredKeys(target);
                 for (int i = 0; i < Math.min(width, names.size()); i++) {
-                    String name = names.get(i);
-                    setTargetOutput(target, position + i, name,
-                            identifierKey(name));
+                    String sourceColumn = names.get(i);
+                    String outputName;
+                    String outputKey;
+                    Boolean quoted = null;
+                    if (declared != null && i < declared.size()) {
+                        outputName = declared.get(i);
+                        outputKey = declaredKeys != null && i < declaredKeys.size()
+                                ? declaredKeys.get(i) : identifierKey(outputName);
+                    } else if (source.metadataTable != null
+                            && i < source.metadataTable.getFields().size()) {
+                        Column column = source.metadataTable.getFields().get(i);
+                        quoted = column.isQuoted();
+                        outputName = column.getColumnName();
+                        outputKey = quoted && currentDialect() != DbType.mysql
+                                && currentDialect() != DbType.mariadb
+                                        ? column.getColumnName()
+                                        : identifierKey(column.getColumnName());
+                    } else {
+                        outputName = sourceColumn;
+                        outputKey = identifierKey(sourceColumn);
+                    }
+                    setTargetOutput(target, position + i, outputName, outputKey);
                     markOutputNameKnown(target, position + i, true);
-                    addOuterColumnMapping(source, name, target, name, position + i);
+                    addOuterColumnMapping(source, sourceColumn, target, outputName,
+                            position + i, quoted);
                 }
                 return Math.max(width, 1);
             }
@@ -2230,10 +2373,18 @@ public class DmlLineage {
             }
             instructions.add(wildcard);
             targetWildcardContribution.put(target, Boolean.TRUE);
-            return Math.max(width, 1);
+            return width > 0 ? width : -1;
         }
         SourceNode binding = correlated == null ? null : correlated.binding;
         if (binding != null) {
+            if (!nodeNamesKnown(binding)) {
+                // Unknown side contributions stay table level, matching the normal
+                // star contract for a partially unknown join.
+                for (SourceTable candidate : binding.sources) {
+                    addOuterWildcard(candidate, target, position);
+                }
+                return -1;
+            }
             int pos = position;
             for (StarOutput output : binding.plan) {
                 if (output.sources.isEmpty()) {
@@ -2328,7 +2479,7 @@ public class DmlLineage {
                 : quoted ? "\"" + column.replace("\"", "\"\"") + "\""
                         : renderIdentifier(column);
         instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                source.displayName + "." + rendered,
+                lineageTableName(source) + "." + rendered,
                 target + "." + renderIdentifier(targetName), position,
                 source.temporary, tempTables.contains(target)));
         if (source.wildcardContribution && source.temporary) {
@@ -2377,16 +2528,24 @@ public class DmlLineage {
                     displayNames(owners));
         }
         if (matchedOutputs.size() == 1) {
-            List<SourceTable> unknown = unknownColumnSources(currentSources(),
-                    new ArrayList<SourceTable>());
-            if (!unknown.isEmpty()) {
-                List<SourceTable> owners = new ArrayList<>();
-                for (StarColumn column : matchedOutputs.get(0).sources) {
-                    if (!owners.contains(column.source)) {
-                        owners.add(column.source);
-                    }
+            List<SourceTable> participants = currentUsingParticipants(key);
+            List<SourceTable> matchedSources = new ArrayList<>();
+            for (StarColumn column : matchedOutputs.get(0).sources) {
+                if (!matchedSources.contains(column.source)) {
+                    matchedSources.add(column.source);
                 }
-                owners.addAll(unknown);
+            }
+            List<SourceTable> owners = new ArrayList<>(matchedSources);
+            for (SourceTable source : currentSources()) {
+                if (participants.contains(source) || matchedSources.contains(source)) {
+                    continue;
+                }
+                if (ownsOuterColumn(source, key)
+                        || !sourceColumnNamesKnown(source)) {
+                    owners.add(source);
+                }
+            }
+            if (owners.size() > matchedSources.size()) {
                 throw new AmbiguousColumnException(normalizeIdentifier(rawName),
                         displayNames(owners));
             }
@@ -2428,8 +2587,35 @@ public class DmlLineage {
             throw new AmbiguousColumnException(normalizeIdentifier(rawName),
                     displayNames(unknown));
         }
+        if (hasLateralAncestorScope()) {
+            List<SourceTable> ancestors = resolveCorrelatedUnqualified(rawName);
+            List<SourceTable> mapped = new ArrayList<>();
+            for (SourceTable source : ancestors) {
+                String column = resolveOuterColumn(source, rawName);
+                addOuterColumnMapping(source, column, target, targetName, position);
+                mapped.add(source);
+            }
+            if (!mapped.isEmpty()) {
+                return;
+            }
+        }
         throw new ColumnNotFoundException(normalizeIdentifier(rawName),
                 displayNames(currentSources()));
+    }
+
+    private List<SourceTable> currentUsingParticipants(String key) {
+        if (stackUsing.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Map<String, List<SourceTable>> using = stackUsing.peek();
+        if (using == null || usingParticipantsByIdentity.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Map<String, List<SourceTable>> participants = usingParticipantsByIdentity.get(using);
+        if (participants == null || !participants.containsKey(key)) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(participants.get(key));
     }
 
     private boolean ownsOuterColumn(SourceTable source, String key) {
@@ -2587,17 +2773,14 @@ public class DmlLineage {
             }
         } else if (isStarProperty(item.getExpr())) {
             SQLExpr owner = ((SQLPropertyExpr) item.getExpr()).getOwner();
+            CorrelatedOwner correlated = findCorrelatedOwner(owner);
+            SourceTable source = correlated == null ? null : correlated.source;
+            SourceNode binding = correlated == null ? null : correlated.binding;
             if (detachedMetadata()) {
-                SourceTable source = findByOwner(owner);
                 List<StarOutput> plan;
                 if (source != null) {
                     plan = planFromSource(source);
                 } else {
-                    SourceNode binding = exactJoinBinding(owner);
-                    if (binding == null) {
-                        CorrelatedOwner correlated = findCorrelatedOwner(owner);
-                        binding = correlated == null ? null : correlated.binding;
-                    }
                     if (binding == null) {
                         throw new MetadataNotFoundException(owner == null
                                 ? "*" : owner.toString());
@@ -2608,17 +2791,13 @@ public class DmlLineage {
                 if (source != null) {
                     planSources.add(source);
                 } else {
-                    SourceNode binding = joinBinding(owner);
-                    if (binding != null) {
-                        planSources.addAll(binding.sources);
-                    }
+                    planSources.addAll(binding.sources);
                 }
-                SourceNode planNode = source != null ? null : joinBinding(owner);
+                SourceNode planNode = source != null ? null : binding;
                 int width = emitDetachedPlan(targetTable, plan, planSources, planNode,
                         currentOrdinal);
                 return Math.max(width, 1);
             }
-            SourceTable source = findByOwner(owner);
             if (source != null) {
                 SourceNode expanded = currentExpandedSourceNodes.get(source);
                 SourceNode leafNode = stackSourceNode.isEmpty()
@@ -2633,11 +2812,8 @@ public class DmlLineage {
                 } else {
                     recordSourceStarOutputs(targetTable, source, currentOrdinal);
                 }
-            } else {
-                SourceNode binding = joinBinding(owner);
-                if (binding != null) {
-                    recordBindingStar(targetTable, binding, currentOrdinal);
-                }
+            } else if (binding != null) {
+                recordBindingStar(targetTable, binding, currentOrdinal);
             }
         } else {
             List<String> declaredKeys = currentDeclaredKeys(targetTable);
@@ -4615,6 +4791,40 @@ public class DmlLineage {
         }
     }
 
+    private List<SourceTable> participantsForFrame(int frame, String key) {
+        if (frame >= stackUsing.size() || usingParticipantsByIdentity.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Map<String, List<SourceTable>> using = stackUsing.get(frame);
+        if (using == null) {
+            return new ArrayList<>();
+        }
+        Map<String, List<SourceTable>> participants =
+                usingParticipantsByIdentity.get(using);
+        if (participants == null || !participants.containsKey(key)) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(participants.get(key));
+    }
+
+    private List<SourceTable> frameCandidates(int frame, String key,
+            List<SourceTable> participants, List<SourceTable> excluded) {
+        Set<SourceTable> hidden = frame < stackHiddenSources.size()
+                ? stackHiddenSources.get(frame)
+                : java.util.Collections.<SourceTable>emptySet();
+        List<SourceTable> candidates = new ArrayList<>();
+        for (SourceTable source : stackSources.get(frame)) {
+            if (hidden.contains(source) || participants.contains(source)
+                    || excluded.contains(source)) {
+                continue;
+            }
+            if (ownsOuterColumn(source, key) || !sourceColumnNamesKnown(source)) {
+                candidates.add(source);
+            }
+        }
+        return candidates;
+    }
+
     private boolean hasLateralAncestorScope() {
         for (int frame = 0; frame < stackSources.size() - 1; frame++) {
             if (frame < lateralScopes.size()
@@ -4637,7 +4847,16 @@ public class DmlLineage {
             Map<String, List<SourceTable>> using = frame < stackUsing.size()
                     ? stackUsing.get(frame) : null;
             if (using != null && using.containsKey(key)) {
-                return using.get(key);
+                List<SourceTable> participants = using.get(key);
+                List<SourceTable> extras = frameCandidates(frame, key,
+                        participants, new ArrayList<SourceTable>());
+                if (!extras.isEmpty()) {
+                    List<SourceTable> all = new ArrayList<>(participants);
+                    all.addAll(extras);
+                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                            displayNames(all));
+                }
+                return participants;
             }
             List<StarOutput> plan = frame < stackStarPlan.size()
                     ? stackStarPlan.get(frame)
@@ -4669,6 +4888,15 @@ public class DmlLineage {
                     if (!owners.contains(column.source)) {
                         owners.add(column.source);
                     }
+                }
+                List<SourceTable> participants = participantsForFrame(frame, key);
+                List<SourceTable> extras = frameCandidates(frame, key, participants,
+                        owners);
+                if (!extras.isEmpty()) {
+                    List<SourceTable> all = new ArrayList<>(owners);
+                    all.addAll(extras);
+                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                            displayNames(all));
                 }
                 return owners;
             }

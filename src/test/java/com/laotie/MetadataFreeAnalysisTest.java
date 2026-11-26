@@ -2021,6 +2021,67 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void joinAliasStarAfterOpenWildcardInSubquery() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);"
+                + " CREATE TABLE b (k INT); CREATE TABLE c (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3,c4) SELECT a.*, j.* FROM a CROSS JOIN (("
+                        + "SELECT * FROM m UNION ALL SELECT 1,2) AS q"
+                        + " LEFT JOIN b USING(k)) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        // a has no catalog entry, so j's start is unknown; its ambiguous USING
+        // merge must stay table level through the last written column.
+        Set<Column> last = result.getGraph().getSources(new Column("t.c4"));
+        assertTrue(last.contains(new Column("m.*")));
+        assertTrue(last.contains(new Column("b.*")));
+    }
+
+    @Test
+    public void derivedStarWithUnknownNamesUsesKnownWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);"
+                + " CREATE TABLE b (k INT); CREATE TABLE c (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3,c4) SELECT r.*, c.* FROM ("
+                        + "SELECT q.*, 42 AS tail FROM ("
+                        + "SELECT * FROM m UNION ALL SELECT 1,2) AS q) AS r"
+                        + " CROSS JOIN c;");
+
+        assertEquals(0, result.getFailures().size());
+        // r is three columns wide even though its third name is a constant; c.v
+        // starts at the fourth position, not the third.
+        assertTrue(result.getGraph().getSources(new Column("t.c4"))
+                .contains(new Column("c.v")));
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("c.v")));
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
+    public void unionBudgetAppliesOnlyToItsWildcard() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);"
+                + " CREATE TABLE b (k INT); CREATE TABLE c (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT a.*, b.* FROM a CROSS JOIN b"
+                        + " UNION ALL SELECT 1,2,3; SELECT c4 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        // The UNION width pins a to two columns; b's single column lands on c3 and
+        // must not stretch over the unwritten fourth position.
+        assertTrue(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("b.k")));
+        assertFalse(result.getGraph().getSources(new Column("t.c4"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

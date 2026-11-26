@@ -172,10 +172,15 @@ public class LineageGraph {
                     if (instruction.isToTemporary() && instruction.getOrdinal() >= 0) {
                         String[] parts = splitReference(instruction.getTo());
                         if (parts != null) {
+                            String tableKey = prefix + parts[0];
                             tempColumnsByPosition
-                                    .computeIfAbsent(prefix + parts[0],
+                                    .computeIfAbsent(tableKey,
                                             key -> new HashMap<Integer, String>())
                                     .put(instruction.getOrdinal(), CONSTANT_COLUMN);
+                            // A constant still occupies a position, so the temporary's
+                            // effective width must include it.
+                            tempMaxPosition.merge(tableKey, instruction.getOrdinal(),
+                                    Math::max);
                         }
                     }
                     continue;
@@ -197,6 +202,8 @@ public class LineageGraph {
                                 .computeIfAbsent(tableKey,
                                         key -> new HashMap<Integer, String>())
                                 .put(instruction.getOrdinal(), columnName);
+                        tempMaxPosition.merge(tableKey, instruction.getOrdinal(),
+                                Math::max);
                         toReference = parts[0] + "." + columnName;
                     }
                 }

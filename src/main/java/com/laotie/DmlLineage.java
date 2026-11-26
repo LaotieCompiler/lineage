@@ -1319,18 +1319,23 @@ public class DmlLineage {
             // undetermined position, so no column-level edge may be guessed for it.
             uncertainOrdinal = positionalWidth > 0 && !positionCertain
                     || detachedMetadata() && unknownStarSeen ? start : -1;
-            if (unknownStar && !starOutputWidthKnown(itemExpr)) {
+            boolean inferredWidth = itemIndex == unknownItemIndex
+                    && inferredUnknownWidth > 0;
+            if (unknownStar && !starOutputWidthKnown(itemExpr) && !inferredWidth) {
                 // Only an unknown-width wildcard leaves later positions undetermined.
                 unknownStarSeen = true;
             }
             currentOrdinal = start;
             int advanced = processSelectItem(item);
-            if (itemIndex == unknownItemIndex && inferredUnknownWidth > advanced) {
-                advanced = inferredUnknownWidth;
+            if (inferredWidth) {
+                // The UNION width pins this wildcard exactly once; it must not leak
+                // into the next projection's width.
+                advanced = Math.max(advanced, inferredUnknownWidth);
+                currentStarBudget = -1;
             }
             position = start + advanced;
             minWidth += minimumOutputColumns(item.getExpr());
-            boolean itemWidthKnown = outputWidthKnown(item);
+            boolean itemWidthKnown = outputWidthKnown(item) || inferredWidth;
             if (!itemWidthKnown) {
                 widthKnown = false;
             }
@@ -1661,28 +1666,9 @@ public class DmlLineage {
 
     private boolean outputWidthKnown(SQLSelectItem item) {
         SQLExpr expr = item.getExpr();
-        if (detachedMetadata() && hasUnknownStarSource(expr)) {
-            return false;
-        }
-        if (expr instanceof SQLAllColumnExpr) {
-            if (!stackSourceNode.isEmpty()) {
-                return stackSourceNode.peek().widthKnown;
-            }
-            for (SourceTable source : currentSources()) {
-                if (!sourceColumnsKnown(source)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (isStarProperty(expr)) {
-            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
-            SourceTable source = findByOwner(owner);
-            if (source != null) {
-                return sourceColumnsKnown(source);
-            }
-            SourceNode binding = joinBinding(owner);
-            return binding != null && binding.widthKnown;
+        if (expr instanceof SQLAllColumnExpr || isStarProperty(expr)) {
+            // A wildcard's width can be known even when its column names are not.
+            return starOutputWidthKnown(expr);
         }
         return true;
     }
@@ -3758,8 +3744,11 @@ public class DmlLineage {
                     && !wildcardSpansOf(sources.get(0).displayName).isEmpty()) {
                 SourceTable source = sources.get(0);
                 List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
+                boolean widthKnownForSource = sourceColumnsKnown(source)
+                        || source.temporary && Boolean.TRUE.equals(
+                                targetWidthKnown.get(source.displayName));
                 int sourceWidth = uncertainPosition ? -1
-                        : sourceColumnsKnown(source)
+                        : widthKnownForSource
                                 ? Math.max(sourceColumnNames(source).size(),
                                         maxSpanEnd(spans))
                                 : currentStarBudget > 0 ? currentStarBudget : -1;
@@ -3828,7 +3817,8 @@ public class DmlLineage {
                 }
                 return Math.max(node.width, 1);
             }
-            boolean ambiguousBounded = planAmbiguous && node != null && node.widthKnown;
+            boolean ambiguousBounded = planAmbiguous && !uncertainPosition
+                    && node != null && node.widthKnown;
             boolean allKnown = !planAmbiguous && !uncertainPosition
                     && !sources.isEmpty() && allWidthKnown(sources);
             int position = startPosition;

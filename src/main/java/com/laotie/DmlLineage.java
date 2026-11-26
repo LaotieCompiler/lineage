@@ -1989,9 +1989,9 @@ public class DmlLineage {
         }
         if (tableSource instanceof SQLExprTableSource) {
             SourceTable source = resolveSource((SQLExprTableSource) tableSource);
-            boolean widthKnown = sourceColumnsKnown(source);
+            boolean widthKnown = sourceWidthKnown(source);
             int width = source.metadataTable != null
-                    ? source.metadataTable.getFields().size() : source.outputColumns.size();
+                    ? source.metadataTable.getFields().size() : sourceKnownWidth(source);
             return new SourceNode(java.util.Collections.singletonList(source),
                     planFromSource(source), sourceNamesKnown(source), widthKnown, width,
                     minimumColumns(source), 0, width,
@@ -2708,9 +2708,10 @@ public class DmlLineage {
                 && isOutputWidthKnown(cteTarget, outputColumns);
         boolean namesKnown = metadataTable != null || cteTarget != null
                 && isOutputNamesKnown(cteTarget, outputColumns);
+        int outputWidth = derivedWidth(cteTarget, outputColumns, widthKnown);
         int minOutputColumns = metadataTable != null
                 ? metadataTable.getFields().size()
-                : targetMinimumColumns(cteTarget, widthKnown, outputColumns.size());
+                : targetMinimumColumns(cteTarget, widthKnown, outputWidth);
         return new SourceTable(display, written, rawName, sourceAlias, metadataTable, temporary,
                 widthKnown, namesKnown, outputColumns, copyKeys(cteTarget),
                 metadataTable != null ? java.util.Collections.<Boolean>emptyList()
@@ -3835,6 +3836,33 @@ public class DmlLineage {
             for (int index = 0; index < sources.size(); index++) {
                 SourceTable source = sources.get(index);
                 int sourceStart = allKnown ? position : startPosition;
+                List<WildcardSpan> sourceSpans = source.temporary
+                        ? wildcardSpansOf(source.displayName)
+                        : java.util.Collections.<WildcardSpan>emptyList();
+                if (allKnown && !sourceSpans.isEmpty()) {
+                    // A derived source already knows where its own wildcards sit;
+                    // re-emit those positions instead of covering its constant slots.
+                    int width = sourceKnownWidth(source);
+                    for (WildcardSpan span : sourceSpans) {
+                        int start = sourceStart + span.start;
+                        int end = Math.min(sourceStart + width,
+                                span.end == Integer.MAX_VALUE ? start + 1
+                                        : sourceStart + span.end);
+                        for (int target = start; target < end; target++) {
+                            Instruction perPosition = new Instruction(
+                                    OperationType.COLUMNS_INJECT, span.source,
+                                    targetTable, target, span.temporary, targetTemporary);
+                            perPosition.setPositionalWildcard(true);
+                            perPosition.setWildcardWidthKnown(true);
+                            perPosition.setWildcardWidth(1);
+                            instructions.add(perPosition);
+                            recordWildcardSpan(targetTable, target, target + 1,
+                                    span.source, span.temporary);
+                        }
+                    }
+                    position += width;
+                    continue;
+                }
                 Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                         lineageTableName(source), targetTable, sourceStart,
                         source.temporary, targetTemporary);
@@ -4359,31 +4387,30 @@ public class DmlLineage {
     }
 
     private int derivedWidth(String target, List<String> outputs, boolean widthKnown) {
-        if (!outputs.isEmpty()) {
-            return outputs.size();
-        }
+        int width = outputs.size();
         if (widthKnown) {
-            Integer width = targetMinWidth.get(target);
-            if (width != null && width > 0) {
-                return width;
+            Integer known = targetMinWidth.get(target);
+            if (known != null && known > 0) {
+                width = Math.max(width, known);
             }
         }
-        return 0;
+        return width;
     }
 
     private int sourceKnownWidth(SourceTable source) {
         if (source.metadataTable != null) {
             return Math.max(source.metadataTable.getFields().size(), 1);
         }
-        if (!source.outputColumns.isEmpty()) {
-            return Math.max(source.outputColumns.size(), 1);
-        }
+        int width = source.outputColumns.size();
         if (source.temporary
                 && Boolean.TRUE.equals(targetWidthKnown.get(source.displayName))) {
-            Integer width = targetMinWidth.get(source.displayName);
-            if (width != null && width > 0) {
-                return width;
+            Integer known = targetMinWidth.get(source.displayName);
+            if (known != null && known > 0) {
+                width = Math.max(width, known);
             }
+        }
+        if (width > 0) {
+            return width;
         }
         return Math.max(sourceColumnNames(source).size(), 1);
     }

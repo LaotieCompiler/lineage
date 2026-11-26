@@ -2140,6 +2140,48 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void derivedStarWithPartialNamesKeepsFullWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3,c4) SELECT * FROM ("
+                        + "SELECT 42 AS head, q.* FROM ("
+                        + "SELECT * FROM m UNION ALL SELECT 1,2) AS q) AS r"
+                        + " CROSS JOIN b;");
+
+        assertEquals(0, result.getFailures().size());
+        // r is three columns wide (head plus q's two), even though only `head`
+        // was named.
+        assertFalse(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("m.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("m.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("m.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c4"))
+                .contains(new Column("b.*")));
+    }
+
+    @Test
+    public void cteDerivedStarKeepsKnownWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT * FROM m UNION ALL SELECT 1,2),"
+                        + " r AS (SELECT q.* FROM q)"
+                        + " SELECT * FROM r CROSS JOIN b UNION ALL SELECT 3,4,5;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.*"));
+        assertTrue(sources.contains(new Column("m.*")));
+        assertTrue(sources.contains(new Column("b.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

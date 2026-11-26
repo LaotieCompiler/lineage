@@ -2411,6 +2411,28 @@ public class DmlLineage {
         return false;
     }
 
+    private String effectiveOutputName(SourceTable source, int index) {
+        if (index < 0) {
+            return null;
+        }
+        String name = index < source.outputColumns.size()
+                ? source.outputColumns.get(index) : null;
+        String key = index < source.outputKeys.size()
+                ? source.outputKeys.get(index) : null;
+        if (key == null || source.outputKeys.indexOf(key) == index) {
+            return name;
+        }
+        Set<String> usedKeys = new HashSet<>();
+        for (String outputName : source.outputColumns) {
+            usedKeys.add(identifierKey(outputName));
+        }
+        String candidate = "col" + (index + 1);
+        while (usedKeys.contains(identifierKey(candidate))) {
+            candidate = candidate + "_";
+        }
+        return candidate;
+    }
+
     private List<WildcardRef> wildcardRefsAt(SourceTable source, int relative) {
         List<WildcardRef> refs = new ArrayList<>();
         for (WildcardSpan span : wildcardSpansOf(source.displayName)) {
@@ -2441,7 +2463,11 @@ public class DmlLineage {
                         boolean named = sourceOutputNameKnown(source, i)
                                 && i < names.size();
                         if (named) {
-                            String sourceColumn = names.get(i);
+                            String displayName = names.get(i);
+                            String sourceColumn = effectiveOutputName(source, i);
+                            if (sourceColumn == null) {
+                                sourceColumn = displayName;
+                            }
                             String outputName;
                             String outputKey;
                             Boolean quoted = null;
@@ -2452,12 +2478,12 @@ public class DmlLineage {
                                                 ? declaredKeys.get(position + i)
                                                 : identifierKey(outputName);
                             } else {
-                                outputName = sourceColumn;
+                                outputName = displayName;
                                 outputKey = i < source.outputKeys.size()
                                         && source.outputKeys.get(i) != null
                                                 ? source.outputKeys.get(i)
-                                                : identifierKey(sourceColumn);
-                                quoted = !outputKey.equals(identifierKey(sourceColumn));
+                                                : identifierKey(displayName);
+                                quoted = !outputKey.equals(identifierKey(displayName));
                             }
                             setTargetOutput(target, position + i, outputName, outputKey);
                             markOutputNameKnown(target, position + i, true);
@@ -2490,7 +2516,11 @@ public class DmlLineage {
                     Boolean quoted = Boolean.FALSE;
                     if (declared != null && position + i < declared.size()) {
                         outputName = declared.get(position + i);
-                        outputKey = identifierKey(outputName);
+                        outputKey = declaredKeys != null
+                                && position + i < declaredKeys.size()
+                                        ? declaredKeys.get(position + i)
+                                        : identifierKey(outputName);
+                        quoted = !outputKey.equals(identifierKey(outputName));
                     } else {
                         outputName = name;
                         outputKey = i < source.outputKeys.size()
@@ -2499,9 +2529,13 @@ public class DmlLineage {
                                         : identifierKey(name);
                         quoted = !outputKey.equals(identifierKey(name));
                     }
+                    String sourceColumn = effectiveOutputName(source, i);
+                    if (sourceColumn == null) {
+                        sourceColumn = name;
+                    }
                     setTargetOutput(target, position + i, outputName, outputKey);
                     markOutputNameKnown(target, position + i, true);
-                    addOuterColumnMapping(source, name, target, outputName,
+                    addOuterColumnMapping(source, sourceColumn, target, outputName,
                             position + i, quoted);
                     knownPrefix = i + 1;
                 }
@@ -2990,18 +3024,18 @@ public class DmlLineage {
             }
             return resolved;
         }
-        if (source.outputNamesKnown) {
-            String key = identifierKey(rawName);
-            int found = -1;
-            for (int i = 0; i < source.outputKeys.size(); i++) {
-                if (key != null && key.equals(source.outputKeys.get(i))) {
-                    if (found >= 0) {
-                        throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                                displayNames(visibleSources()));
-                    }
-                    found = i;
+        String key = identifierKey(rawName);
+        int found = -1;
+        for (int i = 0; i < source.outputKeys.size(); i++) {
+            if (key != null && key.equals(source.outputKeys.get(i))) {
+                if (found >= 0) {
+                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                            displayNames(visibleSources()));
                 }
+                found = i;
             }
+        }
+        if (source.outputNamesKnown) {
             if (found >= 0) {
                 return found < source.outputColumns.size()
                         ? source.outputColumns.get(found)
@@ -3009,6 +3043,11 @@ public class DmlLineage {
             }
             throw new ColumnNotFoundException(normalizeIdentifier(rawName),
                     displayNames(visibleSources()));
+        }
+        if (found >= 0) {
+            return found < source.outputColumns.size()
+                    ? source.outputColumns.get(found)
+                    : normalizeIdentifier(rawName);
         }
         return normalizeIdentifier(rawName);
     }
@@ -3839,7 +3878,9 @@ public class DmlLineage {
             boolean nameKnown = sourceOutputNameKnown(source, i);
             boolean quoted = source.metadataTable != null
                     && i < source.metadataTable.getFields().size()
-                    && source.metadataTable.getFields().get(i).isQuoted();
+                    && source.metadataTable.getFields().get(i).isQuoted()
+                    || source.metadataTable == null && key != null
+                            && !key.equals(identifierKey(names.get(i)));
             boolean stable = sourceColumnsKnown(source) || i < firstUnknownIndex(source);
             plan.add(new StarOutput(java.util.Collections.singletonList(
                     new StarColumn(source, names.get(i), key, nameKnown, quoted, i)),
@@ -5365,9 +5406,19 @@ public class DmlLineage {
     }
 
     private static boolean hasQuotedSegment(String reference) {
+        return hasSignificantQuote(reference);
+    }
+
+    private static boolean hasSignificantQuote(String reference) {
         for (String part : MetadataCatalog
                 .splitQualifiedNamePreservingQuotes(reference)) {
-            if (MetadataCatalog.isQuotedIdentifier(part)) {
+            if (!MetadataCatalog.isQuotedIdentifier(part)) {
+                continue;
+            }
+            String name = MetadataCatalog.normalizeIdentifier(part);
+            // A quoted spelling that folds to itself (for example "b" in
+            // PostgreSQL) is equivalent to the unquoted spelling.
+            if (name == null || !name.equals(name.toLowerCase())) {
                 return true;
             }
         }
@@ -5571,6 +5622,19 @@ public class DmlLineage {
                 && MetadataCatalog.resolveColumnName(source.metadataTable, rawName,
                         currentDialect()) == null) {
             throw new ColumnNotFoundException(name, displayNames(currentSources()));
+        }
+        if (source.metadataTable == null) {
+            String key = identifierKey(rawName);
+            int matches = 0;
+            for (String outputKey : source.outputKeys) {
+                if (key != null && key.equals(outputKey)) {
+                    matches++;
+                }
+            }
+            if (matches > 1) {
+                throw new AmbiguousColumnException(name,
+                        displayNames(java.util.Collections.singletonList(source)));
+            }
         }
         if (source.metadataTable == null && source.outputNamesKnown
                 && !source.outputKeys.contains(identifierKey(rawName))) {

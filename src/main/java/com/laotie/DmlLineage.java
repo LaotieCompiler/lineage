@@ -1777,6 +1777,7 @@ public class DmlLineage {
             int position = 0;
             int minWidth = 0;
             boolean widthKnown = true;
+            boolean namesKnown = true;
             boolean unknownStarSeen = false;
             List<SourceTable> outerSources = currentSources();
             for (SQLSelectItem item : queryBlock.getSelectList()) {
@@ -1788,13 +1789,17 @@ public class DmlLineage {
                 if (!outerSources.isEmpty() && unknownStarSeen
                         && itemExpr instanceof SQLPropertyExpr
                         && isStarProperty(itemExpr)) {
-                    recordUncertainOuterStar((SQLPropertyExpr) itemExpr, position);
-                    position += 1;
-                    minWidth += 1;
+                    namesKnown = false;
+                    int minimum = recordUncertainOuterStar(
+                            (SQLPropertyExpr) itemExpr, position);
+                    position += minimum;
+                    minWidth += minimum;
                     continue;
                 }
                 if (!outerSources.isEmpty() && itemExpr instanceof SQLPropertyExpr
                         && isStarProperty(itemExpr)) {
+                    namesKnown = namesKnown && outerStarNamesKnown(
+                            (SQLPropertyExpr) itemExpr);
                     int recorded = recordOuterStar((SQLPropertyExpr) itemExpr,
                             position);
                     boolean unknownWidth = recorded < 0;
@@ -1825,7 +1830,7 @@ public class DmlLineage {
             }
             lastQueryBlockWidth = position;
             lastQueryBlockWidthKnown = widthKnown;
-            lastQueryBlockNamesKnown = widthKnown;
+            lastQueryBlockNamesKnown = namesKnown;
             lastQueryBlockMinWidth = minWidth;
             return;
         }
@@ -2139,7 +2144,7 @@ public class DmlLineage {
         stackJoinBindings.pop();
     }
 
-    private void recordUncertainOuterStar(SQLPropertyExpr star, int position) {
+    private int recordUncertainOuterStar(SQLPropertyExpr star, int position) {
         String target = stackTargetTable.peek();
         CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
         if (correlated == null) {
@@ -2148,11 +2153,14 @@ public class DmlLineage {
         }
         if (correlated.source != null) {
             addOuterWildcardOpen(correlated.source, target, position);
-            return;
+            return sourceWidthKnown(correlated.source)
+                    ? Math.max(sourceKnownWidth(correlated.source), 1) : 1;
         }
         for (SourceTable candidate : correlated.binding.sources) {
             addOuterWildcardOpen(candidate, target, position);
         }
+        return correlated.binding.widthKnown
+                ? Math.max(correlated.binding.width, 1) : 1;
     }
 
     private void recordUncertainOuterMappings(SQLSelectItem item, int position) {
@@ -2211,8 +2219,14 @@ public class DmlLineage {
                             normalizeIdentifier(property.getName()),
                             displayNames(correlated.binding.sources));
                 }
-                for (SourceTable candidate : correlated.binding.sources) {
-                    addOuterWildcardOpen(candidate, target, position);
+                if (matched.size() == 1) {
+                    for (StarColumn column : matched.get(0).sources) {
+                        addOuterWildcardOpen(column.source, target, position);
+                    }
+                } else {
+                    for (SourceTable candidate : correlated.binding.sources) {
+                        addOuterWildcardOpen(candidate, target, position);
+                    }
                 }
             }
             return;
@@ -2377,6 +2391,39 @@ public class DmlLineage {
         }
     }
 
+    private boolean outerStarNamesKnown(SQLPropertyExpr star) {
+        CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
+        if (correlated == null) {
+            return false;
+        }
+        if (correlated.source != null) {
+            return sourceColumnNamesKnown(correlated.source);
+        }
+        return nodeNamesKnown(correlated.binding);
+    }
+
+    private static boolean coveredBySpan(List<WildcardSpan> spans, int relative) {
+        for (WildcardSpan span : spans) {
+            if (relative >= span.start && relative < span.end) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<WildcardRef> wildcardRefsAt(SourceTable source, int relative) {
+        List<WildcardRef> refs = new ArrayList<>();
+        for (WildcardSpan span : wildcardSpansOf(source.displayName)) {
+            if (relative >= span.start && relative < span.end) {
+                WildcardRef ref = new WildcardRef(span.source, span.temporary);
+                if (!refs.contains(ref)) {
+                    refs.add(ref);
+                }
+            }
+        }
+        return refs;
+    }
+
     private int recordOuterStar(SQLPropertyExpr star, int position) {
         String target = stackTargetTable.peek();
         CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
@@ -2417,10 +2464,58 @@ public class DmlLineage {
                     }
                     setTargetOutput(target, position + i, outputName, outputKey);
                     markOutputNameKnown(target, position + i, true);
-                    addOuterColumnMapping(source, sourceColumn, target, outputName,
-                            position + i, quoted);
+                    List<WildcardRef> refs = source.temporary
+                            ? wildcardRefsAt(source, i) : new ArrayList<WildcardRef>();
+                    if (!refs.isEmpty()) {
+                        // A derived source already knows which positions carry an
+                        // unknown wildcard; keep the table-level claim there.
+                        for (WildcardRef ref : refs) {
+                            Instruction wildcard = new Instruction(
+                                    OperationType.COLUMNS_INJECT, ref.name, target,
+                                    position + i, ref.temporary,
+                                    tempTables.contains(target));
+                            wildcard.setPositionalWildcard(true);
+                            wildcard.setWildcardWidthKnown(true);
+                            wildcard.setWildcardWidth(1);
+                            instructions.add(wildcard);
+                            recordWildcardSpan(target, position + i,
+                                    position + i + 1, ref.name, ref.temporary);
+                            targetWildcardContribution.put(target, Boolean.TRUE);
+                        }
+                    } else {
+                        addOuterColumnMapping(source, sourceColumn, target, outputName,
+                                position + i, quoted);
+                    }
                 }
                 return Math.max(width, 1);
+            }
+            List<WildcardSpan> spans = source.temporary
+                    ? wildcardSpansOf(source.displayName)
+                    : java.util.Collections.<WildcardSpan>emptyList();
+            if (!spans.isEmpty()) {
+                for (WildcardSpan span : spans) {
+                    int start = position + span.start;
+                    int end = width > 0
+                            ? Math.min(position + width, start + Math.max(
+                                    span.end == Integer.MAX_VALUE ? 1
+                                            : span.end - span.start, 1))
+                            : start + 1;
+                    for (int targetPosition = start; targetPosition < end;
+                            targetPosition++) {
+                        Instruction perPosition = new Instruction(
+                                OperationType.COLUMNS_INJECT, span.source, target,
+                                targetPosition, span.temporary,
+                                tempTables.contains(target));
+                        perPosition.setPositionalWildcard(true);
+                        perPosition.setWildcardWidthKnown(true);
+                        perPosition.setWildcardWidth(1);
+                        instructions.add(perPosition);
+                        recordWildcardSpan(target, targetPosition,
+                                targetPosition + 1, span.source, span.temporary);
+                        targetWildcardContribution.put(target, Boolean.TRUE);
+                    }
+                }
+                return width > 0 ? width : -1;
             }
             Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                     lineageTableName(source), target, position,
@@ -2441,6 +2536,12 @@ public class DmlLineage {
         }
         SourceNode binding = correlated == null ? null : correlated.binding;
         if (binding != null) {
+            if (!binding.widthKnown) {
+                for (SourceTable candidate : binding.sources) {
+                    addOuterWildcardOpen(candidate, target, position);
+                }
+                return -1;
+            }
             boolean allNamesKnown = nodeNamesKnown(binding);
             List<String> declared = currentTargetColumnAliases(target);
             List<String> declaredKeys = currentDeclaredKeys(target);
@@ -2495,6 +2596,7 @@ public class DmlLineage {
                             instructions.add(wildcard);
                             recordWildcardSpan(target, pos, pos + 1, ref.name,
                                     ref.temporary);
+                            targetWildcardContribution.put(target, Boolean.TRUE);
                         }
                     } else {
                         addOuterWildcard(column.source, target, pos);
@@ -2508,9 +2610,8 @@ public class DmlLineage {
                         addOuterWildcardOpen(candidate, target, pos);
                     }
                 }
-                return -1;
             }
-            return Math.max(pos - position, 1);
+            return Math.max(binding.widthKnown ? binding.width : pos - position, 1);
         }
         throw new MetadataNotFoundException(star.getOwner() == null
                 ? "*" : star.getOwner().toString());
@@ -2523,7 +2624,10 @@ public class DmlLineage {
         SourceTable source = correlated == null ? null : correlated.source;
         if (source != null) {
             String column = resolveOuterColumn(source, rawName);
-            addOuterColumnMapping(source, column, target, targetName, position);
+            Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
+                    : null;
+            addOuterColumnMapping(source, column, target, targetName, position,
+                    quoted);
             return;
         }
         SourceNode binding = correlated == null ? null : correlated.binding;
@@ -2693,8 +2797,11 @@ public class DmlLineage {
                 throw new AmbiguousColumnException(normalizeIdentifier(rawName),
                         displayNames(all));
             }
-            addOuterColumnMapping(owners.get(0), resolveOuterColumn(owners.get(0), rawName),
-                    target, targetName, position);
+            Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
+                    : null;
+            addOuterColumnMapping(owners.get(0),
+                    resolveOuterColumn(owners.get(0), rawName), target, targetName,
+                    position, quoted);
             return;
         }
         if (unknown.size() == 1) {
@@ -2708,9 +2815,12 @@ public class DmlLineage {
         if (hasLateralAncestorScope()) {
             List<SourceTable> ancestors = resolveCorrelatedUnqualified(rawName);
             List<SourceTable> mapped = new ArrayList<>();
+            Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
+                    : null;
             for (SourceTable source : ancestors) {
                 String column = resolveOuterColumn(source, rawName);
-                addOuterColumnMapping(source, column, target, targetName, position);
+                addOuterColumnMapping(source, column, target, targetName, position,
+                        quoted);
                 mapped.add(source);
             }
             if (!mapped.isEmpty()) {
@@ -4943,6 +5053,13 @@ public class DmlLineage {
         return candidates;
     }
 
+    private boolean lateralScopeActive() {
+        int current = stackSources.size() - 1;
+        return current >= 0 && current < lateralScopes.size()
+                && Boolean.TRUE.equals(lateralScopes.get(current))
+                || hasLateralAncestorScope();
+    }
+
     private boolean hasLateralAncestorScope() {
         for (int frame = 0; frame < stackSources.size() - 1; frame++) {
             if (frame < lateralScopes.size()
@@ -5070,7 +5187,14 @@ public class DmlLineage {
         if (owner == null) {
             return null;
         }
+        String rawOwner = owner.toString();
+        String ownerKey = qualifiedKey(rawOwner);
         SourceTable direct = findByOwner(owner);
+        if (direct != null && lateralScopeActive() && direct.alias != null
+                && !qualifiedKey(direct.alias).equals(ownerKey)) {
+            // Inside a LATERAL body an alias hides the original table name.
+            direct = null;
+        }
         if (direct != null) {
             return new CorrelatedOwner(direct, null);
         }
@@ -5078,8 +5202,6 @@ public class DmlLineage {
         if (directBinding != null) {
             return new CorrelatedOwner(null, directBinding);
         }
-        String rawOwner = owner.toString();
-        String ownerKey = qualifiedKey(rawOwner);
         String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
         String aliasKey = isSingleSegmentName(rawOwner) ? identifierKey(rawOwner) : null;
         for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
@@ -5104,6 +5226,31 @@ public class DmlLineage {
                         && matchesOwner(source, ownerKey, ownerParts)) {
                     return new CorrelatedOwner(source, null);
                 }
+            }
+        }
+        return null;
+    }
+
+    private SourceTable findVisibleOwnerStrict(SQLExpr owner) {
+        if (owner == null) {
+            return null;
+        }
+        String rawOwner = owner.toString();
+        String ownerKey = qualifiedKey(rawOwner);
+        for (SourceTable source : visibleSources()) {
+            boolean matched;
+            if (source.alias != null) {
+                // An alias hides the original table name.
+                matched = qualifiedKey(source.alias).equals(ownerKey);
+            } else {
+                matched = qualifiedKey(source.displayName).equals(ownerKey)
+                        || source.rawName != null
+                                && qualifiedKey(source.rawName).equals(ownerKey)
+                        || source.writtenName != null
+                                && qualifiedKey(source.writtenName).equals(ownerKey);
+            }
+            if (matched) {
+                return source;
             }
         }
         return null;
@@ -5526,7 +5673,27 @@ public class DmlLineage {
                                 startPosition + position + 1, span.source, span.temporary);
                     }
                 }
-                return Math.max(sourceWidth > 0 ? sourceWidth : maxSpanEnd(spans), 1);
+                int totalWidth = Math.max(sourceWidth > 0 ? sourceWidth
+                        : maxSpanEnd(spans), 1);
+                List<String> sourceNames = sourceColumnNames(source);
+                List<String> declaredTarget = currentTargetColumnAliases(targetTable);
+                for (int relative = 0; relative < totalWidth; relative++) {
+                    if (coveredBySpan(spans, relative)
+                            || !sourceOutputNameKnown(source, relative)
+                            || relative >= sourceNames.size()) {
+                        continue;
+                    }
+                    String name = sourceNames.get(relative);
+                    String outputName = declaredTarget != null
+                            && startPosition + relative < declaredTarget.size()
+                                    ? declaredTarget.get(startPosition + relative) : name;
+                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                            source.displayName + "." + renderIdentifier(name),
+                            targetTable + "." + renderIdentifier(outputName),
+                            startPosition + relative, source.temporary,
+                            targetTemporary));
+                }
+                return totalWidth;
             }
             boolean planAmbiguous = node != null && node.widthKnown
                     && hasAmbiguousOutput(node.plan, node.width);

@@ -44,6 +44,31 @@ public class LearnedMetadata {
     }
 
     /**
+     * Record an already normalized observation.
+     */
+    public synchronized void learnNormalized(String tableKey, String columnKey) {
+        if (tableKey == null || columnKey == null) {
+            return;
+        }
+        columns.computeIfAbsent(tableKey, key -> new LinkedHashSet<>()).add(columnKey);
+    }
+
+    /**
+     * Whether an already normalized observation exists.
+     */
+    public synchronized boolean hasNormalizedColumn(String tableKey, String columnKey) {
+        Set<String> known = tableKey == null ? null : columns.get(tableKey);
+        return known != null && columnKey != null && known.contains(columnKey);
+    }
+
+    /**
+     * Whether anything is known about an already normalized table key.
+     */
+    public synchronized boolean knowsNormalizedTable(String tableKey) {
+        return tableKey != null && columns.containsKey(tableKey);
+    }
+
+    /**
      * Whether {@code column} was observed on {@code table}.
      */
     public synchronized boolean hasColumn(String table, String column) {

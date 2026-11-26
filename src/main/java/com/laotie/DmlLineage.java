@@ -193,26 +193,33 @@ public class DmlLineage {
         }
         String key = learnedTableKey(source.rawName);
         pendingLearned.computeIfAbsent(key, k -> new LinkedHashSet<String>())
-                .add(columnName);
+                .add(identifierKey(columnName));
     }
 
     /**
      * The learned-metadata key of a table, scoped to the session database so that
      * observations from one database do not leak into another.
      */
-    private String learnedTableKey(String rawName) {
-        if (sessionDatabase == null && sessionSchema == null) {
-            return rawName;
+    private String joinIdentifierKeys(List<String> names) {
+        StringBuilder key = new StringBuilder();
+        for (String name : names) {
+            if (key.length() > 0) {
+                key.append('\u0001');
+            }
+            key.append(identifierKey(name));
         }
+        return key.toString();
+    }
+
+    private String learnedTableKey(String rawName) {
         StringBuilder key = new StringBuilder();
         if (sessionDatabase != null) {
-            key.append(sessionDatabase);
+            key.append(identifierKey(sessionDatabase)).append('\u0001');
         }
-        key.append('|');
         if (sessionSchema != null) {
-            key.append(sessionSchema);
+            key.append(sessionSchema).append('\u0001');
         }
-        key.append('|').append(rawName);
+        key.append(qualifiedKey(rawName));
         return key.toString();
     }
 
@@ -224,7 +231,7 @@ public class DmlLineage {
         if (learnedMetadata != null) {
             for (Map.Entry<String, Set<String>> entry : pendingLearned.entrySet()) {
                 for (String column : entry.getValue()) {
-                    learnedMetadata.learn(entry.getKey(), column);
+                    learnedMetadata.learnNormalized(entry.getKey(), column);
                 }
             }
         }
@@ -323,8 +330,10 @@ public class DmlLineage {
         this.context = working;
         this.tempTableNum = 0;
         this.sessionDatabase = session.database;
-        this.sessionSchema = session.schemas.isEmpty() ? null
-                : String.join("\u0001", session.schemas);
+        List<String> rawSchemas = session.rawSchemas.isEmpty()
+                ? session.schemas : session.rawSchemas;
+        this.sessionSchema = rawSchemas.isEmpty() ? null
+                : joinIdentifierKeys(rawSchemas);
         this.pendingLearned = new HashMap<>();
         try {
             init(true);
@@ -371,11 +380,26 @@ public class DmlLineage {
             }
             if (target.endsWith("search_path")) {
                 session.schemas = stringList(value);
+                session.rawSchemas = rawStringList(value);
             } else if (target.contains("schema")) {
                 session.schemas = new ArrayList<>();
                 session.schemas.add(normalizeIdentifier(value.toString()));
+                session.rawSchemas = new ArrayList<>();
+                session.rawSchemas.add(value.toString().trim());
             }
         }
+    }
+
+    private static List<String> rawStringList(SQLExpr value) {
+        List<String> values = new ArrayList<>();
+        if (value instanceof SQLListExpr) {
+            for (SQLExpr item : ((SQLListExpr) value).getItems()) {
+                values.add(item.toString().trim());
+            }
+        } else {
+            values.add(value.toString().trim());
+        }
+        return values;
     }
 
     private static List<String> stringList(SQLExpr value) {
@@ -1427,13 +1451,22 @@ public class DmlLineage {
                     plan = planFromSource(source);
                 } else {
                     SourceNode binding = joinBinding(owner);
-                    if (binding == null && context != null) {
+                    if (binding == null) {
                         throw new MetadataNotFoundException(owner == null
                                 ? "*" : owner.toString());
                     }
                     plan = binding == null ? new ArrayList<StarOutput>() : binding.plan;
                 }
-                int width = emitDetachedPlan(targetTable, plan, currentOrdinal);
+                List<SourceTable> planSources = new ArrayList<>();
+                if (source != null) {
+                    planSources.add(source);
+                } else {
+                    SourceNode binding = joinBinding(owner);
+                    if (binding != null) {
+                        planSources.addAll(binding.sources);
+                    }
+                }
+                int width = emitDetachedPlan(targetTable, plan, planSources, currentOrdinal);
                 return Math.max(width, 1);
             }
             SourceTable source = findByOwner(owner);
@@ -3173,7 +3206,8 @@ public class DmlLineage {
             }
             String targetTable = stackTargetTable.peek();
             if (detachedMetadata()) {
-                emitDetachedPlan(targetTable, planFromSource(source), currentOrdinal);
+                emitDetachedPlan(targetTable, planFromSource(source),
+                        java.util.Collections.singletonList(source), currentOrdinal);
                 return;
             }
             SourceNode expanded = currentExpandedSourceNodes.get(source);
@@ -3435,18 +3469,23 @@ public class DmlLineage {
      */
     private int emitDetachedStar(String targetTable, List<SourceTable> sources,
             int startPosition) {
-        return emitDetachedPlan(targetTable, currentStarPlan(sources), startPosition);
+        return emitDetachedPlan(targetTable, currentStarPlan(sources), sources,
+                startPosition);
     }
 
     private int emitDetachedPlan(String targetTable, List<StarOutput> plan,
-            int startPosition) {
+            List<SourceTable> sources, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean targetTemporary = tempTables.contains(targetTable);
         Set<String> used = new HashSet<>();
+        Set<SourceTable> covered = new HashSet<>();
         int position = startPosition;
         for (StarOutput output : plan) {
             if (output.sources.isEmpty()) {
                 continue;
+            }
+            for (StarColumn column : output.sources) {
+                covered.add(column.source);
             }
             String lockedName = lockedOutputName(targetTable, position);
             String name = lockedName != null ? lockedName
@@ -3498,6 +3537,15 @@ public class DmlLineage {
                 }
             }
             position++;
+        }
+        // An unknown side consumed by a USING merge still owns columns that the merge
+        // did not name: keep its table-level edge.
+        for (SourceTable source : sources) {
+            if (!covered.contains(source) && !sourceNamesKnown(source)) {
+                instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
+                        source.displayName, targetTable, position, source.temporary,
+                        targetTemporary));
+            }
         }
         return position - startPosition;
     }
@@ -3732,9 +3780,10 @@ public class DmlLineage {
                         }
                     } else if (learnedMetadata != null
                             && source.rawName != null
-                            && learnedMetadata.knowsTable(learnedTableKey(source.rawName))) {
-                        if (learnedMetadata.hasColumn(learnedTableKey(source.rawName),
-                                rawColumn)) {
+                            && learnedMetadata.knowsNormalizedTable(
+                                    learnedTableKey(source.rawName))) {
+                        if (learnedMetadata.hasNormalizedColumn(
+                                learnedTableKey(source.rawName), identifierKey(rawColumn))) {
                             owners.add(source);
                         }
                     } else {
@@ -3843,8 +3892,8 @@ public class DmlLineage {
                 continue;
             }
             String key = learnedTableKey(source.rawName);
-            if (learnedMetadata.hasColumn(key, rawColumn)
-                    || !learnedMetadata.knowsTable(key)) {
+            if (learnedMetadata.hasNormalizedColumn(key, identifierKey(rawColumn))
+                    || !learnedMetadata.knowsNormalizedTable(key)) {
                 refined.add(source);
             }
         }
@@ -4543,6 +4592,7 @@ public class DmlLineage {
         private String instance;
         private String database;
         private List<String> schemas = new ArrayList<>();
+        private List<String> rawSchemas = new ArrayList<>();
 
         private SessionState(MetadataContext base) {
             if (base != null) {

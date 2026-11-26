@@ -605,6 +605,72 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void columnAfterUnknownWildcardIsNotPositioned() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult afterStar = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("INSERT INTO t(c1,c2,c3) SELECT *,k FROM missing;");
+
+        assertEquals(0, afterStar.getFailures().size());
+        for (Instruction instruction : afterStar.getResults().get(0).getInstructions()) {
+            assertFalse("guessed position after wildcard: " + instruction,
+                    "t.c2".equals(instruction.getTo()));
+        }
+        assertTrue(afterStar.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
+
+        ScanResult beforeStar = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("INSERT INTO t(c1,c2,c3) SELECT k,* FROM missing;");
+        assertEquals(0, beforeStar.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.k"))),
+                beforeStar.getGraph().getSources(new Column("t.c1")));
+        assertTrue(beforeStar.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
+    }
+
+    @Test
+    public void usingMergeKeepsUnknownSideWildcard() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("SELECT * FROM missing RIGHT JOIN a USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.v"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.v")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.*")));
+    }
+
+    @Test
+    public void quotedSearchPathKeepsCaseInTheLearningKey() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE dummy (x INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), inferring()).scan(
+                "SET search_path TO \"S1\"; SELECT p.c1,q.c2 FROM p,q;"
+                        + " SET search_path TO s1; SELECT c1 FROM p,q;");
+
+        assertTrue(result.getResults().get(3).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void unboundStarAliasWithoutCatalogIsRejected() {
+        ScanResult result = LineageScanner.withoutMetadata(optional())
+                .scan("SELECT z.* FROM a; SELECT k FROM a;");
+
+        assertEquals(2, result.getResults().size());
+        assertTrue(result.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+        assertTrue(result.getResults().get(0).getInstructions().isEmpty());
+        assertNull(result.getResults().get(1).getError());
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

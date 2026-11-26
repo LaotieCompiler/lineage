@@ -291,12 +291,20 @@ public class Instruction {
             putTempColumns(tempColumns, targetTable, start, targets);
         }
 
+        int firstUnknown = -1;
+        for (int i = 0; i < fromColumns.size(); i++) {
+            if (fromColumns.get(i) == null
+                    || unknownPositions != null && unknownPositions.contains(i)) {
+                firstUnknown = i;
+                break;
+            }
+        }
         int size = Math.min(fromColumns.size(), targets.size());
         for (int i = 0; i < size; i++) {
             Column from = fromColumns.get(i);
-            if (from == null) {
-                // This position is an unresolved wildcard; the table-level edge above
-                // already covers it.
+            if (from == null || firstUnknown >= 0 && i > firstUnknown) {
+                // This position follows an unresolved wildcard whose width is unknown,
+                // so a column-level edge would be a guess.
                 continue;
             }
             result.add(new Instruction(OperationType.COLUMN_MAPPING,

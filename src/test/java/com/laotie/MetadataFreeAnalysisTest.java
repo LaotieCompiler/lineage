@@ -634,7 +634,7 @@ public class MetadataFreeAnalysisTest {
                 .scan("INSERT INTO t(c1,c2,c3) SELECT k,* FROM missing;");
         assertEquals(0, beforeStar.getFailures().size());
         assertTrue(beforeStar.getGraph().getSources(new Column("t.c1"))
-                .contains(new Column("missing.*")));
+                .contains(new Column("missing.k")));
         assertTrue(beforeStar.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
     }
 
@@ -1116,6 +1116,62 @@ public class MetadataFreeAnalysisTest {
         ScanResult result = LineageScanner.withMetadata(
                 MetadataContext.of(catalog), optional()).scan(
                 "INSERT INTO \"a\" SELECT k FROM b; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void insertWildcardContributionOnlyAffectsUnknownPositions() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT b.k, missing.* FROM b, missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+        assertTrue(result.getGraph().getSources(new Column("t.*"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void parenthesizedQuotedTableKeepsIdentity() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO \"x(y)\" SELECT * FROM missing;"
+                        + " SELECT * FROM \"x(y)\";");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.*"))
+                .contains(new Column("missing.*")));
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(new Column("x.*")));
+    }
+
+    @Test
+    public void postgresUnquotedCaseIsEquivalent() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO A SELECT k FROM b; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void aliasReadUsesPhysicalIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t1 SELECT k FROM b; SELECT x.k FROM t1 AS x;");
 
         assertEquals(0, result.getFailures().size());
         assertTrue(result.getGraph().getSources(Column.temporary("stmt1.temp0.k"))

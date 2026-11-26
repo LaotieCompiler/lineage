@@ -57,6 +57,7 @@ public class LineageGraph {
     public void buildByResults(List<LineageResult> results) {
         init();
         Map<String, Set<String>> populatedColumns = new HashMap<>();
+        java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
             LineageResult result = results.get(i);
             if (result.getError() != null) {
@@ -85,8 +86,11 @@ public class LineageGraph {
                             recordPopulatedColumns(populatedColumns, toReference,
                                     instruction.getPopulatedColumns());
                             if (!to.isTemporary()) {
-                                linkPopulatedColumns(to, from, instruction.getPopulatedColumns(),
-                                        prefix);
+                                Column target = to;
+                                Column source = from;
+                                String columns = instruction.getPopulatedColumns();
+                                pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
+                                        source, columns, prefix));
                             }
                         } else {
                             populatedColumns.computeIfAbsent(to.getTableName(),
@@ -114,6 +118,9 @@ public class LineageGraph {
                     reverseGraph.addEdge(to, from);
                 }
             }
+        }
+        for (Runnable link : pendingWildcardLinks) {
+            link.run();
         }
         attachTableWildcards(populatedColumns);
     }
@@ -166,9 +173,15 @@ public class LineageGraph {
             Column columnVertex = new Column(target.getTableName(), column);
             reverseGraph.addVertex(columnVertex);
             reverseGraph.addVertex(sourceWildcard);
-            if (!columnVertex.equals(sourceWildcard)) {
-                reverseGraph.addEdge(columnVertex, sourceWildcard);
+            if (columnVertex.equals(sourceWildcard)) {
+                continue;
             }
+            if (reverseGraph.outDegreeOf(columnVertex) > 0) {
+                // This column already has a precise source; the wildcard must not
+                // claim it when it belongs to a later, unknown position.
+                continue;
+            }
+            reverseGraph.addEdge(columnVertex, sourceWildcard);
         }
     }
 

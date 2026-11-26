@@ -3637,14 +3637,16 @@ public class DmlLineage {
             boolean quoted = MetadataCatalog.isQuotedIdentifier(part);
             String name = MetadataCatalog.normalizeIdentifier(part);
             if (!quoted) {
-                // Unquoted references keep their spelling: the dialect already treats
-                // them equivalently.
-                reference.append(name);
+                // PostgreSQL folds unquoted identifiers to lower case, so A and a are
+                // the same table. Other dialects keep their spelling here.
+                reference.append(currentDialect() == DbType.postgresql
+                        ? name.toLowerCase() : name);
                 continue;
             }
             // A quoted identifier that folds to itself is the same as the unquoted
             // spelling (PostgreSQL "a" and a); one that does not is a distinct name.
-            boolean folds = !name.contains(".") && name.equals(foldName(name));
+            boolean special = name.contains(".") || name.contains("(") || name.contains(")");
+            boolean folds = !special && name.equals(foldName(name));
             reference.append(folds ? name : part);
         }
         return reference.toString();
@@ -4178,6 +4180,8 @@ public class DmlLineage {
     }
 
     private void addColumnMapping(SourceTable source, String columnName) {
+        String sourceName = detachedMetadata() && !source.temporary
+                ? lineageTableName(source) : source.displayName;
         if (source.wildcardContribution && source.temporary) {
             // Reading one named column from a derived table that also carries unknown
             // rows must not cut the table-level lineage.
@@ -4202,12 +4206,12 @@ public class DmlLineage {
                     break;
                 }
             }
-            addColumnMapping(source.displayName,
+            addColumnMapping(sourceName,
                     canonical == null ? normalizeIdentifier(columnName) : canonical,
                     source.temporary, null);
             return;
         }
-        addColumnMapping(source.displayName, columnName, source.temporary, source.metadataTable);
+        addColumnMapping(sourceName, columnName, source.temporary, source.metadataTable);
     }
 
     private void addColumnMapping(String sourceTable, String columnName,

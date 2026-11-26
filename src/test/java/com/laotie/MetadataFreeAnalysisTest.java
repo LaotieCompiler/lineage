@@ -464,6 +464,87 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void partialTemporaryWithTrailingProjectionDoesNotFailScan() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT); CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT a.k AS c,b.k AS c FROM a,b) SELECT q.*,1 AS d FROM q;"
+                        + " SELECT k FROM a;");
+
+        assertEquals(2, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(
+                Column.temporary("stmt0.temp0.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
+    public void declaredStarAliasesRemainResolvable() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("WITH q(z,v) AS (SELECT * FROM a) SELECT q.z FROM q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.z")));
+    }
+
+    @Test
+    public void unionStarKeepsLockedNameResolvable() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT, v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT k AS z,v FROM a UNION ALL SELECT * FROM a)"
+                        + " SELECT q.z FROM q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.z")));
+    }
+
+    @Test
+    public void insertColumnListWithoutCatalogKeepsTableVertex() {
+        ScanResult result = LineageScanner.withoutMetadata(optional())
+                .scan("INSERT INTO t(c1) SELECT * FROM missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("missing.*"))),
+                result.getGraph().getSources(new Column("t.*")));
+    }
+
+    @Test
+    public void mergedUsingOutputIsNotAmbiguousWithUnknownSide() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("SELECT k FROM missing RIGHT JOIN a USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void learnedMetadataIsScopedToTheWholeSearchPath() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE dummy (x INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), inferring()).scan(
+                "SET search_path TO first,s1; SELECT p.c1,q.c2 FROM p,q;"
+                        + " SET search_path TO first,s2; SELECT c1 FROM p,q;");
+
+        assertTrue(result.getResults().get(3).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

@@ -72,7 +72,9 @@ public class LineageGraph {
                     // A wildcard whose columns are unknown stays a table-level edge.
                     Column from = wildcardColumn(instruction.getFrom(), prefix,
                             instruction.isFromTemporary());
-                    Column to = wildcardColumn(instruction.getTo(), prefix,
+                    String toReference = instruction.getWildcardTable() != null
+                            ? instruction.getWildcardTable() : instruction.getTo();
+                    Column to = wildcardColumn(toReference, prefix,
                             instruction.isToTemporary());
                     reverseGraph.addVertex(from);
                     reverseGraph.addVertex(to);

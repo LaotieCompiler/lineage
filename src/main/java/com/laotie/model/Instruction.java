@@ -35,6 +35,12 @@ public class Instruction {
     boolean fromTemporary;
     boolean toTemporary;
 
+    /**
+     * For a wildcard whose {@link #to} carries an explicit column list, the table the
+     * edge really points at. Null when {@link #to} is already a table identity.
+     */
+    String wildcardTable;
+
     public enum OperationType {
         COLUMN_MAPPING, // select tb.col as A
         EXPR_MAPPING, // select tb.col as A
@@ -174,11 +180,12 @@ public class Instruction {
             // The source columns are unknown: keep the wildcard so that the table-level
             // edge survives instead of being dropped. An explicit target column list is
             // not a table identity, so the edge points at the target table.
-            int lparen = findColumnListStart(toTable);
-            if (lparen > 0) {
-                result.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable,
-                        toTable.substring(0, lparen), instruction.getOrdinal(),
-                        instruction.isFromTemporary(), instruction.isToTemporary()));
+            if (instruction.getWildcardTable() != null) {
+                Instruction edge = new Instruction(OperationType.COLUMNS_INJECT, fromTable,
+                        instruction.getWildcardTable(), instruction.getOrdinal(),
+                        instruction.isFromTemporary(), instruction.isToTemporary());
+                edge.setWildcardTable(instruction.getWildcardTable());
+                result.add(edge);
             } else {
                 result.add(instruction);
             }
@@ -206,7 +213,18 @@ public class Instruction {
         if (instruction.isToTemporary() && explicitTargets.isEmpty()
                 && instruction.getOrdinal() >= 0) {
             List<String> named = targetOutputs.get(targetTable);
-            if (named != null && instruction.getOrdinal() >= named.size()) {
+            int start = instruction.getOrdinal();
+            boolean namesComplete = named == null
+                    || start + fromColumns.size() <= named.size();
+            if (namesComplete && named != null) {
+                for (int i = 0; i < fromColumns.size(); i++) {
+                    if (named.get(start + i) == null) {
+                        namesComplete = false;
+                        break;
+                    }
+                }
+            }
+            if (!namesComplete) {
                 // The projection's target names are not all known: keep the wildcard
                 // rather than inventing positional names.
                 result.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable,

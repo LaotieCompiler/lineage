@@ -8,6 +8,7 @@ package com.laotie;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -87,6 +88,8 @@ public class DmlLineage {
     private Stack<List<SourceTable>> stackSources;
     private Stack<Map<String, List<SourceTable>>> stackUsing;
     private Stack<Map<String, SourceNode>> stackJoinBindings;
+    private Map<Map<String, List<SourceTable>>, Map<String, List<SourceTable>>>
+            usingParticipantsByIdentity;
     private Stack<Set<SourceTable>> stackHiddenSources;
 
     private boolean inTargetExpression = false;
@@ -198,14 +201,18 @@ public class DmlLineage {
      * observations from one database do not leak into another.
      */
     private String learnedTableKey(String rawName) {
+        if (sessionDatabase == null && sessionSchema == null) {
+            return rawName;
+        }
         StringBuilder key = new StringBuilder();
         if (sessionDatabase != null) {
-            key.append(sessionDatabase).append('.');
+            key.append(sessionDatabase);
         }
+        key.append('|');
         if (sessionSchema != null) {
-            key.append(sessionSchema).append('.');
+            key.append(sessionSchema);
         }
-        key.append(rawName);
+        key.append('|').append(rawName);
         return key.toString();
     }
 
@@ -316,7 +323,8 @@ public class DmlLineage {
         this.context = working;
         this.tempTableNum = 0;
         this.sessionDatabase = session.database;
-        this.sessionSchema = session.schemas.isEmpty() ? null : session.schemas.get(0);
+        this.sessionSchema = session.schemas.isEmpty() ? null
+                : String.join(",", session.schemas);
         this.pendingLearned = new HashMap<>();
         try {
             init(true);
@@ -1755,9 +1763,22 @@ public class DmlLineage {
                 plan = mergeStarPlan(left.plan, right.plan, join.getJoinType(),
                         join.getUsing(), leftNamesKnown, rightNamesKnown,
                         left.sources, right.sources, left.widthKnown);
+                Map<String, List<SourceTable>> participants =
+                        usingParticipantsByIdentity.computeIfAbsent(using,
+                                key -> new HashMap<String, List<SourceTable>>());
                 for (SQLExpr expr : join.getUsing()) {
                     String column = identifierKey(expr.toString());
                     using.put(column, planSourcesForKey(plan, column));
+                    List<SourceTable> sides = new ArrayList<>(
+                            planAllSourcesForKey(left.plan, column));
+                    addSources(sides, planAllSourcesForKey(right.plan, column));
+                    if (!leftNamesKnown) {
+                        addUnknownSources(sides, left.sources);
+                    }
+                    if (!rightNamesKnown) {
+                        addUnknownSources(sides, right.sources);
+                    }
+                    participants.put(column, sides);
                 }
             } else {
                 plan = new ArrayList<>();
@@ -2317,6 +2338,49 @@ public class DmlLineage {
             }
         }
         return count;
+    }
+
+    /**
+     * Every source that takes part in a USING merge, including sides whose column names
+     * are unknown. Such sides are merged, not independent candidates.
+     */
+    private static void addSources(List<SourceTable> target, List<SourceTable> extra) {
+        for (SourceTable source : extra) {
+            if (!target.contains(source)) {
+                target.add(source);
+            }
+        }
+    }
+
+    private void addUnknownSources(List<SourceTable> target, List<SourceTable> candidates) {
+        for (SourceTable source : candidates) {
+            if (!sourceColumnsKnown(source) && !target.contains(source)) {
+                target.add(source);
+            }
+        }
+    }
+
+    private static List<SourceTable> planAllSourcesForKey(List<StarOutput> plan,
+            String key) {
+        for (StarOutput output : plan) {
+            boolean matched = false;
+            for (StarColumn column : output.sources) {
+                if (column.key.equals(key)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) {
+                List<SourceTable> sources = new ArrayList<>();
+                for (StarColumn column : output.sources) {
+                    if (!sources.contains(column.source)) {
+                        sources.add(column.source);
+                    }
+                }
+                return sources;
+            }
+        }
+        return new ArrayList<>();
     }
 
     private static List<SourceTable> planSourcesForKey(List<StarOutput> plan, String key) {
@@ -3409,7 +3473,18 @@ public class DmlLineage {
                             targetTable + "." + renderIdentifier(name), position,
                             column.source.temporary, targetTemporary));
                 }
-                setTargetOutput(targetTable, position, name, output.sources.get(0).key);
+                String outputKey;
+                if (lockedName != null) {
+                    outputKey = lockedOutputKey(targetTable, position);
+                } else if (declared != null && position < declared.size()) {
+                    List<String> declaredKeys = currentDeclaredKeys(targetTable);
+                    outputKey = declaredKeys != null && position < declaredKeys.size()
+                            ? declaredKeys.get(position) : identifierKey(name);
+                } else {
+                    outputKey = output.sources.get(0).key;
+                }
+                setTargetOutput(targetTable, position, name,
+                        outputKey == null ? identifierKey(name) : outputKey);
                 markOutputNameKnown(targetTable, position, true);
             } else {
                 for (SourceTable source : starOutputSources(output)) {
@@ -3558,6 +3633,11 @@ public class DmlLineage {
                     // unless the learned metadata proves it cannot.
                     List<SourceTable> unknown = refineWithLearned(
                             unknownColumnSources(sources, matchedSources), rawColumn);
+                    Map<String, List<SourceTable>> participants = stackUsing.isEmpty()
+                            ? null : usingParticipantsByIdentity.get(stackUsing.peek());
+                    if (participants != null && participants.containsKey(columnKey)) {
+                        unknown.removeAll(participants.get(columnKey));
+                    }
                     if (!unknown.isEmpty()) {
                         throw new AmbiguousColumnException(columnName,
                                 displayNames(allSources(matchedSources, unknown)));
@@ -3633,9 +3713,8 @@ public class DmlLineage {
 
         Map<String, List<SourceTable>> using = stackUsing.isEmpty()
                 ? null : stackUsing.peek();
-        String usingKey = columnKey;
-        if (using != null && using.containsKey(usingKey)) {
-            return using.get(usingKey);
+        if (using != null && using.containsKey(columnKey)) {
+            return using.get(columnKey);
         }
 
         if (context == null) {
@@ -4041,9 +4120,11 @@ public class DmlLineage {
                 String colStr = columns.stream()
                         .map(column -> renderInsertColumn(insertMetadata, insertTable, column))
                         .collect(Collectors.joining(","));
-                instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
+                Instruction insertEdge = new Instruction(OperationType.COLUMNS_INJECT,
                         fromTable, String.format("%s(%s)", tableName, colStr), -1,
-                        fromTemporary, false));
+                        fromTemporary, false);
+                insertEdge.setWildcardTable(tableName);
+                instructions.add(insertEdge);
             } else {
                 instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
                         fromTable, tableName, -1, fromTemporary, false));
@@ -4223,6 +4304,7 @@ public class DmlLineage {
         stackSources = new Stack<>();
         stackUsing = new Stack<>();
         stackJoinBindings = new Stack<>();
+        usingParticipantsByIdentity = new IdentityHashMap<>();
         stackHiddenSources = new Stack<>();
         inTargetExpression = false;
         currentOrdinal = -1;

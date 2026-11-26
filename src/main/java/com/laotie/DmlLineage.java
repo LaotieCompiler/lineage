@@ -704,6 +704,40 @@ public class DmlLineage {
                     cteScopes.peek().put(identifierKey(alias), target);
                 }
             }
+            // A sibling's columns are visible to earlier bodies too, so derive the
+            // names that can be known statically before any body is analyzed.
+            Map<String, List<String>> nameScope = new HashMap<>();
+            for (int pass = 0; pass < 2; pass++) {
+                for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
+                    String alias = entry.getAlias();
+                    if (alias == null) {
+                        continue;
+                    }
+                    List<String> names = staticOutputNames(
+                            entry.getSubQuery().getQuery(), nameScope);
+                    if (names != null) {
+                        nameScope.put(identifierKey(alias), names);
+                    }
+                }
+            }
+            for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
+                String alias = entry.getAlias();
+                List<String> names = alias == null ? null
+                        : nameScope.get(identifierKey(alias));
+                String target = prebound.get(entry);
+                if (names != null && target != null && !names.contains(null)) {
+                    for (int i = 0; i < names.size(); i++) {
+                        setTargetOutput(target, i, names.get(i),
+                                identifierKey(names.get(i)));
+                        markOutputNameKnown(target, i, true);
+                    }
+                    // Make the sibling's shape visible before its body is analyzed;
+                    // recordTargetShape overwrites this with the analyzed result.
+                    targetWidthKnown.put(target, true);
+                    targetNamesKnown.put(target, true);
+                    targetMinWidth.put(target, names.size());
+                }
+            }
         }
         for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
             String alias = entry.getAlias();
@@ -870,8 +904,159 @@ public class DmlLineage {
                 }
                 scope.put(aliasKey, width);
             }
+            if (recursive) {
+                // Resolve forward references that were still unknown in the first pass.
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    String alias = entry.getAlias();
+                    if (alias == null) {
+                        continue;
+                    }
+                    int width = staticSelectWidth(entry.getSubQuery(), scope);
+                    if (width >= 0) {
+                        scope.put(identifierKey(alias), width);
+                    }
+                }
+            }
         }
         return staticUnionWidth(select.getQuery(), scope);
+    }
+
+    /**
+     * Column names a query will produce when they can be derived without analyzing
+     * rows, used to pre-bind forward-referenced recursive CTEs.
+     */
+    private List<String> staticOutputNames(SQLSelectQuery query,
+            Map<String, List<String>> scope) {
+        if (query instanceof SQLSelectQueryBlock) {
+            SQLSelectQueryBlock block = (SQLSelectQueryBlock) query;
+            List<String> names = new ArrayList<>();
+            for (SQLSelectItem item : block.getSelectList()) {
+                SQLExpr expr = item.getExpr();
+                if (expr == null) {
+                    return null;
+                }
+                if (item.getAlias() != null) {
+                    names.add(canonicalIdentifier(item.getAlias()));
+                } else if (expr instanceof SQLIdentifierExpr) {
+                    names.add(canonicalIdentifier(((SQLIdentifierExpr) expr).getName()));
+                } else if (expr instanceof SQLPropertyExpr
+                        && !isStarProperty(expr)) {
+                    names.add(canonicalIdentifier(((SQLPropertyExpr) expr).getName()));
+                } else if (expr instanceof SQLAllColumnExpr) {
+                    List<String> star = staticFromNames(block.getFrom(), scope);
+                    if (star == null) {
+                        return null;
+                    }
+                    names.addAll(star);
+                } else if (isStarProperty(expr)) {
+                    String owner = ((SQLPropertyExpr) expr).getOwner().toString();
+                    SQLTableSource table = isSingleSegmentName(owner)
+                            ? findTableSource(block.getFrom(), lastSegment(owner))
+                            : findQualifiedTable(block.getFrom(), qualifiedKey(owner),
+                                    false, java.util.Collections.<String, Integer>emptyMap());
+                    List<String> star = table == null ? null
+                            : staticTableNames(table, scope);
+                    if (star == null) {
+                        return null;
+                    }
+                    names.addAll(star);
+                } else {
+                    names.add(null);
+                }
+            }
+            return names;
+        }
+        if (query instanceof SQLUnionQuery) {
+            List<String> left = staticOutputNames(((SQLUnionQuery) query).getLeft(), scope);
+            return left;
+        }
+        return null;
+    }
+
+    private List<String> staticFromNames(SQLTableSource from,
+            Map<String, List<String>> scope) {
+        if (from == null) {
+            return null;
+        }
+        if (from instanceof SQLExprTableSource) {
+            return staticSourceNames((SQLExprTableSource) from, scope);
+        }
+        if (from instanceof SQLSubqueryTableSource) {
+            return ((SQLSubqueryTableSource) from).getAlias() != null
+                    ? staticTableNames(from, scope)
+                    : staticOutputNames(((SQLSubqueryTableSource) from).getSelect().getQuery(),
+                            scope);
+        }
+        if (from instanceof SQLUnionQueryTableSource) {
+            return staticOutputNames(((SQLUnionQueryTableSource) from).getUnion(), scope);
+        }
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            List<String> left = staticFromNames(join.getLeft(), scope);
+            List<String> right = staticFromNames(join.getRight(), scope);
+            if (left == null || right == null) {
+                return null;
+            }
+            List<String> names = new ArrayList<>(left);
+            if (join.getUsing() != null) {
+                for (SQLExpr expr : join.getUsing()) {
+                    String key = identifierKey(expr.toString());
+                    for (int i = right.size() - 1; i >= 0; i--) {
+                        if (key.equals(identifierKey(right.get(i)))) {
+                            right = new ArrayList<>(right);
+                            right.remove(i);
+                            break;
+                        }
+                    }
+                }
+            }
+            names.addAll(right);
+            return names;
+        }
+        return null;
+    }
+
+    private List<String> staticTableNames(SQLTableSource table,
+            Map<String, List<String>> scope) {
+        if (table instanceof SQLExprTableSource) {
+            return staticSourceNames((SQLExprTableSource) table, scope);
+        }
+        if (table instanceof SQLSubqueryTableSource) {
+            return staticOutputNames(
+                    ((SQLSubqueryTableSource) table).getSelect().getQuery(), scope);
+        }
+        if (table instanceof SQLUnionQueryTableSource) {
+            return staticOutputNames(((SQLUnionQueryTableSource) table).getUnion(), scope);
+        }
+        return null;
+    }
+
+    private List<String> staticSourceNames(SQLExprTableSource table,
+            Map<String, List<String>> scope) {
+        String name = extractTableName(table);
+        if (name == null) {
+            return null;
+        }
+        if (isSingleSegmentName(name)) {
+            String key = identifierKey(name);
+            if (scope != null && scope.containsKey(key)) {
+                return scope.get(key);
+            }
+            if (findCteTarget(key) != null) {
+                return null;
+            }
+        }
+        if (context != null) {
+            TableLocation location = resolveMetadataTable(name);
+            if (location != null) {
+                List<String> names = new ArrayList<>();
+                for (Column column : location.getTable().getFields()) {
+                    names.add(column.getColumnName());
+                }
+                return names;
+            }
+        }
+        return null;
     }
 
     private int staticUnionWidth(SQLSelectQuery query, Map<String, Integer> scope) {

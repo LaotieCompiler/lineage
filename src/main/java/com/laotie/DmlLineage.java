@@ -64,9 +64,11 @@ import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
 import com.laotie.model.metadata.Column;
+import com.laotie.model.metadata.LearnedMetadata;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
 import com.laotie.model.metadata.MetadataContextHolder;
+import com.laotie.model.metadata.MetadataMode;
 import com.laotie.model.metadata.Table;
 import com.laotie.model.metadata.TableLocation;
 
@@ -120,25 +122,69 @@ public class DmlLineage {
     private final DbType dbType;
     private final boolean explicitDialect;
     private final MetadataContext explicitContext;
+    private final LineageOptions options;
+    private LearnedMetadata learnedMetadata;
 
     private MetadataContext context;
 
     public DmlLineage() {
-        this(DbType.mysql, false, null);
+        this(DbType.mysql, false, null, LineageOptions.defaults(), null);
     }
 
     public DmlLineage(DbType dbType) {
-        this(dbType, true, null);
+        this(dbType, true, null, LineageOptions.defaults(), null);
     }
 
     public DmlLineage(MetadataContext context) {
-        this(DbType.mysql, false, context);
+        this(DbType.mysql, false, context, LineageOptions.defaults(), null);
     }
 
-    private DmlLineage(DbType dbType, boolean explicitDialect, MetadataContext context) {
+    public DmlLineage(DbType dbType, LineageOptions options) {
+        this(dbType, true, null, options, null);
+    }
+
+    public DmlLineage(MetadataContext context, LineageOptions options) {
+        this(DbType.mysql, false, context, options, null);
+    }
+
+    public DmlLineage(LineageOptions options) {
+        this(DbType.mysql, false, null, options, null);
+    }
+
+    private DmlLineage(DbType dbType, boolean explicitDialect, MetadataContext context,
+            LineageOptions options, LearnedMetadata learnedMetadata) {
         this.dbType = dbType == null ? DbType.mysql : dbType;
         this.explicitDialect = explicitDialect;
         this.explicitContext = context;
+        this.options = options == null ? LineageOptions.defaults() : options;
+        this.learnedMetadata = learnedMetadata;
+    }
+
+    /**
+     * Whether sources without a known column set are analyzed without inventing column
+     * names.
+     */
+    private boolean detachedMetadata() {
+        return options.getMetadataMode() == MetadataMode.OPTIONAL;
+    }
+
+    /**
+     * Attach the session-scoped metadata learned from earlier statements.
+     */
+    public void setLearnedMetadata(LearnedMetadata learnedMetadata) {
+        this.learnedMetadata = learnedMetadata;
+    }
+
+    /**
+     * Remember that a column was referenced on a table, so that later statements can
+     * resolve an unqualified column against it.
+     */
+    private void learnColumn(SourceTable source, String columnName) {
+        if (learnedMetadata == null || source == null || source.temporary
+                || source.rawName == null || columnName == null) {
+            return;
+        }
+        learnedMetadata.learn(source.rawName, columnName);
     }
 
     /* ------------------------------------------------------------------ */
@@ -1910,6 +1956,9 @@ public class DmlLineage {
         if (!source.outputColumns.isEmpty()) {
             return source.outputKeys;
         }
+        if (detachedMetadata()) {
+            return java.util.Collections.emptyList();
+        }
         return java.util.Collections.singletonList(identifierKey("col1"));
     }
 
@@ -2469,11 +2518,11 @@ public class DmlLineage {
                     }
                 }
             }
-            throw new MetadataNotFoundException(written);
+            return missingTable(written);
         }
 
         if (filtered.isEmpty()) {
-            throw new MetadataNotFoundException(written);
+            return missingTable(written);
         }
         if (filtered.size() > 1) {
             List<String> names = new ArrayList<>();
@@ -2483,6 +2532,17 @@ public class DmlLineage {
             throw new AmbiguousTableException(written, names);
         }
         return filtered.get(0);
+    }
+
+    /**
+     * A table that is absent from the catalog is an error in strict mode; in optional mode
+     * it is analyzed without column information.
+     */
+    private TableLocation missingTable(String written) {
+        if (detachedMetadata()) {
+            return null;
+        }
+        throw new MetadataNotFoundException(written);
     }
 
     private static boolean isSingleSegmentName(String rawName) {
@@ -2740,6 +2800,10 @@ public class DmlLineage {
         if (!source.outputColumns.isEmpty()) {
             return source.outputColumns;
         }
+        if (detachedMetadata()) {
+            // The columns are unknown: do not invent names for them.
+            return java.util.Collections.emptyList();
+        }
         return java.util.Collections.singletonList("col1");
     }
 
@@ -2920,6 +2984,7 @@ public class DmlLineage {
         String rawName = identifier.getName();
         List<SourceTable> sources = resolveUnqualified(rawName);
         for (SourceTable source : sources) {
+            learnColumn(source, rawName);
             addColumnMapping(source, rawName);
         }
     }
@@ -3006,6 +3071,7 @@ public class DmlLineage {
                 && !source.outputKeys.contains(identifierKey(rawName))) {
             throw new ColumnNotFoundException(name, displayNames(currentSources()));
         }
+        learnColumn(source, rawName);
         addColumnMapping(source, rawName);
     }
 
@@ -3294,6 +3360,28 @@ public class DmlLineage {
         String columnName = normalizeIdentifier(rawColumn);
         String columnKey = identifierKey(rawColumn);
 
+        if (detachedMetadata() && learnedMetadata != null) {
+            // Learned metadata narrows the candidates: a table whose observed columns do
+            // not contain the column cannot own it.
+            List<SourceTable> learned = new ArrayList<>();
+            List<SourceTable> undecided = new ArrayList<>();
+            for (SourceTable source : sources) {
+                if (source.temporary || source.rawName == null) {
+                    undecided.add(source);
+                } else if (learnedMetadata.hasColumn(source.rawName, rawColumn)) {
+                    learned.add(source);
+                } else if (!learnedMetadata.knowsTable(source.rawName)) {
+                    undecided.add(source);
+                }
+            }
+            if (learned.size() == 1 && undecided.isEmpty()) {
+                return learned;
+            }
+            if (learned.size() > 1) {
+                throw new AmbiguousColumnException(columnName, displayNames(learned));
+            }
+        }
+
         if (context != null && !stackStarPlan.isEmpty() && !stackStarPlan.peek().isEmpty()) {
             List<StarOutput> matches = new ArrayList<>();
             List<SourceTable> matchedSources = new ArrayList<>();
@@ -3312,6 +3400,14 @@ public class DmlLineage {
                 }
             }
             if (matches.size() == 1) {
+                if (detachedMetadata()) {
+                    // A source whose column set is unknown may also own the column.
+                    List<SourceTable> unknown = unknownColumnSources(sources, matchedSources);
+                    if (!unknown.isEmpty()) {
+                        throw new AmbiguousColumnException(columnName,
+                                displayNames(allSources(matchedSources, unknown)));
+                    }
+                }
                 return matchedSources;
             }
             if (matches.size() > 1) {
@@ -3388,6 +3484,32 @@ public class DmlLineage {
         }
 
         if (context == null) {
+            if (detachedMetadata()) {
+                // Without metadata the column must be attributable to exactly one source.
+                List<SourceTable> owners = new ArrayList<>();
+                for (SourceTable source : sources) {
+                    if (source.outputNamesKnown) {
+                        if (source.outputKeys.contains(columnKey)) {
+                            owners.add(source);
+                        }
+                    } else if (learnedMetadata != null
+                            && source.rawName != null
+                            && learnedMetadata.knowsTable(source.rawName)) {
+                        if (learnedMetadata.hasColumn(source.rawName, rawColumn)) {
+                            owners.add(source);
+                        }
+                    } else {
+                        owners.add(source);
+                    }
+                }
+                if (owners.size() == 1) {
+                    return owners;
+                }
+                if (owners.size() > 1) {
+                    throw new AmbiguousColumnException(columnName, displayNames(owners));
+                }
+                throw new ColumnNotFoundException(columnName, displayNames(sources));
+            }
             // Without metadata, skip temporary sources whose known output list does not
             // contain the column; the first unknown source still accepts any column.
             for (SourceTable source : sources) {
@@ -3412,6 +3534,9 @@ public class DmlLineage {
                 if (source.outputKeys.contains(columnKey)) {
                     candidates.add(source);
                 }
+            } else if (detachedMetadata()) {
+                // The source has no known column set: it may own the column.
+                candidates.add(source);
             } else {
                 hasUnknownSource = true;
             }
@@ -3457,6 +3582,29 @@ public class DmlLineage {
             }
         }
         return true;
+    }
+
+    /**
+     * The sources whose column set is unknown, so that they may own any column.
+     */
+    private List<SourceTable> unknownColumnSources(List<SourceTable> sources,
+            List<SourceTable> excluded) {
+        List<SourceTable> unknown = new ArrayList<>();
+        for (SourceTable source : sources) {
+            if (excluded.contains(source) || sourceNamesKnown(source)) {
+                continue;
+            }
+            unknown.add(source);
+        }
+        return unknown;
+    }
+
+    private static List<SourceTable> allSources(List<SourceTable> first,
+            List<SourceTable> second) {
+        List<SourceTable> all = new ArrayList<>();
+        all.addAll(first);
+        all.addAll(second);
+        return all;
     }
 
     private boolean allSourceNamesKnown(List<SourceTable> sources) {
@@ -3974,12 +4122,23 @@ public class DmlLineage {
         private final List<Boolean> outputNameKnown;
         private final List<SourceTable> outputUnknownGroups;
         private final int minOutputColumns;
+        private final boolean wildcardOnly;
 
         private SourceTable(String displayName, String writtenName, String rawName, String alias,
                 Table metadataTable, boolean temporary, boolean outputWidthKnown,
                 boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
                 List<Boolean> outputNameKnown, int minOutputColumns,
                 List<SourceTable> outputUnknownGroups) {
+            this(displayName, writtenName, rawName, alias, metadataTable, temporary,
+                    outputWidthKnown, outputNamesKnown, outputColumns, outputKeys,
+                    outputNameKnown, minOutputColumns, outputUnknownGroups, false);
+        }
+
+        private SourceTable(String displayName, String writtenName, String rawName, String alias,
+                Table metadataTable, boolean temporary, boolean outputWidthKnown,
+                boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
+                List<Boolean> outputNameKnown, int minOutputColumns,
+                List<SourceTable> outputUnknownGroups, boolean wildcardOnly) {
             this.displayName = displayName;
             this.writtenName = writtenName;
             this.rawName = rawName;
@@ -3997,6 +4156,7 @@ public class DmlLineage {
             this.minOutputColumns = minOutputColumns;
             this.outputUnknownGroups = outputUnknownGroups == null
                     ? java.util.Collections.<SourceTable>emptyList() : outputUnknownGroups;
+            this.wildcardOnly = wildcardOnly;
         }
     }
 

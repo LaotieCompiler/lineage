@@ -67,6 +67,19 @@ public class LineageGraph {
             }
             String prefix = "stmt" + i + ".";
             for (Instruction instruction : instructions) {
+                if (instruction.getOperation() == OperationType.COLUMNS_INJECT) {
+                    // A wildcard whose columns are unknown stays a table-level edge.
+                    Column from = wildcardColumn(instruction.getFrom(), prefix,
+                            instruction.isFromTemporary());
+                    Column to = wildcardColumn(instruction.getTo(), prefix,
+                            instruction.isToTemporary());
+                    reverseGraph.addVertex(from);
+                    reverseGraph.addVertex(to);
+                    if (!from.equals(to)) {
+                        reverseGraph.addEdge(to, from);
+                    }
+                    continue;
+                }
                 if (instruction.getOperation() != OperationType.COLUMN_MAPPING) {
                     continue;
                 }
@@ -89,6 +102,22 @@ public class LineageGraph {
             return Column.temporary(prefix + reference);
         }
         return new Column(reference);
+    }
+
+    /**
+     * The vertex of a table-level wildcard: {@code db.schema.table.*}.
+     */
+    private static Column wildcardColumn(String reference, String prefix, boolean temporary) {
+        String target = reference;
+        int columns = target.indexOf('(');
+        if (columns > 0 && target.endsWith(")")) {
+            // An explicit target column list is not part of the table identity.
+            target = target.substring(0, columns);
+        }
+        String qualified = temporary ? prefix + target : target;
+        return temporary
+                ? Column.temporary(qualified + ".*")
+                : new Column(qualified + ".*");
     }
 
     public Set<Column> getSources(Column targetVertex) {

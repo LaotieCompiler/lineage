@@ -162,6 +162,11 @@ public class Instruction {
                 ? tempColumns.get(fromTable)
                 : physicalColumns(fromTable, context);
         if (fromColumns == null || fromColumns.isEmpty()) {
+            // The source columns are unknown: keep the wildcard so that the table-level
+            // edge survives instead of being dropped.
+            if (toTable.indexOf('(') < 0) {
+                result.add(instruction);
+            }
             return;
         }
 

@@ -57,6 +57,33 @@ All the features and test cases in `SelectLineageTest.java`.
 2. In the progress of parsing, it will generate metadata for middle table, save the infomation for checking in later.
 3. excute the origin instructions with metadata, get the full qualified column name for each column.
 
+#### analysis modes
+
+`LineageOptions` selects how missing metadata is treated:
+
+| mode | behavior |
+| --- | --- |
+| `STRICT` (default) | metadata is authoritative: a table missing from the catalog throws `MetadataNotFoundException`, an unmatched column throws `ColumnNotFoundException`, and an ambiguous column throws `AmbiguousColumnException` |
+| `OPTIONAL` | a table missing from the catalog is still analyzed: its wildcard stays a wildcard (`a.* -> t.*`) instead of being expanded into invented column names, and the table-level edge is kept in the graph. An ambiguous column still throws `AmbiguousColumnException` |
+
+```java
+// strict (default)
+new LineageScanner(context).scan(sqlLog);
+
+// tolerate missing tables, keep wildcards
+LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, false))
+        .scan(sqlLog);
+
+// tolerate missing tables and learn columns from earlier statements
+LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
+        .scan(sqlLog);
+```
+
+With inference enabled, a statement such as `select A.c1, B.c2 from A,B` records that `c1`
+belongs to `A` and `c2` belongs to `B`; a later `select c1 from A,B` resolves to `A.c1`
+instead of failing. Learned metadata is scoped to the scanner instance and never used to
+expand a wildcard.
+
 ### lineage graph
 
 1. build lineage graph by direct relations

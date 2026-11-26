@@ -6,6 +6,7 @@ import com.alibaba.druid.DbType;
 import com.laotie.model.LineageGraph;
 import com.laotie.model.LineageResult;
 import com.laotie.model.ScanResult;
+import com.laotie.model.metadata.LearnedMetadata;
 import com.laotie.model.metadata.MetadataContext;
 
 /**
@@ -14,37 +15,75 @@ import com.laotie.model.metadata.MetadataContext;
  * <p>
  * Statements are parsed independently; a failing statement is reported in its
  * {@link LineageResult} and does not stop the rest of the batch. All temporary nodes are
- * namespaced per statement, and wildcard expansion uses each statement's metadata snapshot.
+ * namespaced per statement, and wildcard instructions are expanded with each result's own
+ * metadata snapshot.
+ *
+ * <p>
+ * A scanner keeps the metadata it learned from earlier statements, so that a later statement
+ * can resolve an unqualified column against the tables that were observed before. The learned
+ * metadata is scoped to this scanner instance.
  */
 public class LineageScanner {
     private final DbType dbType;
     private final MetadataContext context;
+    private final LineageOptions options;
+    private final LearnedMetadata learnedMetadata;
 
     public LineageScanner() {
-        this(null, null);
+        this(null, null, LineageOptions.defaults());
     }
 
     public LineageScanner(DbType dbType) {
-        this(dbType, null);
+        this(null, dbType, LineageOptions.defaults());
     }
 
     public LineageScanner(MetadataContext context) {
-        this(null, context);
+        this(context, null, LineageOptions.defaults());
     }
 
-    private LineageScanner(DbType dbType, MetadataContext context) {
+    private LineageScanner(MetadataContext context, DbType dbType,
+            LineageOptions options) {
         this.dbType = dbType;
         this.context = context;
+        this.options = options == null ? LineageOptions.defaults() : options;
+        this.learnedMetadata = this.options.isInferMetadata()
+                ? new LearnedMetadata(dialectOf(context, dbType))
+                : null;
+    }
+
+    /**
+     * A scanner that analyzes with the given options and no metadata.
+     */
+    public static LineageScanner withoutMetadata(LineageOptions options) {
+        return new LineageScanner(null, null, options);
+    }
+
+    /**
+     * A scanner that analyzes with the given options and a metadata context.
+     */
+    public static LineageScanner withMetadata(MetadataContext context,
+            LineageOptions options) {
+        return new LineageScanner(context, null, options);
+    }
+
+    private static DbType dialectOf(MetadataContext context, DbType dbType) {
+        if (context != null && context.getCatalog() != null) {
+            return context.getCatalog().getDialect();
+        }
+        return dbType == null ? DbType.mysql : dbType;
     }
 
     public ScanResult scan(String sqlLog) {
         DmlLineage lineage;
         if (context != null) {
-            lineage = new DmlLineage(context);
+            lineage = new DmlLineage(context, options);
         } else if (dbType != null) {
-            lineage = new DmlLineage(dbType);
+            lineage = new DmlLineage(dbType, options);
         } else {
-            lineage = new DmlLineage();
+            lineage = new DmlLineage(options);
+        }
+        if (learnedMetadata != null) {
+            lineage.setLearnedMetadata(learnedMetadata);
         }
 
         List<LineageResult> results = lineage.parseScript(sqlLog);

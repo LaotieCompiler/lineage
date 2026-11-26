@@ -49,6 +49,32 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 6. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
 7. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
 
+### 元数据分析模式
+
+`LineageOptions` 控制元数据缺失时的行为：
+
+| 模式 | 行为 |
+| --- | --- |
+| `STRICT`（默认） | 元数据为准：catalog 中不存在的表抛 `MetadataNotFoundException`，无法匹配的列抛 `ColumnNotFoundException`，歧义列抛 `AmbiguousColumnException` |
+| `OPTIONAL` | catalog 中不存在的表仍参与分析：通配符保持通配符形态（`a.* -> t.*`），不编造列名，并在血缘图中保留表级边；歧义列仍抛 `AmbiguousColumnException` |
+
+```java
+// 严格模式（默认）
+new LineageScanner(context).scan(sqlLog);
+
+// 允许脱离元数据，通配符按通配符输出
+LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, false))
+        .scan(sqlLog);
+
+// 允许脱离元数据，并从历史语句中学习列归属
+LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
+        .scan(sqlLog);
+```
+
+开启推断后，`select A.c1, B.c2 from A,B` 会记录 `c1` 属于 `A`、`c2` 属于 `B`；之后
+`select c1 from A,B` 可解析为 `A.c1` 而不报错。学习结果只在当前 scanner 实例内生效，
+且不会用于展开通配符。
+
 ### 血缘地图
 
 1. 通过直接关系构建血缘地图

@@ -129,7 +129,7 @@ public class Column {
     }
 
     private static String renderIdentifier(String name) {
-        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+        if (name == null || "*".equals(name) || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             return name;
         }
         return "\"" + name.replace("\"", "\"\"") + "\"";

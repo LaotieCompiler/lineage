@@ -225,6 +225,130 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void learnedMetadataCannotOverrideCatalog() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (c1 INT, c2 INT);");
+        LineageScanner scanner = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), inferring());
+
+        ScanResult result = scanner.scan(
+                "SELECT a.c2,b.c1 FROM a,b; SELECT c1 FROM a,b;");
+
+        assertNull(result.getResults().get(0).getError());
+        assertTrue(result.getResults().get(1).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void failedStatementDoesNotTeachMetadata() {
+        ScanResult result = LineageScanner.withoutMetadata(inferring())
+                .scan("SELECT A.c1,B.c2,c3 FROM A,B,C,D; SELECT c1 FROM A,B;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+        assertTrue(result.getResults().get(1).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void learnedMetadataIsScopedToTheCurrentDatabase() {
+        ScanResult result = LineageScanner.withoutMetadata(inferring()).scan(
+                "USE db1; SELECT A.c1,B.c2 FROM A,B; USE db2; SELECT c1 FROM A,B;");
+
+        assertEquals(4, result.getResults().size());
+        assertNull(result.getResults().get(1).getError());
+        assertTrue(result.getResults().get(3).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void strictModeKeepsGraphUnchangedForWildcards() {
+        ScanResult result = new LineageScanner(DbType.postgresql)
+                .scan("SELECT * FROM a;");
+
+        assertTrue(result.getGraph().getReverseGraph().vertexSet().isEmpty());
+    }
+
+    @Test
+    public void optionalModeKeepsEveryUnknownSourceOfBareStar() {
+        ScanResult result = LineageScanner.withoutMetadata(optional())
+                .scan("SELECT * FROM a,b;");
+
+        assertEquals(0, result.getFailures().size());
+        List<Instruction> instructions = result.getResults().get(0).getInstructions();
+        assertEquals(2, instructions.size());
+        assertEquals("a", instructions.get(0).getFrom());
+        assertEquals("b", instructions.get(1).getFrom());
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(new Column("a.*")));
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(new Column("b.*")));
+    }
+
+    @Test
+    public void optionalModeKeepsJoinAliasWildcardSources() {
+        ScanResult result = LineageScanner.withoutMetadata(optional())
+                .scan("SELECT j.* FROM (a CROSS JOIN b) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        List<Instruction> instructions = result.getResults().get(0).getInstructions();
+        assertEquals(2, instructions.size());
+        assertEquals("a", instructions.get(0).getFrom());
+        assertEquals("b", instructions.get(1).getFrom());
+    }
+
+    @Test
+    public void optionalModeKeepsInsertTableEdge() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("INSERT INTO t(c1) SELECT * FROM missing;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(new Column("t.*")));
+        Set<Column> sources = result.getGraph().getSources(new Column("t.*"));
+        assertTrue(sources.contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void optionalModeToleratesPartialTemporaryColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("WITH q AS (SELECT *, c1 FROM missing) SELECT q.* FROM q;"
+                        + " SELECT c1 FROM t;");
+
+        assertEquals(2, result.getResults().size());
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getReverseGraph().containsVertex(new Column("missing.*")));
+    }
+
+    @Test
+    public void repeatedOutputNamesStayWildcard() {
+        ScanResult result = LineageScanner.withoutMetadata(optional())
+                .scan("WITH q AS (SELECT A.c1,B.c1 FROM A,B) SELECT q.* FROM q;");
+
+        assertEquals(0, result.getFailures().size());
+        List<Instruction> instructions = result.getResults().get(0).getInstructions();
+        assertEquals(OperationType.COLUMNS_INJECT,
+                instructions.get(instructions.size() - 1).getOperation());
+        assertFalse(result.getResults().get(0).getTargetOutputs()
+                .getOrDefault("temp0", java.util.Collections.<String>emptyList())
+                .contains("col2"));
+    }
+
+    @Test
+    public void wildcardAndQuotedStarColumnAreDistinctVertices() {
+        Column wildcard = new Column("target.*");
+        Column quoted = new Column("target.\"*\"");
+        assertTrue(wildcard.isWildcard());
+        assertFalse(quoted.isWildcard());
+        assertFalse(wildcard.equals(quoted));
+        assertEquals("target.*", wildcard.toString());
+        assertEquals("target.\"*\"", quoted.toString());
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

@@ -161,10 +161,25 @@ public class Instruction {
         List<Column> fromColumns = instruction.isFromTemporary()
                 ? tempColumns.get(fromTable)
                 : physicalColumns(fromTable, context);
-        if (fromColumns == null || fromColumns.isEmpty()) {
+        boolean partiallyKnown = false;
+        if (fromColumns != null) {
+            for (Column column : fromColumns) {
+                if (column == null) {
+                    partiallyKnown = true;
+                    break;
+                }
+            }
+        }
+        if (fromColumns == null || fromColumns.isEmpty() || partiallyKnown) {
             // The source columns are unknown: keep the wildcard so that the table-level
-            // edge survives instead of being dropped.
-            if (toTable.indexOf('(') < 0) {
+            // edge survives instead of being dropped. An explicit target column list is
+            // not a table identity, so the edge points at the target table.
+            int lparen = findColumnListStart(toTable);
+            if (lparen > 0) {
+                result.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable,
+                        toTable.substring(0, lparen), instruction.getOrdinal(),
+                        instruction.isFromTemporary(), instruction.isToTemporary()));
+            } else {
                 result.add(instruction);
             }
             return;

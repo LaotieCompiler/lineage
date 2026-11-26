@@ -67,7 +67,8 @@ public class LineageGraph {
             }
             String prefix = "stmt" + i + ".";
             for (Instruction instruction : instructions) {
-                if (instruction.getOperation() == OperationType.COLUMNS_INJECT) {
+                if (instruction.getOperation() == OperationType.COLUMNS_INJECT
+                        && result.isTableLevelWildcards()) {
                     // A wildcard whose columns are unknown stays a table-level edge.
                     Column from = wildcardColumn(instruction.getFrom(), prefix,
                             instruction.isFromTemporary());

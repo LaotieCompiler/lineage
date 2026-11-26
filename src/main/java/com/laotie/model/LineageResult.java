@@ -26,6 +26,7 @@ public class LineageResult {
     private final List<String> schemas;
     private final Set<String> temporaryTables;
     private final Map<String, List<String>> targetOutputs;
+    private final boolean tableLevelWildcards;
 
     public LineageResult(String sql, List<Instruction> instructions, MetadataContext context,
             Throwable error, String instance, String database, List<String> schemas) {
@@ -43,6 +44,14 @@ public class LineageResult {
     public LineageResult(String sql, List<Instruction> instructions, MetadataContext context,
             Throwable error, String instance, String database, List<String> schemas,
             Set<String> temporaryTables, Map<String, List<String>> targetOutputs) {
+        this(sql, instructions, context, error, instance, database, schemas, temporaryTables,
+                targetOutputs, false);
+    }
+
+    public LineageResult(String sql, List<Instruction> instructions, MetadataContext context,
+            Throwable error, String instance, String database, List<String> schemas,
+            Set<String> temporaryTables, Map<String, List<String>> targetOutputs,
+            boolean tableLevelWildcards) {
         this.sql = sql;
         this.instructions = Collections.unmodifiableList(new ArrayList<>(instructions));
         this.context = context;
@@ -54,6 +63,7 @@ public class LineageResult {
         this.schemas = Collections.unmodifiableList(new ArrayList<>(schemas));
         this.temporaryTables = Collections.unmodifiableSet(new HashSet<>(temporaryTables));
         this.targetOutputs = Collections.unmodifiableMap(copyOutputs(targetOutputs));
+        this.tableLevelWildcards = tableLevelWildcards;
     }
 
     private static Map<String, List<String>> copyOutputs(Map<String, List<String>> outputs) {
@@ -111,5 +121,12 @@ public class LineageResult {
 
     public Map<String, List<String>> getTargetOutputs() {
         return targetOutputs;
+    }
+
+    /**
+     * Whether unresolved wildcards are kept as table-level edges in the graph.
+     */
+    public boolean isTableLevelWildcards() {
+        return tableLevelWildcards;
     }
 }

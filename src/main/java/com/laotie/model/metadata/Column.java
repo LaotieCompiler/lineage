@@ -15,6 +15,7 @@ public class Column {
     private String dataType;
     private boolean temporary;
     private boolean quoted;
+    private boolean wildcard;
     private boolean immutable;
 
     /**
@@ -32,7 +33,10 @@ public class Column {
                 table.append(parts[i]);
             }
             this.tableName = table.toString();
-            this.columnName = MetadataCatalog.normalizeIdentifier(parts[parts.length - 1]);
+            String last = parts[parts.length - 1];
+            this.columnName = MetadataCatalog.normalizeIdentifier(last);
+            // An unquoted `*` denotes the table as a whole, not a column named `*`.
+            this.wildcard = "*".equals(last) && !MetadataCatalog.isQuotedIdentifier(last);
         } else {
             this.columnName = parts.length == 0 ? qualifiedName
                     : MetadataCatalog.normalizeIdentifier(parts[0]);
@@ -73,6 +77,13 @@ public class Column {
         return quoted;
     }
 
+    /**
+     * Whether this vertex denotes a whole table ({@code table.*}) rather than a column.
+     */
+    public boolean isWildcard() {
+        return wildcard;
+    }
+
     public void setQuoted(boolean quoted) {
         checkMutable();
         this.quoted = quoted;
@@ -110,6 +121,7 @@ public class Column {
         copy.dataType = dataType;
         copy.temporary = temporary;
         copy.quoted = quoted;
+        copy.wildcard = wildcard;
         copy.immutable = true;
         return copy;
     }
@@ -122,14 +134,23 @@ public class Column {
 
     @Override
     public String toString() {
-        if (tableName == null) {
-            return renderIdentifier(columnName);
+        String rendered = renderColumnName();
+        return tableName == null ? rendered : tableName + "." + rendered;
+    }
+
+    private String renderColumnName() {
+        if (wildcard) {
+            return "*";
         }
-        return tableName + "." + renderIdentifier(columnName);
+        if ("*".equals(columnName)) {
+            // A column literally named "*" must stay distinguishable from table.*.
+            return "\"*\"";
+        }
+        return renderIdentifier(columnName);
     }
 
     private static String renderIdentifier(String name) {
-        if (name == null || "*".equals(name) || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             return name;
         }
         return "\"" + name.replace("\"", "\"\"") + "\"";
@@ -145,12 +166,13 @@ public class Column {
         }
         Column column = (Column) o;
         return temporary == column.temporary
+                && wildcard == column.wildcard
                 && Objects.equals(tableName, column.tableName)
                 && Objects.equals(columnName, column.columnName);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(tableName, columnName, temporary);
+        return Objects.hash(tableName, columnName, temporary, wildcard);
     }
 }

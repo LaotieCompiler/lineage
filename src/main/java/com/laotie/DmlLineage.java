@@ -3797,7 +3797,8 @@ public class DmlLineage {
             }
             boolean planAmbiguous = node != null && node.widthKnown
                     && hasAmbiguousOutput(node.plan, node.width);
-            if (!planAmbiguous && node != null && node.widthKnown && !node.plan.isEmpty()) {
+            if (!planAmbiguous && !uncertainPosition && node != null
+                    && node.widthKnown && !node.plan.isEmpty()) {
                 int position = startPosition;
                 int limit = startPosition + node.width;
                 Map<SourceTable, Integer> seen = new java.util.IdentityHashMap<>();
@@ -3827,6 +3828,7 @@ public class DmlLineage {
                 }
                 return Math.max(node.width, 1);
             }
+            boolean ambiguousBounded = planAmbiguous && node != null && node.widthKnown;
             boolean allKnown = !planAmbiguous && !uncertainPosition
                     && !sources.isEmpty() && allWidthKnown(sources);
             int position = startPosition;
@@ -3838,7 +3840,11 @@ public class DmlLineage {
                         source.temporary, targetTemporary);
                 wildcard.setPositionalWildcard(true);
                 int sourceWidth = -1;
-                if (allKnown) {
+                if (ambiguousBounded) {
+                    // The projection's total width is fixed; each source keeps a
+                    // table-level claim on that whole range, and nothing beyond it.
+                    sourceWidth = Math.max(node.width, 1);
+                } else if (allKnown) {
                     sourceWidth = Math.max(sourceColumnNames(source).size(), 1);
                 } else if (sources.size() == 1 && currentStarBudget > 0) {
                     sourceWidth = currentStarBudget;
@@ -3859,7 +3865,7 @@ public class DmlLineage {
                 instructions.add(wildcard);
             }
             int advance;
-            if (planAmbiguous && node != null && node.widthKnown) {
+            if (ambiguousBounded) {
                 // The projection's total width is still fixed; only the per-position
                 // ownership is unknown, so later projections keep their place.
                 advance = node.width;
@@ -3868,7 +3874,7 @@ public class DmlLineage {
             } else {
                 advance = position - startPosition;
             }
-            return Math.max(advance, sources.size());
+            return Math.max(advance, ambiguousBounded ? 1 : sources.size());
         }
 
         Set<String> used = new HashSet<>();

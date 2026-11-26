@@ -1964,6 +1964,63 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void ambiguousStarStopsAtKnownProjectionWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3) SELECT *, 42 AS tail FROM ("
+                        + "SELECT * FROM m UNION ALL SELECT 1,2) AS q"
+                        + " LEFT JOIN b USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("b.*")));
+        // The star occupies exactly two columns; the constant tail must not inherit
+        // its table-level sources.
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("b.*")));
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("q.*")));
+    }
+
+    @Test
+    public void nestedUsingKeepsTrailingProjectionPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT); CREATE TABLE c (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3) SELECT *, b.k FROM (("
+                        + "SELECT * FROM m UNION ALL SELECT 1,2) AS q"
+                        + " LEFT JOIN b USING(k)) LEFT JOIN c USING(k);");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void joinAliasStarAfterOpenWildcardStaysTableLevel() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);"
+                + " CREATE TABLE b (k INT); CREATE TABLE c (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3,c4) SELECT a.*, j.*"
+                        + " FROM a CROSS JOIN (b CROSS JOIN c) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        // a has no catalog entry, so the join alias's start is unknown; its sources
+        // stay table-level instead of being pinned to the estimated position.
+        assertTrue(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("b.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c4"))
+                .contains(new Column("c.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

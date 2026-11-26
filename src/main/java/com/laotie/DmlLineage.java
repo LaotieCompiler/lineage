@@ -901,13 +901,13 @@ public class DmlLineage {
         } else {
             // A qualified owner must match the whole reference; taking the last
             // segment could select a same-named table from another schema.
-            table = findQualifiedTable(from, qualifiedKey(ownerName), false);
+            table = findQualifiedTable(from, qualifiedKey(ownerName), false, scope);
         }
         return table == null ? -1 : staticTableWidth(table, scope);
     }
 
     private SQLTableSource findQualifiedTable(SQLTableSource from, String key,
-            boolean hidden) {
+            boolean hidden, Map<String, Integer> scope) {
         if (from == null || hidden || key == null) {
             return null;
         }
@@ -922,10 +922,12 @@ public class DmlLineage {
             if (name == null) {
                 return null;
             }
-            if (isSingleSegmentName(name)
-                    && findCteTarget(identifierKey(name)) != null) {
-                // The leaf binds to a CTE; a qualified owner never refers to it and
-                // the catalog must not be consulted for the CTE's name.
+            String leafKey = isSingleSegmentName(name) ? identifierKey(name) : null;
+            if (leafKey != null && (scope != null && scope.containsKey(leafKey)
+                    || findCteTarget(leafKey) != null)) {
+                // The leaf binds to a CTE (possibly a nested one registered in the
+                // static scope); a qualified owner never refers to it and the catalog
+                // must not be consulted for the CTE's name.
                 return null;
             }
             // Compare the bound identity, which honors search_path and per-segment
@@ -944,9 +946,10 @@ public class DmlLineage {
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;
             boolean childHidden = join.getAlias() != null;
-            SQLTableSource found = findQualifiedTable(join.getLeft(), key, childHidden);
+            SQLTableSource found = findQualifiedTable(join.getLeft(), key,
+                    childHidden, scope);
             return found != null ? found
-                    : findQualifiedTable(join.getRight(), key, childHidden);
+                    : findQualifiedTable(join.getRight(), key, childHidden, scope);
         }
         return null;
     }

@@ -3675,6 +3675,127 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void nestedLateralOpenSpanSurvives() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2) SELECT r.* FROM missing"
+                        + " CROSS JOIN LATERAL (SELECT missing.*) AS q"
+                        + " CROSS JOIN LATERAL (SELECT q.*) AS r"
+                        + " UNION ALL SELECT 1,2;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("missing.*")));
+        assertTrue(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void correlatedStarKeepsKnownColumnWithContribution() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult union = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH x AS (SELECT k FROM b UNION ALL SELECT * FROM missing)"
+                        + " SELECT q.k FROM x CROSS JOIN"
+                        + " LATERAL (SELECT x.*) AS q;");
+        assertEquals(0, union.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                union.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+        assertTrue(union.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("missing.*")));
+
+        ScanResult partial = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM (SELECT b.k, m2.* FROM b CROSS JOIN m2"
+                        + " UNION ALL SELECT 1,2) AS x"
+                        + " CROSS JOIN LATERAL (SELECT x.*) AS q;");
+        assertEquals(0, partial.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                partial.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+        assertTrue(partial.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m2.*")));
+    }
+
+    @Test
+    public void uncertainPositionAfterUnknownStarDoesNotPinKnownColumn() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3,c4) SELECT missing.*, x.*"
+                        + " FROM missing CROSS JOIN (SELECT b.k, m2.*"
+                        + " FROM b CROSS JOIN m2 UNION ALL SELECT 1,2) AS x;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(new Column("t.c2"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void ambiguousUsingBindingStarStaysTableLevel() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2) SELECT r.* FROM (("
+                        + "SELECT x.*, y.* FROM ("
+                        + "SELECT * FROM m1 UNION ALL SELECT 1) AS x"
+                        + " CROSS JOIN (SELECT * FROM m2 UNION ALL SELECT 2) AS y"
+                        + ") AS q LEFT JOIN b USING(k)) AS j"
+                        + " CROSS JOIN LATERAL (SELECT j.*) AS r;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> first = result.getGraph().getSources(new Column("t.c1"));
+        Set<Column> second = result.getGraph().getSources(new Column("t.c2"));
+        assertEquals(first, second);
+        assertTrue(first.contains(new Column("m1.*")));
+        assertTrue(first.contains(new Column("m2.*")));
+    }
+
+    @Test
+    public void uncertainFirstStarKeepsMinimumWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.* FROM (missing CROSS JOIN t) AS j"
+                        + " CROSS JOIN LATERAL"
+                        + " (SELECT j.* UNION ALL SELECT 1,2) AS q;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof IllegalStateException);
+    }
+
+    @Test
+    public void sameFrameUnaliasedSourceStillMatches() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.b (k INT);"
+                + " CREATE TABLE s2.b (k INT); CREATE TABLE c (v INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k FROM s1.b AS x CROSS JOIN s2.b"
+                        + " CROSS JOIN LATERAL (SELECT b.k) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("s2.b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

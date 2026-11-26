@@ -1805,7 +1805,7 @@ public class DmlLineage {
                     boolean unknownWidth = recorded < 0;
                     int width = Math.abs(recorded);
                     position += width;
-                    minWidth += unknownWidth ? 1 : width;
+                    minWidth += width;
                     if (unknownWidth) {
                         widthKnown = false;
                         unknownStarSeen = true;
@@ -2429,11 +2429,90 @@ public class DmlLineage {
         CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
         SourceTable source = correlated == null ? null : correlated.source;
         if (source != null) {
+            List<String> names = sourceColumnNames(source);
+            List<String> declared = currentTargetColumnAliases(target);
+            List<String> declaredKeys = currentDeclaredKeys(target);
+            if (source.temporary) {
+                int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
+                if (width > 0) {
+                    List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
+                    int limit = Math.max(width, maxSpanEnd(spans));
+                    for (int i = 0; i < limit; i++) {
+                        boolean named = sourceOutputNameKnown(source, i)
+                                && i < names.size();
+                        if (named) {
+                            String sourceColumn = names.get(i);
+                            String outputName;
+                            String outputKey;
+                            Boolean quoted = null;
+                            if (declared != null && position + i < declared.size()) {
+                                outputName = declared.get(position + i);
+                                outputKey = declaredKeys != null
+                                        && position + i < declaredKeys.size()
+                                                ? declaredKeys.get(position + i)
+                                                : identifierKey(outputName);
+                            } else {
+                                outputName = sourceColumn;
+                                outputKey = i < source.outputKeys.size()
+                                        && source.outputKeys.get(i) != null
+                                                ? source.outputKeys.get(i)
+                                                : identifierKey(sourceColumn);
+                                quoted = !outputKey.equals(identifierKey(sourceColumn));
+                            }
+                            setTargetOutput(target, position + i, outputName, outputKey);
+                            markOutputNameKnown(target, position + i, true);
+                            addOuterColumnMapping(source, sourceColumn, target,
+                                    outputName, position + i, quoted);
+                        }
+                        for (WildcardRef ref : wildcardRefsAt(source, i)) {
+                            Instruction wildcard = new Instruction(
+                                    OperationType.COLUMNS_INJECT, ref.name, target,
+                                    position + i, ref.temporary,
+                                    tempTables.contains(target));
+                            wildcard.setPositionalWildcard(true);
+                            wildcard.setWildcardWidthKnown(true);
+                            wildcard.setWildcardWidth(1);
+                            instructions.add(wildcard);
+                            recordWildcardSpan(target, position + i,
+                                    position + i + 1, ref.name, ref.temporary);
+                            targetWildcardContribution.put(target, Boolean.TRUE);
+                        }
+                    }
+                    return limit;
+                }
+                List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
+                if (!spans.isEmpty()) {
+                    for (WildcardSpan span : spans) {
+                        Instruction wildcard = new Instruction(
+                                OperationType.COLUMNS_INJECT, span.source, target,
+                                position + span.start, span.temporary,
+                                tempTables.contains(target));
+                        wildcard.setPositionalWildcard(true);
+                        if (span.end != Integer.MAX_VALUE) {
+                            wildcard.setWildcardWidthKnown(true);
+                            wildcard.setWildcardWidth(span.end - span.start);
+                        }
+                        instructions.add(wildcard);
+                        recordWildcardSpan(target, position + span.start,
+                                span.end == Integer.MAX_VALUE ? Integer.MAX_VALUE
+                                        : position + span.end,
+                                span.source, span.temporary);
+                        targetWildcardContribution.put(target, Boolean.TRUE);
+                    }
+                    return -1;
+                }
+                Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                        lineageTableName(source), target, position,
+                        source.temporary, tempTables.contains(target));
+                wildcard.setPositionalWildcard(true);
+                recordWildcardSpan(target, position, Integer.MAX_VALUE,
+                        lineageTableName(source), source.temporary);
+                instructions.add(wildcard);
+                targetWildcardContribution.put(target, Boolean.TRUE);
+                return -1;
+            }
             int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
             if (width > 0 && sourceColumnNamesKnown(source)) {
-                List<String> names = sourceColumnNames(source);
-                List<String> declared = currentTargetColumnAliases(target);
-                List<String> declaredKeys = currentDeclaredKeys(target);
                 for (int i = 0; i < Math.min(width, names.size()); i++) {
                     String sourceColumn = names.get(i);
                     String outputName;
@@ -2464,58 +2543,10 @@ public class DmlLineage {
                     }
                     setTargetOutput(target, position + i, outputName, outputKey);
                     markOutputNameKnown(target, position + i, true);
-                    List<WildcardRef> refs = source.temporary
-                            ? wildcardRefsAt(source, i) : new ArrayList<WildcardRef>();
-                    if (!refs.isEmpty()) {
-                        // A derived source already knows which positions carry an
-                        // unknown wildcard; keep the table-level claim there.
-                        for (WildcardRef ref : refs) {
-                            Instruction wildcard = new Instruction(
-                                    OperationType.COLUMNS_INJECT, ref.name, target,
-                                    position + i, ref.temporary,
-                                    tempTables.contains(target));
-                            wildcard.setPositionalWildcard(true);
-                            wildcard.setWildcardWidthKnown(true);
-                            wildcard.setWildcardWidth(1);
-                            instructions.add(wildcard);
-                            recordWildcardSpan(target, position + i,
-                                    position + i + 1, ref.name, ref.temporary);
-                            targetWildcardContribution.put(target, Boolean.TRUE);
-                        }
-                    } else {
-                        addOuterColumnMapping(source, sourceColumn, target, outputName,
-                                position + i, quoted);
-                    }
+                    addOuterColumnMapping(source, sourceColumn, target, outputName,
+                            position + i, quoted);
                 }
                 return Math.max(width, 1);
-            }
-            List<WildcardSpan> spans = source.temporary
-                    ? wildcardSpansOf(source.displayName)
-                    : java.util.Collections.<WildcardSpan>emptyList();
-            if (!spans.isEmpty()) {
-                for (WildcardSpan span : spans) {
-                    int start = position + span.start;
-                    int end = width > 0
-                            ? Math.min(position + width, start + Math.max(
-                                    span.end == Integer.MAX_VALUE ? 1
-                                            : span.end - span.start, 1))
-                            : start + 1;
-                    for (int targetPosition = start; targetPosition < end;
-                            targetPosition++) {
-                        Instruction perPosition = new Instruction(
-                                OperationType.COLUMNS_INJECT, span.source, target,
-                                targetPosition, span.temporary,
-                                tempTables.contains(target));
-                        perPosition.setPositionalWildcard(true);
-                        perPosition.setWildcardWidthKnown(true);
-                        perPosition.setWildcardWidth(1);
-                        instructions.add(perPosition);
-                        recordWildcardSpan(target, targetPosition,
-                                targetPosition + 1, span.source, span.temporary);
-                        targetWildcardContribution.put(target, Boolean.TRUE);
-                    }
-                }
-                return width > 0 ? width : -1;
             }
             Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                     lineageTableName(source), target, position,
@@ -2540,7 +2571,24 @@ public class DmlLineage {
                 for (SourceTable candidate : binding.sources) {
                     addOuterWildcardOpen(candidate, target, position);
                 }
-                return -1;
+                return -Math.max(binding.minWidth, 1);
+            }
+            if (hasAmbiguousOutput(binding.plan, binding.width)) {
+                for (SourceTable candidate : binding.sources) {
+                    Instruction wildcard = new Instruction(
+                            OperationType.COLUMNS_INJECT,
+                            lineageTableName(candidate), target, position,
+                            candidate.temporary, tempTables.contains(target));
+                    wildcard.setPositionalWildcard(true);
+                    wildcard.setWildcardWidthKnown(true);
+                    wildcard.setWildcardWidth(Math.max(binding.width, 1));
+                    instructions.add(wildcard);
+                    recordWildcardSpan(target, position,
+                            position + Math.max(binding.width, 1),
+                            lineageTableName(candidate), candidate.temporary);
+                    targetWildcardContribution.put(target, Boolean.TRUE);
+                }
+                return binding.width;
             }
             boolean allNamesKnown = nodeNamesKnown(binding);
             List<String> declared = currentTargetColumnAliases(target);
@@ -2611,7 +2659,7 @@ public class DmlLineage {
                     }
                 }
             }
-            return Math.max(binding.widthKnown ? binding.width : pos - position, 1);
+            return Math.max(binding.width, pos - position);
         }
         throw new MetadataNotFoundException(star.getOwner() == null
                 ? "*" : star.getOwner().toString());
@@ -2693,7 +2741,38 @@ public class DmlLineage {
                 target + "." + renderIdentifier(targetName), position,
                 source.temporary, tempTables.contains(target)));
         if (source.wildcardContribution && source.temporary) {
-            addOuterWildcard(source, target, position);
+            List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
+            if (spans.isEmpty()) {
+                addOuterWildcard(source, target, position);
+            } else {
+                for (WildcardSpan span : spans) {
+                    if (span.end == Integer.MAX_VALUE) {
+                        Instruction open = new Instruction(
+                                OperationType.COLUMNS_INJECT, span.source, target,
+                                position + span.start, span.temporary,
+                                tempTables.contains(target));
+                        open.setPositionalWildcard(true);
+                        instructions.add(open);
+                        recordWildcardSpan(target, position + span.start,
+                                Integer.MAX_VALUE, span.source, span.temporary);
+                        targetWildcardContribution.put(target, Boolean.TRUE);
+                        continue;
+                    }
+                    for (int offset = span.start; offset < span.end; offset++) {
+                        Instruction wildcard = new Instruction(
+                                OperationType.COLUMNS_INJECT, span.source, target,
+                                position + offset, span.temporary,
+                                tempTables.contains(target));
+                        wildcard.setPositionalWildcard(true);
+                        wildcard.setWildcardWidthKnown(true);
+                        wildcard.setWildcardWidth(1);
+                        instructions.add(wildcard);
+                        recordWildcardSpan(target, position + offset,
+                                position + offset + 1, span.source, span.temporary);
+                        targetWildcardContribution.put(target, Boolean.TRUE);
+                    }
+                }
+            }
         }
     }
 
@@ -5204,7 +5283,7 @@ public class DmlLineage {
         }
         String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
         String aliasKey = isSingleSegmentName(rawOwner) ? identifierKey(rawOwner) : null;
-        for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
+        for (int frame = stackSources.size() - 1; frame >= 0; frame--) {
             if (frame < stackJoinBindings.size() && aliasKey != null) {
                 SourceNode binding = stackJoinBindings.get(frame).get(aliasKey);
                 if (binding != null) {
@@ -5677,7 +5756,8 @@ public class DmlLineage {
                         : maxSpanEnd(spans), 1);
                 List<String> sourceNames = sourceColumnNames(source);
                 List<String> declaredTarget = currentTargetColumnAliases(targetTable);
-                for (int relative = 0; relative < totalWidth; relative++) {
+                for (int relative = 0; !uncertainPosition
+                        && relative < totalWidth; relative++) {
                     if (coveredBySpan(spans, relative)
                             || !sourceOutputNameKnown(source, relative)
                             || relative >= sourceNames.size()) {

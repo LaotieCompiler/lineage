@@ -2746,6 +2746,70 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void forwardCteUsingMergeDoesNotDoubleCountWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS ("
+                        + "SELECT * FROM x JOIN b USING(v) UNION ALL SELECT 3, 4),"
+                        + " x(v) AS (SELECT * FROM m UNION ALL SELECT 1, 2)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
+    @Test
+    public void forwardCteWildcardKeepsConstantPosition() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1, c2) SELECT * FROM ("
+                        + "WITH RECURSIVE y AS (SELECT * FROM x),"
+                        + " x(v) AS (SELECT 42 AS fixed, m.* FROM m"
+                        + " UNION ALL SELECT 43, 2) SELECT * FROM y) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getSources(new Column("t.c1"))
+                .contains(new Column("m.*")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+    }
+
+    @Test
+    public void forwardCteTableLevelContributionReachesOuter() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM x),"
+                        + " x(v) AS (SELECT * FROM m UNION ALL SELECT 1)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
+    public void declaredColumnsWithoutKnownWidthKeepUnionWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH RECURSIVE y AS (SELECT * FROM x UNION ALL SELECT 3, 4),"
+                        + " x(v) AS (SELECT * FROM m)"
+                        + " SELECT * FROM y;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.*"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

@@ -683,6 +683,81 @@ public class DmlLineage {
         }
     }
 
+    /**
+     * Analyze a recursive WITH in dependency order so an earlier body sees a sibling
+     * that it references. Cycles (including self references) fall back to declaration
+     * order, where the pre-bound shape keeps the contract.
+     */
+    private java.util.List<SQLWithSubqueryClause.Entry> orderedRecursiveEntries(
+            SQLWithSubqueryClause with) {
+        java.util.List<SQLWithSubqueryClause.Entry> entries =
+                new java.util.ArrayList<>(with.getEntries());
+        java.util.Map<SQLWithSubqueryClause.Entry, java.util.Set<String>> aliases =
+                new java.util.IdentityHashMap<>();
+        for (SQLWithSubqueryClause.Entry entry : entries) {
+            java.util.Set<String> keys = new java.util.LinkedHashSet<>();
+            for (SQLWithSubqueryClause.Entry other : entries) {
+                if (other != entry && other.getAlias() != null) {
+                    keys.add(identifierKey(other.getAlias()));
+                }
+            }
+            aliases.put(entry, keys);
+        }
+        java.util.List<SQLWithSubqueryClause.Entry> ordered = new java.util.ArrayList<>();
+        java.util.Set<SQLWithSubqueryClause.Entry> done =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<SQLWithSubqueryClause.Entry, Boolean>());
+        while (ordered.size() < entries.size()) {
+            boolean progress = false;
+            for (SQLWithSubqueryClause.Entry entry : entries) {
+                if (done.contains(entry)) {
+                    continue;
+                }
+                boolean ready = true;
+                for (String key : aliases.get(entry)) {
+                    boolean references = referencesAlias(entry, key);
+                    boolean hasDependent = false;
+                    for (SQLWithSubqueryClause.Entry other : entries) {
+                        if (other != entry && !done.contains(other)
+                                && key.equals(identifierKey(
+                                        String.valueOf(other.getAlias())))) {
+                            hasDependent = true;
+                        }
+                    }
+                    if (references && hasDependent) {
+                        ready = false;
+                        break;
+                    }
+                }
+                if (ready) {
+                    ordered.add(entry);
+                    done.add(entry);
+                    progress = true;
+                }
+            }
+            if (!progress) {
+                for (SQLWithSubqueryClause.Entry entry : entries) {
+                    if (!done.contains(entry)) {
+                        ordered.add(entry);
+                    }
+                }
+                break;
+            }
+        }
+        return ordered;
+    }
+
+    private boolean referencesAlias(SQLWithSubqueryClause.Entry entry, String key) {
+        if (key == null || entry.getSubQuery() == null) {
+            return false;
+        }
+        String text = entry.getSubQuery().toString();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "(?i)(?<![A-Za-z0-9_$])" + java.util.regex.Pattern.quote(key)
+                        + "(?![A-Za-z0-9_$])").matcher(text);
+        return matcher.find();
+    }
+
     private void processWithSubQuery(SQLWithSubqueryClause withSubQuery) {
         if (withSubQuery == null) {
             return;
@@ -732,6 +807,7 @@ public class DmlLineage {
                     }
                 }
             }
+            Map<String, Boolean> widthCertain = new HashMap<>();
             int guard = withSubQuery.getEntries().size() + 1;
             boolean changed = true;
             while (changed && guard-- > 0) {
@@ -741,15 +817,27 @@ public class DmlLineage {
                     if (alias == null) {
                         continue;
                     }
-                    List<String> names = staticOutputNames(entry.getSubQuery(), nameScope);
+                    List<String> derived = staticOutputNames(entry.getSubQuery(),
+                            nameScope);
                     List<String> declared = rawDeclaredColumns(entry);
+                    List<String> names = derived;
+                    boolean certain = derived != null;
                     if (names == null && declared != null) {
                         names = padToStaticWidth(declared, entry.getSubQuery(),
                                 widthScope);
+                        if (names == null) {
+                            // Unknown width: the declared list names only the first
+                            // positions, so later positions stay unknown.
+                            names = declared;
+                            certain = false;
+                        } else {
+                            certain = true;
+                        }
                     }
                     names = mergeDeclaredColumns(declared, names);
                     if (names != null) {
                         String key = identifierKey(alias);
+                        widthCertain.put(key, certain);
                         if (!names.equals(nameScope.get(key))) {
                             nameScope.put(key, names);
                             changed = true;
@@ -763,6 +851,8 @@ public class DmlLineage {
                         : nameScope.get(identifierKey(alias));
                 String target = prebound.get(entry);
                 if (names != null && target != null) {
+                    boolean widthKnown = Boolean.TRUE.equals(
+                            widthCertain.get(identifierKey(alias)));
                     Set<String> usedKeys = new HashSet<>();
                     for (String raw : names) {
                         if (raw != null) {
@@ -802,13 +892,16 @@ public class DmlLineage {
                     }
                     // Make the sibling's shape visible before its body is analyzed;
                     // recordTargetShape overwrites this with the analyzed result.
-                    targetWidthKnown.put(target, true);
-                    targetNamesKnown.put(target, namesKnown);
+                    targetWidthKnown.put(target, widthKnown);
+                    targetNamesKnown.put(target, widthKnown && namesKnown);
                     targetMinWidth.put(target, names.size());
                 }
             }
         }
-        for (SQLWithSubqueryClause.Entry entry : withSubQuery.getEntries()) {
+        java.util.List<SQLWithSubqueryClause.Entry> ordered = recursive
+                ? orderedRecursiveEntries(withSubQuery)
+                : withSubQuery.getEntries();
+        for (SQLWithSubqueryClause.Entry entry : ordered) {
             String alias = entry.getAlias();
             String target = prebound.containsKey(entry)
                     ? prebound.get(entry)
@@ -1085,6 +1178,9 @@ public class DmlLineage {
             width = staticSelectWidth(select, widthScope);
         } catch (RuntimeException e) {
             width = -1;
+        }
+        if (width < 0) {
+            return null;
         }
         if (width <= declared.size()) {
             return new ArrayList<>(declared);
@@ -4363,9 +4459,10 @@ public class DmlLineage {
                 }
                 return Math.max(node.width, 1);
             }
-            boolean ambiguousBounded = planAmbiguous && !uncertainPosition
-                    && node != null && node.widthKnown;
-            boolean allKnown = !planAmbiguous && !uncertainPosition
+            boolean pendingBounded = pendingShape && node != null && node.widthKnown;
+            boolean ambiguousBounded = (planAmbiguous || pendingBounded)
+                    && !uncertainPosition && node != null && node.widthKnown;
+            boolean allKnown = !planAmbiguous && !pendingShape && !uncertainPosition
                     && !sources.isEmpty() && allWidthKnown(sources);
             boolean budgetBounded = !allKnown && !ambiguousBounded
                     && !uncertainPosition && currentStarBudget > 0;

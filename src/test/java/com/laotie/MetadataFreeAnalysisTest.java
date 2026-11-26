@@ -1318,6 +1318,63 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void generatedTemporaryNamesAvoidExplicitAliases() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "INSERT INTO t(c1, c2, c3)"
+                        + " SELECT a.k, b.v AS col3, c.k FROM a, b, c;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.v"))),
+                result.getGraph().getSources(new Column("t.c2")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("c.k"))),
+                result.getGraph().getSources(new Column("t.c3")));
+    }
+
+    @Test
+    public void explicitAliasKeepsItsOuterReference() {
+        ScanResult result = LineageScanner.withoutMetadata(optional()).scan(
+                "SELECT q.col2 FROM (SELECT a.k, b.k, b.v AS col2 FROM a, b) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.v"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.col2")));
+    }
+
+    @Test
+    public void quotedCteColumnSurvivesJoinAliasRead() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "WITH q AS (SELECT k AS \"K\" FROM b)"
+                        + " SELECT j.\"K\" FROM (q CROSS JOIN (SELECT 1 AS v) AS y) AS j;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(Column.temporary("stmt0.temp0.K"))
+                .contains(new Column("b.k")));
+    }
+
+    @Test
+    public void wholeTableWriteDoesNotCoverOtherColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM m1;"
+                        + " INSERT INTO t(c1) SELECT * FROM m2;"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m1.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("m1.*"), new Column("m2.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

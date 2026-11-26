@@ -57,9 +57,7 @@ public class LineageGraph {
     public void buildByResults(List<LineageResult> results) {
         init();
         Map<String, Set<String>> populatedColumns = new HashMap<>();
-        Set<String> allColumnTables = new HashSet<>();
         Map<String, Map<Integer, String>> tempColumnsByPosition = new HashMap<>();
-        Map<String, Map<String, Integer>> tempColumnOwners = new HashMap<>();
         java.util.List<Runnable> pendingWildcardLinks = new java.util.ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
             LineageResult result = results.get(i);
@@ -72,6 +70,8 @@ public class LineageGraph {
                         result.getContext(), result.getTargetOutputs());
             }
             String prefix = "stmt" + i + ".";
+            Map<String, Map<Integer, String>> effectivePositions =
+                    assignTemporaryPositions(instructions, prefix);
             for (Instruction instruction : instructions) {
                 if (instruction.getOperation() == OperationType.COLUMNS_INJECT
                         && result.isTableLevelWildcards()) {
@@ -98,8 +98,18 @@ public class LineageGraph {
                                         source, columns, prefix, fromTable, fromTemporary,
                                         tempColumnsByPosition));
                             }
-                        } else if (!to.isTemporary()) {
-                            allColumnTables.add(to.getTableName());
+                        } else if (!to.isTemporary() && result.getContext() != null) {
+                            java.util.List<String> targetColumns =
+                                    physicalColumnNames(to.getTableName(), result.getContext());
+                            if (!targetColumns.isEmpty()) {
+                                Column target = to;
+                                Column source = from;
+                                String fromTable = instruction.getFrom();
+                                boolean fromTemporary = instruction.isFromTemporary();
+                                pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
+                                        source, String.join(",", targetColumns), prefix,
+                                        fromTable, fromTemporary, tempColumnsByPosition));
+                            }
                         }
                     }
                     reverseGraph.addVertex(from);
@@ -129,23 +139,16 @@ public class LineageGraph {
                     String[] parts = splitReference(toReference);
                     if (parts != null) {
                         String tableKey = prefix + parts[0];
-                        Map<Integer, String> positions = tempColumnsByPosition
+                        Map<Integer, String> effective = effectivePositions.get(tableKey);
+                        String columnName = effective != null
+                                && effective.containsKey(instruction.getOrdinal())
+                                        ? effective.get(instruction.getOrdinal())
+                                        : parts[1];
+                        tempColumnsByPosition
                                 .computeIfAbsent(tableKey,
-                                        key -> new HashMap<Integer, String>());
-                        Map<String, Integer> owners = tempColumnOwners
-                                .computeIfAbsent(tableKey,
-                                        key -> new HashMap<String, Integer>());
-                        String columnName = parts[1];
-                        Integer owner = owners.get(columnName);
-                        if (owner != null && owner != instruction.getOrdinal()) {
-                            // Two positions cannot share one temporary vertex.
-                            columnName = "col" + (instruction.getOrdinal() + 1);
-                            owners.put(columnName, instruction.getOrdinal());
-                            toReference = parts[0] + "." + columnName;
-                        } else {
-                            owners.put(columnName, instruction.getOrdinal());
-                        }
-                        positions.put(instruction.getOrdinal(), columnName);
+                                        key -> new HashMap<Integer, String>())
+                                .put(instruction.getOrdinal(), columnName);
+                        toReference = parts[0] + "." + columnName;
                     }
                 }
                 Column from = graphColumn(instruction.getFrom(), prefix,
@@ -163,7 +166,7 @@ public class LineageGraph {
         for (Runnable link : pendingWildcardLinks) {
             link.run();
         }
-        attachTableWildcards(populatedColumns, allColumnTables);
+        attachTableWildcards(populatedColumns);
     }
 
     /**
@@ -171,8 +174,7 @@ public class LineageGraph {
      * (for example a table populated by INSERT ... SELECT * FROM an unknown table) is
      * connected to that wildcard, so cross-statement lineage stays intact.
      */
-    private void attachTableWildcards(Map<String, Set<String>> populatedColumns,
-            Set<String> allColumnTables) {
+    private void attachTableWildcards(Map<String, Set<String>> populatedColumns) {
         Map<String, Column> wildcards = new HashMap<>();
         for (Column vertex : reverseGraph.vertexSet()) {
             if (vertex.isWildcard() && !vertex.isTemporary()) {
@@ -189,12 +191,6 @@ public class LineageGraph {
             }
             Column wildcard = wildcards.get(vertex.getTableName());
             if (wildcard == null || wildcard.equals(vertex)) {
-                continue;
-            }
-            if (allColumnTables.contains(vertex.getTableName())) {
-                // A table-level write covers every column, including columns that also
-                // have precise sources from other statements.
-                reverseGraph.addEdge(vertex, wildcard);
                 continue;
             }
             if (reverseGraph.outDegreeOf(vertex) != 0) {
@@ -336,6 +332,84 @@ public class LineageGraph {
             return null;
         }
         return new String[] {reference.substring(0, dot), reference.substring(dot + 1)};
+    }
+
+    /**
+     * Assign one vertex per temporary position. A name used by several positions is
+     * kept for the first one; later positions get a generated name that does not
+     * collide with any preserved or generated name.
+     */
+    private static Map<String, Map<Integer, String>> assignTemporaryPositions(
+            List<Instruction> instructions, String prefix) {
+        Map<String, Map<Integer, String>> raw = new HashMap<>();
+        Map<String, Map<String, Integer>> counts = new HashMap<>();
+        for (Instruction instruction : instructions) {
+            if (instruction.getOperation() != OperationType.COLUMN_MAPPING
+                    || !instruction.isToTemporary() || instruction.getOrdinal() < 0) {
+                continue;
+            }
+            String[] parts = splitReference(instruction.getTo());
+            if (parts == null) {
+                continue;
+            }
+            String tableKey = prefix + parts[0];
+            raw.computeIfAbsent(tableKey, key -> new HashMap<Integer, String>())
+                    .put(instruction.getOrdinal(), parts[1]);
+            counts.computeIfAbsent(tableKey, key -> new HashMap<String, Integer>())
+                    .merge(parts[1], 1, Integer::sum);
+        }
+        Map<String, Map<Integer, String>> effective = new HashMap<>();
+        for (Map.Entry<String, Map<Integer, String>> entry : raw.entrySet()) {
+            String tableKey = entry.getKey();
+            Map<String, Integer> tableCounts = counts.get(tableKey);
+            java.util.Set<String> usedNames = new java.util.HashSet<>();
+            for (Map.Entry<String, Integer> count : tableCounts.entrySet()) {
+                if (count.getValue() == 1) {
+                    usedNames.add(count.getKey());
+                }
+            }
+            java.util.List<Integer> positions = new java.util.ArrayList<>(
+                    entry.getValue().keySet());
+            java.util.Collections.sort(positions);
+            java.util.Set<String> duplicatesSeen = new java.util.HashSet<>();
+            Map<Integer, String> tableEffective = new HashMap<>();
+            for (Integer position : positions) {
+                String name = entry.getValue().get(position);
+                if (tableCounts.get(name) > 1 && !duplicatesSeen.add(name)) {
+                    // The first position keeps the shared name; later ones get a
+                    // generated name that does not collide with anything in the table.
+                    String candidate = "col" + (position + 1);
+                    int suffix = 1;
+                    while (usedNames.contains(candidate)
+                            || containsValue(tableEffective, candidate)) {
+                        candidate = "col" + (position + 1) + "_" + suffix++;
+                    }
+                    name = candidate;
+                }
+                tableEffective.put(position, name);
+            }
+            effective.put(tableKey, tableEffective);
+        }
+        return effective;
+    }
+
+    private static boolean containsValue(Map<Integer, String> map, String value) {
+        return map.containsValue(value);
+    }
+
+    private static java.util.List<String> physicalColumnNames(String table,
+            com.laotie.model.metadata.MetadataContext context) {
+        try {
+            com.laotie.model.metadata.Table metadata = context.getCatalog()
+                    .findTableByDisplayName(table).getTable();
+            java.util.List<String> names = new java.util.ArrayList<>();
+            for (Column column : metadata.getFields()) {
+                names.add(column.getColumnName());
+            }
+            return names;
+        } catch (RuntimeException e) {
+            return java.util.Collections.emptyList();
+        }
     }
 
     private static String stripQuotes(String name) {

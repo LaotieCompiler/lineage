@@ -3410,7 +3410,7 @@ public class DmlLineage {
             return;
         }
         for (StarColumn column : columns) {
-            String sourceColumn = column.quoted
+            String sourceColumn = column.quoted || column.source.temporary
                     ? renderSourceColumn(column)
                     : renderIdentifier(canonicalColumnName(column.column));
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,

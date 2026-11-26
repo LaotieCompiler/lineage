@@ -2082,6 +2082,64 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void multiSourceStarInsideUnionStaysWithinUnionWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t SELECT * FROM a CROSS JOIN m"
+                        + " UNION ALL SELECT 1,2; SELECT c3 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> first = result.getGraph().getSources(new Column("t.c1"));
+        assertTrue(first.contains(new Column("a.*")));
+        assertTrue(first.contains(new Column("m.*")));
+        // The union pins the star to two columns; the third target column keeps its
+        // default and must not inherit those wildcards.
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("a.*")));
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
+    public void usingJoinStarMatchesSingleColumnUnion() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT * FROM a JOIN b USING(k) UNION ALL SELECT 1;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = result.getGraph()
+                .getSources(Column.temporary("stmt0.temp0.*"));
+        assertTrue(sources.contains(new Column("a.*")));
+        assertTrue(sources.contains(new Column("b.*")));
+    }
+
+    @Test
+    public void derivedStarWithNoNamesKeepsKnownWidth() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT, c3 INT);"
+                + " CREATE TABLE b (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t(c1,c2,c3) SELECT * FROM ("
+                        + "SELECT q.* FROM (SELECT * FROM m UNION ALL SELECT 1,2) AS q"
+                        + ") AS r CROSS JOIN b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m.*"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("m.*"))),
+                result.getGraph().getSources(new Column("t.c2")));
+        assertTrue(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("b.*")));
+        assertFalse(result.getGraph().getSources(new Column("t.c3"))
+                .contains(new Column("m.*")));
+    }
+
+    @Test
     public void wildcardVertexRendersWithoutQuotes() {
         Column wildcard = new Column("a.*");
         assertEquals("a", wildcard.getTableName());

@@ -567,9 +567,13 @@ public class DmlLineage {
             if (ch == '\'' || ch == '"' || ch == '`'
                     || (bracketQuotes && ch == '[')) {
                 quote = ch == '[' ? ']' : ch;
-                escapeString = mysqlFamily || hiveFamily
+                boolean rawString = dialect == DbType.antspark
+                        && (ch == '\'' || ch == '"')
+                        && isRawStringPrefix(sql, i);
+                boolean backslashQuotes = mysqlFamily || hiveFamily;
+                escapeString = !rawString && (backslashQuotes
                         ? (ch == '\'' || ch == '"')
-                        : (ch == '\'' && isEscapeStringPrefix(sql, i));
+                        : (ch == '\'' && isEscapeStringPrefix(sql, i)));
                 current.append(ch);
             } else if (ch == '$' && postgres && isDollarQuoteStart(sql, i)) {
                 String tag = dollarTagAt(sql, i);
@@ -608,6 +612,17 @@ public class DmlLineage {
 
     private static boolean isDollarQuoteStart(String sql, int index) {
         return index == 0 || !isIdentifierChar(sql.charAt(index - 1));
+    }
+
+    private static boolean isRawStringPrefix(String sql, int quoteIndex) {
+        if (quoteIndex == 0) {
+            return false;
+        }
+        char prefix = sql.charAt(quoteIndex - 1);
+        if (prefix != 'r' && prefix != 'R') {
+            return false;
+        }
+        return quoteIndex - 1 == 0 || !isIdentifierChar(sql.charAt(quoteIndex - 2));
     }
 
     private static boolean isEscapeStringPrefix(String sql, int quoteIndex) {
@@ -8644,9 +8659,14 @@ public class DmlLineage {
                 findCteTarget(identifierKey(rawName)) != null);
 
         // Static partition columns receive no data; dynamic partition columns follow
-        // the table's non-partition columns in partition-spec order.
-        String partitionTargets = partitionTargetList(insertColumns, partitions,
-                targetMetadata, tableName);
+        // the table's non-partition columns in partition-spec order. Other dialects use
+        // PARTITION (...) as a physical partition selector, not a column list.
+        DbType insertDialect = resolveDialect();
+        String partitionTargets = insertDialect == DbType.hive
+                || insertDialect == DbType.antspark
+                        ? partitionTargetList(insertColumns, partitions,
+                                targetMetadata, tableName)
+                        : null;
 
         boolean scoped = with != null;
         if (scoped) {
@@ -8728,7 +8748,7 @@ public class DmlLineage {
         } else {
             for (Column column : targetMetadata.getFields()) {
                 if (!partitionKeys.contains(identifierKey(column.getColumnName()))) {
-                    targets.add(column.getColumnName());
+                    targets.add(renderIdentifier(column.getColumnName()));
                 }
             }
         }
@@ -8739,7 +8759,7 @@ public class DmlLineage {
         for (String name : dynamic) {
             String key = identifierKey(name);
             if (present.add(key)) {
-                targets.add(name);
+                targets.add(renderIdentifier(normalizeIdentifier(name)));
             }
         }
         return targets.isEmpty() ? null : String.join(",", targets);

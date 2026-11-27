@@ -3,6 +3,7 @@ package com.laotie;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -109,6 +110,55 @@ public class DialectSupportTest {
                 result.getGraph().getSources(new Column("t.c2")));
         assertEquals(new HashSet<>(Arrays.asList(new Column("a.dt"))),
                 result.getGraph().getSources(new Column("t.dt")));
+    }
+
+    @Test
+    public void mysqlPartitionSelectorIsNotATargetColumn() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE t (y INT)"
+                + " PARTITION BY HASH(y) PARTITIONS 2;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO t PARTITION (p0) SELECT * FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.p0")));
+        assertTrue(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.y")));
+    }
+
+    @Test
+    public void quotedCommaTargetKeepsItsDynamicPartitionValue() {
+        for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
+            MetadataCatalog catalog = new MetadataCatalog(dialect);
+            catalog.loadDdl("CREATE TABLE a (x INT, src_day STRING);"
+                    + " CREATE TABLE t (`a,b` INT)"
+                    + " PARTITIONED BY (dt STRING);");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "INSERT OVERWRITE TABLE t PARTITION (dt)"
+                            + " SELECT x, src_day FROM a;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.x"))),
+                    result.getGraph().getSources(
+                            new Column("t.\"a,b\"")));
+            assertEquals(new HashSet<>(Arrays.asList(
+                    new Column("a.src_day"))),
+                    result.getGraph().getSources(new Column("t.dt")));
+        }
+    }
+
+    @Test
+    public void sparkRawStringPrefixKeepsStatementBoundary() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT r'abc\\'; SELECT x FROM a;");
+
+        assertEquals(2, result.getResults().size());
+        assertNull(result.getResults().get(1).getError());
     }
 
     @Test

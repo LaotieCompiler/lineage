@@ -12,6 +12,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
@@ -8728,11 +8729,12 @@ public class DmlLineage {
      */
     private static String partitionKey(String raw) {
         String name = hiveLogicalName(raw);
-        return name == null ? null : name.toLowerCase();
+        return name == null ? null : name.toLowerCase(Locale.ROOT);
     }
 
     private static String partitionColumnKey(String columnName) {
-        return columnName == null ? null : columnName.toLowerCase();
+        return columnName == null ? null
+                : columnName.toLowerCase(Locale.ROOT);
     }
 
     /** Strip one Hive SQL identifier layer, keeping inner quote characters. */

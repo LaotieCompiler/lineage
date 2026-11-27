@@ -238,6 +238,55 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void turkishLocaleDoesNotChangePartitionFolding() {
+        java.util.Locale previous = java.util.Locale.getDefault();
+        try {
+            java.util.Locale.setDefault(new java.util.Locale("tr", "TR"));
+            MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+            catalog.loadDdl("CREATE TABLE a (x INT, src_day STRING)"
+                    + " USING parquet;"
+                    + " CREATE TABLE t (x INT, id STRING, dt STRING)"
+                    + " USING parquet PARTITIONED BY (id, dt);");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "INSERT OVERWRITE TABLE t"
+                            + " PARTITION (ID = '1', dt)"
+                            + " SELECT x, src_day FROM a;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(
+                    new Column("a.src_day"))),
+                    result.getGraph().getSources(new Column("t.dt")));
+            assertFalse(result.getGraph().getReverseGraph()
+                    .containsVertex(new Column("t.id")));
+        } finally {
+            java.util.Locale.setDefault(previous);
+        }
+    }
+
+    @Test
+    public void sparkQuotedReadResolvesCaseInsensitively() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (x INT, src_day STRING)"
+                + " USING parquet;"
+                + " CREATE TABLE t (x INT, day STRING)"
+                + " USING parquet PARTITIONED BY (day);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t PARTITION (day)"
+                        + " SELECT x, src_day FROM a;"
+                        + " SELECT `DAY` AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_day"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.copied")));
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.DAY")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

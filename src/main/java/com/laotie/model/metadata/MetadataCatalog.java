@@ -738,8 +738,10 @@ public class MetadataCatalog {
         boolean quoted = isQuotedIdentifier(rawName);
         String name = normalizeIdentifier(rawName);
         Column column;
-        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
-            // MySQL/MariaDB column names are case-insensitive even when quoted.
+        if (dialect == DbType.mysql || dialect == DbType.mariadb
+                || dialect == DbType.hive || dialect == DbType.antspark) {
+            // MySQL/MariaDB and the case-insensitive Hive/Spark modes ignore case
+            // even when the reference is quoted.
             column = table.getColumnIgnoreCase(name);
         } else if (quoted) {
             column = table.getColumnExact(name);

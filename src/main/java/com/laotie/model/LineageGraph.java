@@ -314,7 +314,7 @@ public class LineageGraph {
                     reverseGraph.addEdge(columnVertex, precise);
                 }
                 if (explicitTargets
-                        || targetWidth == 1 && names.size() == 1) {
+                        || targetWidth > 0 && names.size() == targetWidth) {
                     for (Column positionalSource : positionalSources) {
                         reverseGraph.addVertex(positionalSource);
                         if (!columnVertex.equals(positionalSource)) {

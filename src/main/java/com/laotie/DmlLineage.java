@@ -8249,6 +8249,8 @@ public class DmlLineage {
                                     ? declaredTarget.get(startPosition + relative) : name;
                     String locked = lockedOutputName(targetTable,
                             startPosition + relative);
+                    String lockedKey = lockedOutputKey(targetTable,
+                            startPosition + relative);
                     if (locked != null) {
                         outputName = locked;
                     }
@@ -8258,7 +8260,8 @@ public class DmlLineage {
                             startPosition + relative, source.temporary,
                             targetTemporary));
                     setTargetOutput(targetTable, startPosition + relative,
-                            outputName, identifierKey(outputName));
+                            outputName, lockedKey != null ? lockedKey
+                                    : identifierKey(outputName));
                 }
                 return totalWidth;
             }

@@ -897,6 +897,27 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void quotedUnionLockSurvivesNestedStar() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE dst.t (a INT);"
+                + " CREATE TABLE src.v (w INT);"
+                + " CREATE TABLE src.s (x INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO dst.t (a) SELECT r.\"P\" FROM ("
+                        + " SELECT w AS \"P\" FROM src.v"
+                        + " UNION ALL SELECT q.* FROM ("
+                        + " SELECT * FROM ext.missing"
+                        + " UNION ALL SELECT x FROM src.s) AS q) AS r;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("src.v.w"), new Column("src.s.x"),
+                new Column("ext.missing.*"))),
+                result.getGraph().getSources(new Column("dst.t.a")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

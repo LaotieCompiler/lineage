@@ -13,6 +13,7 @@ import org.junit.Test;
 
 import com.alibaba.druid.DbType;
 import com.laotie.model.ScanResult;
+import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
@@ -122,6 +123,147 @@ public class AdvancedDmlTest {
         ScanResult result = LineageScanner.withMetadata(context, optional())
                 .scan("INSERT INTO t(c1) SELECT v FROM a,"
                         + " LATERAL (SELECT max(b.c1) AS v FROM b) l;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void mergeUpdateExpressionReadsTheTargetTable() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING s ON t.c1 = s.c1"
+                        + " WHEN MATCHED THEN UPDATE SET c2 = t.c1 + s.c2;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = sources(result, "t.c2");
+        assertTrue(sources.contains(new Column("t.c1")));
+        assertTrue(sources.contains(new Column("s.c2")));
+    }
+
+    @Test
+    public void mergeInsertColumnIsValidatedAgainstTheCatalog() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING s ON t.c1 = s.c1"
+                        + " WHEN NOT MATCHED THEN INSERT (bogus) VALUES (s.c1);");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void mergeWithoutColumnListUsesTheCatalogColumns() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT);"
+                        + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING s ON t.c1 = s.c1"
+                        + " WHEN NOT MATCHED THEN INSERT VALUES (s.c1, s.c2, 0, 0);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.c1"))),
+                sources(result, "t.c1"));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.c2"))),
+                sources(result, "t.c2"));
+    }
+
+    @Test
+    public void scalarSubqueryKeepsTheRestOfTheExpression() {
+        MetadataContext context = catalog(
+                "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE b (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("UPDATE a SET c2 = (SELECT c1 FROM b) + a.c1;");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = sources(result, "a.c2");
+        assertTrue(sources.contains(new Column("b.c1")));
+        assertTrue(sources.contains(new Column("a.c1")));
+    }
+
+    @Test
+    public void scalarSubqueryDoesNotBreakLaterAssignments() {
+        MetadataContext context = catalog(
+                "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE b (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("UPDATE a SET c1 = (SELECT c1 FROM b), c2 = a.c1;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "a.c1"));
+        // The second assignment still reads a.c1, so the edge survives; a.c2 then
+        // reaches b.c1 transitively through the updated a.c1.
+        assertTrue(result.getGraph().getReverseGraph()
+                .containsEdge(new Column("a.c2"), new Column("a.c1")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "a.c2"));
+    }
+
+    @Test
+    public void scalarAfterUnknownWidthWildcardKeepsNoColumnEdge() {
+        MetadataContext context = catalog(
+                "CREATE TABLE b (c1 INT);"
+                        + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1,c2,c3) SELECT missing.*,"
+                        + " (SELECT c1 FROM b) FROM missing;");
+
+        assertEquals(0, result.getFailures().size());
+        // The scalar follows an unknown-width wildcard, so no column may be pinned.
+        assertFalse(sources(result, "t.c2").contains(new Column("b.c1")));
+    }
+
+    @Test
+    public void scalarBeforeUnknownWidthWildcardKeepsUnionWidth() {
+        MetadataContext context = catalog(
+                "CREATE TABLE b (c1 INT);"
+                        + " CREATE TABLE t (c1 INT, c2 INT, c3 INT, c4 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t SELECT (SELECT c1 FROM b), missing.*"
+                        + " FROM missing UNION ALL SELECT 1,2,3; SELECT c4 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+        // The union is three columns wide, so the fourth target column is untouched.
+        assertFalse(sources(result, "t.c4").contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void scalarSubqueryWithoutOuterFromIsAnalyzed() {
+        MetadataContext context = catalog(
+                "CREATE TABLE b (c1 INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT (SELECT c1 FROM b);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void scalarAggregateKeepsItsInnerSource() {
+        MetadataContext context = catalog(
+                "CREATE TABLE a (c1 INT); CREATE TABLE b (c1 INT);"
+                        + " CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT (SELECT max(b.c1) FROM b) FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void replaceWithValuesKeepsExpressionLineage() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE b (c1 INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("REPLACE INTO t(c1) VALUES ((SELECT MAX(c1) FROM b));");
 
         assertEquals(0, result.getFailures().size());
         assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),

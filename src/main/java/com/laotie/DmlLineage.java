@@ -1830,9 +1830,15 @@ public class DmlLineage {
                     minWidth += 1;
                     continue;
                 }
-                int width = recordUnboundSelectItem(item, position);
-                if (!outerSources.isEmpty()) {
-                    recordOuterExpressionMappings(item, position);
+                int width;
+                if (item.getExpr() instanceof SQLQueryExpr) {
+                    width = processScalarSubqueryProjection(item,
+                            (SQLQueryExpr) item.getExpr(), position);
+                } else {
+                    width = recordUnboundSelectItem(item, position);
+                    if (!outerSources.isEmpty()) {
+                        recordOuterExpressionMappings(item, position);
+                    }
                 }
                 position += width;
                 minWidth += minimumOutputColumns(item.getExpr());
@@ -3109,6 +3115,18 @@ public class DmlLineage {
         return normalizeIdentifier(rawName);
     }
 
+    private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr,
+            int position) {
+        String targetTable = stackTargetTable.peek();
+        int savedOrdinal = currentOrdinal;
+        currentOrdinal = position;
+        try {
+            return processScalarSubqueryProjection(item, expr);
+        } finally {
+            currentOrdinal = savedOrdinal;
+        }
+    }
+
     private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr) {
         String targetTable = stackTargetTable.peek();
         ScalarSubquery inner = analyzeScalarSubquery(expr);
@@ -3136,9 +3154,13 @@ public class DmlLineage {
         }
         setTargetOutput(targetTable, currentOrdinal, targetColumn, targetKey);
         markOutputNameKnown(targetTable, currentOrdinal, true);
+        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+            // The position follows an unknown-width wildcard, so no edge may be
+            // pinned to a column, exactly like an ordinary projection there.
+            return 1;
+        }
         for (int i = 0; i < inner.columns.size(); i++) {
-            String source = inner.temp + "."
-                    + renderIdentifier(inner.columns.get(i));
+            String source = inner.temp + "." + inner.columns.get(i);
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
                     targetTable + "." + renderIdentifier(targetColumn), currentOrdinal,
                     true, tempTables.contains(targetTable)));
@@ -3219,6 +3241,8 @@ public class DmlLineage {
         tempTables.add(target);
         int savedOrdinal = currentOrdinal;
         int savedUncertain = uncertainOrdinal;
+        int savedBudget = currentStarBudget;
+        boolean savedInTarget = inTargetExpression;
         try {
             stackTargetTable.push(target);
             processSelect(select);
@@ -3226,6 +3250,8 @@ public class DmlLineage {
         } finally {
             currentOrdinal = savedOrdinal;
             uncertainOrdinal = savedUncertain;
+            currentStarBudget = savedBudget;
+            inTargetExpression = savedInTarget;
         }
         recordTargetShape(target);
         List<String> outputs = copyOutputs(targetOutputs.get(target));
@@ -3245,7 +3271,8 @@ public class DmlLineage {
             baseExpr = ((SQLCastExpr) baseExpr).getExpr();
         }
         if (baseExpr instanceof SQLQueryExpr) {
-            return processScalarSubqueryProjection(item, (SQLQueryExpr) baseExpr);
+            return processScalarSubqueryProjection(item, (SQLQueryExpr) baseExpr,
+                    currentOrdinal);
         }
 
         String targetTable = stackTargetTable.peek();
@@ -5302,9 +5329,11 @@ public class DmlLineage {
         }
         String targetTable = stackTargetTable.peek();
         String targetColumn = stackTargetColumn.peek();
+        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+            return;
+        }
         for (int i = 0; i < inner.columns.size(); i++) {
-            String source = inner.temp + "."
-                    + renderIdentifier(inner.columns.get(i));
+            String source = inner.temp + "." + inner.columns.get(i);
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
                     targetTable + "." + targetColumn, currentOrdinal, true,
                     tempTables.contains(targetTable)));
@@ -7059,8 +7088,86 @@ public class DmlLineage {
 
     private void processReplace(SQLReplaceStatement replace) {
         SQLQueryExpr query = replace.getQuery();
-        processInsertInto(replace.getTableSource(), replace.getColumns(),
-                query == null ? null : query.getSubQuery(), null);
+        if (query != null) {
+            processInsertInto(replace.getTableSource(), replace.getColumns(),
+                    query.getSubQuery(), null);
+            return;
+        }
+        // REPLACE INTO ... VALUES: the written values are literals or expressions.
+        processValuesInto(replace.getTableSource(), replace.getColumns(),
+                replace.getValuesList());
+    }
+
+    /**
+     * Write a VALUES list into a target table. Literal values carry no lineage, but
+     * an expression (for example a scalar subquery) does.
+     */
+    private void processValuesInto(SQLExprTableSource tableSource,
+            List<SQLExpr> insertColumns,
+            List<SQLInsertStatement.ValuesClause> valueClauses) {
+        String rawName = extractTableName(tableSource);
+        String written = normalizeQualifiedName(rawName);
+        String tableName = detachedMetadata() && context == null && rawName != null
+                ? canonicalPhysicalReference(rawName) : written;
+        Table targetMetadata = null;
+        if (context != null && findCteTarget(identifierKey(rawName)) == null) {
+            TableLocation location = resolveMetadataTable(rawName);
+            if (location != null) {
+                tableName = location.getDisplayName();
+                targetMetadata = location.getTable();
+            }
+        }
+        registerTable(written, tableName, tableName, tableSource.getAlias() == null
+                ? null : normalizeIdentifier(tableSource.getAlias()),
+                findCteTarget(identifierKey(rawName)) != null);
+        if (valueClauses == null || valueClauses.isEmpty()) {
+            return;
+        }
+        String valuesTemp = getTempTableName();
+        stackTargetTable.push(valuesTemp);
+        intermediateTargets.add(valuesTemp);
+        try {
+            for (SQLInsertStatement.ValuesClause clause : valueClauses) {
+                List<SQLExpr> values = clause.getValues();
+                for (int i = 0; i < values.size(); i++) {
+                    SQLExpr value = values.get(i);
+                    if (!(value instanceof SQLQueryExpr)) {
+                        continue;
+                    }
+                    ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) value);
+                    if (inner == null || inner.columns.isEmpty()) {
+                        continue;
+                    }
+                    String column = i < insertColumns.size()
+                            ? lastIdentifier(rawColumnName(insertColumns.get(i)))
+                            : inner.columns.get(0);
+                    String source = inner.temp + "." + inner.columns.get(0);
+                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
+                            valuesTemp + "." + renderIdentifier(column), i, true, true));
+                }
+            }
+            String fromTable = stackTargetTable.peek();
+            boolean fromTemporary = tempTables.contains(fromTable);
+            if (insertColumns != null && !insertColumns.isEmpty()) {
+                final Table insertMetadata = targetMetadata;
+                final String insertTable = tableName;
+                String colStr = insertColumns.stream()
+                        .map(column -> renderInsertColumn(insertMetadata, insertTable,
+                                column))
+                        .collect(Collectors.joining(","));
+                Instruction insertEdge = new Instruction(OperationType.COLUMNS_INJECT,
+                        fromTable, String.format("%s(%s)", tableName, colStr), -1,
+                        fromTemporary, false);
+                insertEdge.setWildcardTable(tableName);
+                insertEdge.setPopulatedColumns(colStr);
+                instructions.add(insertEdge);
+            } else {
+                instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
+                        fromTable, tableName, -1, fromTemporary, false));
+            }
+        } finally {
+            stackTargetTable.pop();
+        }
     }
 
     private void processTruncate(SQLTruncateStatement truncate) {
@@ -7098,9 +7205,19 @@ public class DmlLineage {
 
         Map<String, List<SourceTable>> using = new LinkedHashMap<>();
         List<SourceTable> sources = new ArrayList<>();
+        // The target table is visible to the update expression, so its own columns
+        // can be read while writing.
+        sources.addAll(buildSourceNode(target, using).sources);
         if (merge.getUsing() instanceof SQLTableSource) {
             sources.addAll(buildSourceNode((SQLTableSource) merge.getUsing(), using)
                     .sources);
+        }
+        Table targetTableMetadata = null;
+        if (context != null) {
+            TableLocation location = resolveMetadataTable(rawName);
+            if (location != null) {
+                targetTableMetadata = location.getTable();
+            }
         }
         stackTargetTable.push(tableName);
         stackSources.push(sources);
@@ -7112,7 +7229,8 @@ public class DmlLineage {
             if (update != null) {
                 for (SQLUpdateSetItem item : update.getItems()) {
                     stackTargetColumn.push(renderIdentifier(
-                            lastIdentifier(rawColumnName(item.getColumn()))));
+                            mergeTargetColumn(targetTableMetadata, tableName,
+                                    item.getColumn())));
                     currentOrdinal = -1;
                     visitExpr(item.getValue());
                     stackTargetColumn.pop();
@@ -7120,13 +7238,25 @@ public class DmlLineage {
                 collectTablesFromExpression(update.getWhere());
             }
             SQLMergeStatement.MergeInsertClause insert = merge.getInsertClause();
-            if (insert != null && insert.getColumns() != null
-                    && insert.getValues() != null) {
+            if (insert != null && insert.getValues() != null) {
                 List<SQLExpr> columns = insert.getColumns();
                 List<SQLExpr> values = insert.getValues();
-                for (int i = 0; i < columns.size() && i < values.size(); i++) {
-                    stackTargetColumn.push(renderIdentifier(
-                            lastIdentifier(rawColumnName(columns.get(i)))));
+                boolean hasColumnList = columns != null && !columns.isEmpty();
+                List<String> targetColumns = hasColumnList ? null
+                        : mergeTargetColumns(targetTableMetadata, tableName,
+                                values.size());
+                for (int i = 0; i < values.size(); i++) {
+                    String column;
+                    if (hasColumnList) {
+                        if (i >= columns.size()) {
+                            break;
+                        }
+                        column = mergeTargetColumn(targetTableMetadata, tableName,
+                                columns.get(i));
+                    } else {
+                        column = targetColumns.get(i);
+                    }
+                    stackTargetColumn.push(renderIdentifier(column));
                     currentOrdinal = -1;
                     visitExpr(values.get(i));
                     stackTargetColumn.pop();
@@ -7141,6 +7271,37 @@ public class DmlLineage {
             stackTargetTable.pop();
         }
         collectTablesFromExpression(merge.getOn());
+    }
+
+    private String mergeTargetColumn(Table metadata, String tableName, SQLExpr column) {
+        String raw = lastIdentifier(rawColumnName(column));
+        if (metadata != null) {
+            String resolved = MetadataCatalog.resolveColumnName(metadata, raw,
+                    currentDialect());
+            if (resolved == null) {
+                throw new ColumnNotFoundException(normalizeIdentifier(raw),
+                        java.util.Collections.singletonList(tableName));
+            }
+            return resolved;
+        }
+        return normalizeIdentifier(raw);
+    }
+
+    private List<String> mergeTargetColumns(Table metadata, String tableName,
+            int count) {
+        if (metadata == null) {
+            throw new ColumnNotFoundException("*",
+                    java.util.Collections.singletonList(tableName));
+        }
+        List<String> columns = new ArrayList<>();
+        for (Column column : metadata.getFields()) {
+            columns.add(column.getColumnName());
+        }
+        if (columns.size() < count) {
+            throw new ColumnNotFoundException("*",
+                    java.util.Collections.singletonList(tableName));
+        }
+        return columns;
     }
 
     private void processInsertInto(SQLExprTableSource tableSource,

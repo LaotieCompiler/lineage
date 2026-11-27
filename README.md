@@ -131,6 +131,12 @@ open-ended fuzz loop:
 All other table-function learning and owner-resolution cases in this area are covered by
 regression tests.
 
+#### Review status
+
+The Hive/Spark support batch was closed after 31 failed Codex review rounds. Every reported
+finding was fixed before closure; the final fix was locale-independent matching of Spark
+ANSI settings. No further adversarial review rounds were run for that batch.
+
 ### lineage graph
 
 1. build lineage graph by direct relations

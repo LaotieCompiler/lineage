@@ -109,6 +109,11 @@ LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
 
 该区域的其他表函数学习与 owner 解析场景均有回归测试覆盖。
 
+#### 审核状态
+
+Hive/Spark 支持批次在 31 轮 Codex 审核失败后关闭。关闭前已修复所有已报告的问题，最后一次
+修复是 Spark ANSI 设置的 locale 无关匹配。该批次不再继续对抗性审核轮次。
+
 ### 血缘地图
 
 1. 通过直接关系构建血缘地图

@@ -115,6 +115,8 @@ public class DmlLineage {
      * statement sees the same picture.
      */
     private boolean learningDisabled;
+    /** JOIN alias bindings visible while discovering a query block. */
+    private Map<String, SourceNode> learningBindings = new HashMap<>();
     /** Depth of scalar-subquery analysis; outer scopes stay visible inside it. */
     private int scalarSubqueryDepth;
     private Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
@@ -5643,6 +5645,8 @@ public class DmlLineage {
     private static final String LOCAL_AMBIGUOUS = "\u0000local-ambiguous";
     /** Separates the tables an alias/join binding may come from. */
     private static final String LOCAL_TABLE_SEPARATOR = "\u0002";
+    /** Marks a name that resolves through a JOIN binding's visible plan. */
+    private static final String LOCAL_BINDING = "\u0000binding";
 
     private static String joiningTables(Iterable<String> tables) {
         Set<String> unique = new LinkedHashSet<>();
@@ -5680,7 +5684,9 @@ public class DmlLineage {
                         : qualifiedKey(property.getOwner().toString());
                 if (ownerKey != null && locals.containsKey(ownerKey)) {
                     String learnedTable = locals.get(ownerKey);
-                    if (learnedTable != null
+                    if (LOCAL_BINDING.equals(learnedTable)) {
+                        learnThroughBinding(property.getOwner(), rawName);
+                    } else if (learnedTable != null
                             && !LOCAL_AMBIGUOUS.equals(learnedTable)) {
                         for (String table : learnedTable.split(
                                 LOCAL_TABLE_SEPARATOR)) {
@@ -5750,6 +5756,28 @@ public class DmlLineage {
         } else if (expr instanceof SQLExtractExpr) {
             learnExplicitReferences(((SQLExtractExpr) expr).getValue(), locals,
                     cteKeys);
+        }
+    }
+
+    private void learnThroughBinding(SQLExpr owner, String rawName) {
+        if (owner == null) {
+            return;
+        }
+        String key = identifierKey(owner.toString());
+        SourceNode binding = learningBindings.get(key);
+        if (binding == null) {
+            binding = learningBindings.get(qualifiedKey(owner.toString()));
+        }
+        if (binding == null) {
+            return;
+        }
+        String columnKey = identifierKey(rawName);
+        for (StarOutput output : binding.plan) {
+            for (StarColumn column : output.sources) {
+                if (columnKey != null && columnKey.equals(column.key)) {
+                    learnColumn(column.source, column.column, true);
+                }
+            }
         }
     }
 
@@ -5929,13 +5957,8 @@ public class DmlLineage {
             if (frame < stackJoinBindings.size()) {
                 for (Map.Entry<String, SourceNode> binding
                         : stackJoinBindings.get(frame).entrySet()) {
-                    List<String> tables = new ArrayList<>();
-                    for (SourceTable source : binding.getValue().sources) {
-                        if (!source.temporary && source.rawName != null) {
-                            tables.add(learnedTableKey(source.rawName));
-                        }
-                    }
-                    putLocal(frameLocals, binding.getKey(), joiningTables(tables));
+                    putLocal(frameLocals, binding.getKey(), LOCAL_BINDING);
+                    learningBindings.put(binding.getKey(), binding.getValue());
                 }
             }
             locals.putAll(frameLocals);
@@ -5959,6 +5982,10 @@ public class DmlLineage {
 
     private void learnNoFromExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
+        learningBindings.clear();
+        if (!stackJoinBindings.isEmpty()) {
+            learningBindings.putAll(stackJoinBindings.peek());
+        }
         Set<String> ctes = currentCteKeys();
         for (SQLSelectItem item : block.getSelectList()) {
             learnExplicitReferences(item.getExpr(), inherited, ctes);
@@ -5968,6 +5995,10 @@ public class DmlLineage {
 
     private void learnBlockExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
+        learningBindings.clear();
+        if (!stackJoinBindings.isEmpty()) {
+            learningBindings.putAll(stackJoinBindings.peek());
+        }
         Set<String> ctes = currentCteKeys();
         Map<String, String> frameLocals = new HashMap<>();
         collectLocalNames(block.getFrom(), frameLocals, ctes);
@@ -6021,10 +6052,9 @@ public class DmlLineage {
             collectLocalNames(join.getLeft(), childLocals, ctes);
             collectLocalNames(join.getRight(), childLocals, ctes);
             if (join.getAlias() != null) {
-                // An alias hides every qualifier inside the joined subtree, but it
-                // stands for all of the subtree's tables.
-                locals.put(qualifiedKey(join.getAlias()),
-                        joiningTables(childLocals.values()));
+                // An alias hides every qualifier inside the joined subtree; a
+                // reference through it resolves through the visible plan.
+                locals.put(qualifiedKey(join.getAlias()), LOCAL_BINDING);
             }
         } else if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;
@@ -8373,37 +8403,53 @@ public class DmlLineage {
     private void processUpdate(SQLUpdateStatement update) {
         Map<String, List<SourceTable>> using = new LinkedHashMap<>();
         List<SourceTable> sources = new ArrayList<>();
-        if (update.getTableSource() != null) {
-            sources.addAll(buildSourceNode(update.getTableSource(), using).sources);
-        }
-        if (update.getFrom() != null) {
-            sources.addAll(buildSourceNode(update.getFrom(), using).sources);
-        }
-        if (sources.isEmpty()) {
-            return;
-        }
-
-        String target = sources.get(0).displayName;
-        stackTargetTable.push(target);
-        stackSources.push(sources);
-        stackUsing.push(using);
-        stackSourceTable.push(target);
-        inTargetExpression = true;
+        List<StarOutput> plan = new ArrayList<>();
+        stackJoinBindings.push(new HashMap<String, SourceNode>());
+        stackHiddenSources.push(new HashSet<SourceTable>());
         try {
-            for (SQLUpdateSetItem item : update.getItems()) {
-                String targetColumn = canonicalColumnName(target,
-                        rawColumnName(item.getColumn()));
-                stackTargetColumn.push(renderIdentifier(targetColumn));
-                currentOrdinal = -1;
-                visitExpr(item.getValue());
-                stackTargetColumn.pop();
+            if (update.getTableSource() != null) {
+                SourceNode node = buildSourceNode(update.getTableSource(), using);
+                sources.addAll(node.sources);
+                plan.addAll(node.plan);
+            }
+            if (update.getFrom() != null) {
+                SourceNode node = buildSourceNode(update.getFrom(), using);
+                sources.addAll(node.sources);
+                plan.addAll(node.plan);
+            }
+            if (sources.isEmpty()) {
+                return;
+            }
+
+            String target = sources.get(0).displayName;
+            stackTargetTable.push(target);
+            stackSources.push(sources);
+            lateralScopes.push(Boolean.FALSE);
+            stackUsing.push(using);
+            stackStarPlan.push(plan);
+            stackSourceTable.push(target);
+            inTargetExpression = true;
+            try {
+                for (SQLUpdateSetItem item : update.getItems()) {
+                    String targetColumn = canonicalColumnName(target,
+                            rawColumnName(item.getColumn()));
+                    stackTargetColumn.push(renderIdentifier(targetColumn));
+                    currentOrdinal = -1;
+                    visitExpr(item.getValue());
+                    stackTargetColumn.pop();
+                }
+            } finally {
+                inTargetExpression = false;
+                stackSourceTable.pop();
+                stackStarPlan.pop();
+                stackUsing.pop();
+                lateralScopes.pop();
+                stackSources.pop();
+                stackTargetTable.pop();
             }
         } finally {
-            inTargetExpression = false;
-            stackSourceTable.pop();
-            stackUsing.pop();
-            stackSources.pop();
-            stackTargetTable.pop();
+            stackHiddenSources.pop();
+            stackJoinBindings.pop();
         }
         collectTablesFromExpression(update.getWhere());
     }

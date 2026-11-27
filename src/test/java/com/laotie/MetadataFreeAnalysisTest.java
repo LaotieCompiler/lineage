@@ -4723,4 +4723,32 @@ public class MetadataFreeAnalysisTest {
                 instanceof ColumnNotFoundException);
     }
 
+    @Test
+    public void joinAliasLearningUsesItsVisiblePlan() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM B, C;"
+                        + " SELECT 1 FROM ((SELECT 1 AS k) AS d CROSS JOIN B) AS j"
+                        + " WHERE j.k = 1;"
+                        + " SELECT B.y, C.y FROM B, C;");
+
+        // j.k is the derived constant, not a column of B.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void updateFramesKeepJoinAliasHiding() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM B, C;"
+                        + " UPDATE t SET v = (SELECT (SELECT 1 WHERE q.k = 1)"
+                        + " FROM (B AS q CROSS JOIN D) AS j LIMIT 1) FROM A AS q;"
+                        + " SELECT A.k, B.y, C.y FROM A, B, C;");
+
+        // j hides B AS q, so q.k cannot become B.k.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
 }

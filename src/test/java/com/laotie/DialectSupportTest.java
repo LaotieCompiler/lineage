@@ -826,6 +826,40 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void partitionKeywordWordDoesNotHideTargetList() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " SET spark.sql.ansi.enforceReservedKeywords = false;"
+                        + " INSERT OVERWRITE TABLE t"
+                        + " PARTITION (with='fixed') (\"K\")"
+                        + " SELECT a.y FROM a;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt4.temp0.copied")));
+    }
+
+    @Test
+    public void doublyParenthesizedSourceQueryKeepsTargetList() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " SET spark.sql.ansi.enforceReservedKeywords = false;"
+                        + " INSERT INTO t (\"K\") ((SELECT a.y FROM a));"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt4.temp0.copied")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

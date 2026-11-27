@@ -8447,6 +8447,8 @@ public class DmlLineage {
         int lastStart = -1;
         int lastEnd = -1;
         boolean seenInsert = false;
+        boolean expectPartition = false;
+        boolean groupIsPartition = false;
         char quote = 0;
         for (int i = 0; i < sql.length(); i++) {
             char ch = sql.charAt(i);
@@ -8496,7 +8498,9 @@ public class DmlLineage {
             }
             if (ch == '(') {
                 if (depth == 0 && seenInsert) {
-                    groupStart = i;
+                    groupIsPartition = expectPartition;
+                    expectPartition = false;
+                    groupStart = groupIsPartition ? -1 : i;
                 }
                 depth++;
             } else if (ch == ')') {
@@ -8519,6 +8523,8 @@ public class DmlLineage {
                     if ("INSERT".equalsIgnoreCase(word)) {
                         seenInsert = true;
                     }
+                } else if ("PARTITION".equalsIgnoreCase(word)) {
+                    expectPartition = true;
                 } else if ("SELECT".equalsIgnoreCase(word)
                         || "VALUES".equalsIgnoreCase(word)
                         || "WITH".equalsIgnoreCase(word)) {
@@ -8621,6 +8627,9 @@ public class DmlLineage {
                     return false;
                 }
                 i = newline + 1;
+            } else if (ch == '(') {
+                // A parenthesized source query may be nested.
+                i++;
             } else if (Character.isLetter(ch)) {
                 int stop = i + 1;
                 while (stop < end && isIdentifierChar(sql.charAt(stop))) {

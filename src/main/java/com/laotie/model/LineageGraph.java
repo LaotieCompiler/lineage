@@ -122,10 +122,12 @@ public class LineageGraph {
                                 String columns = instruction.getPopulatedColumns();
                                 String fromTable = instruction.getFrom();
                                 boolean fromTemporary = instruction.isFromTemporary();
+                                int targetWidth = physicalColumnNames(
+                                        to.getTableName(), result.getContext()).size();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
-                                        source, columns, prefix, fromTable, fromTemporary,
-                                        tempColumnsByPosition, tempWidthKnown,
-                                        tempWildcardRegions));
+                                        source, columns, targetWidth, prefix, fromTable,
+                                        fromTemporary, tempColumnsByPosition,
+                                        tempWidthKnown, tempWildcardRegions));
                             }
                         } else if (!to.isTemporary() && result.getContext() != null) {
                             java.util.List<String> targetColumns =
@@ -153,12 +155,14 @@ public class LineageGraph {
                                 Column target = to;
                                 Column source = from;
                                 java.util.List<String> names = targetColumns;
+                                int targetWidth = physicalColumnNames(
+                                        to.getTableName(), result.getContext()).size();
                                 String fromTable = instruction.getFrom();
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
-                                        source, names, prefix, fromTable, fromTemporary,
-                                        tempColumnsByPosition, tempWidthKnown,
-                                        tempWildcardRegions));
+                                        source, names, targetWidth, prefix, fromTable,
+                                        fromTemporary, tempColumnsByPosition,
+                                        tempWidthKnown, tempWildcardRegions));
                             }
                     }
                     reverseGraph.addVertex(from);
@@ -264,18 +268,18 @@ public class LineageGraph {
      * INSERTs into the same table keep their own sources.
      */
     private void linkPopulatedColumns(Column target, Column sourceWildcard, String columns,
-            String prefix, String fromTable, boolean fromTemporary,
+            int targetWidth, String prefix, String fromTable, boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
             Set<String> tempWidthKnown,
             Map<String, java.util.List<WildcardRegion>> tempWildcardRegions) {
-        linkPopulatedColumns(target, sourceWildcard, splitColumns(columns), prefix,
-                fromTable, fromTemporary, tempColumnsByPosition, tempWidthKnown,
-                tempWildcardRegions);
+        linkPopulatedColumns(target, sourceWildcard, splitColumns(columns),
+                targetWidth, prefix, fromTable, fromTemporary,
+                tempColumnsByPosition, tempWidthKnown, tempWildcardRegions);
     }
 
     private void linkPopulatedColumns(Column target, Column sourceWildcard,
-            java.util.List<String> names, String prefix, String fromTable,
-            boolean fromTemporary,
+            java.util.List<String> names, int targetWidth, String prefix,
+            String fromTable, boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
             Set<String> tempWidthKnown,
             Map<String, java.util.List<WildcardRegion>> tempWildcardRegions) {
@@ -307,6 +311,14 @@ public class LineageGraph {
                 reverseGraph.addVertex(precise);
                 if (!columnVertex.equals(precise)) {
                     reverseGraph.addEdge(columnVertex, precise);
+                }
+                if (targetWidth == 1 && names.size() == 1) {
+                    for (Column positionalSource : positionalSources) {
+                        reverseGraph.addVertex(positionalSource);
+                        if (!columnVertex.equals(positionalSource)) {
+                            reverseGraph.addEdge(columnVertex, positionalSource);
+                        }
+                    }
                 }
                 continue;
             }

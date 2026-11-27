@@ -2171,7 +2171,17 @@ public class DmlLineage {
                 unknownStarSeen = true;
             }
             currentOrdinal = start;
-            int advanced = processSelectItem(item);
+            int advanced;
+            try {
+                advanced = processSelectItem(item);
+            } catch (RuntimeException e) {
+                if (!metadataPass) {
+                    throw e;
+                }
+                // Discovery keeps walking the statement so explicit references
+                // after an unresolvable projection are still observed.
+                advanced = Math.max(minimumOutputColumns(item.getExpr()), 1);
+            }
             if (inferredWidth) {
                 // The UNION width pins this wildcard exactly once; it must not leak
                 // into the next projection's width.
@@ -3081,6 +3091,21 @@ public class DmlLineage {
                 displayNames(currentSources()));
     }
 
+    private List<SourceTable> participantsForCurrentUsing(String key) {
+        if (stackUsing.isEmpty() || usingParticipantsByIdentity.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Map<String, List<SourceTable>> using = stackUsing.peek();
+        if (using == null) {
+            return new ArrayList<>();
+        }
+        Map<String, List<SourceTable>> sides = usingParticipantsByIdentity.get(using);
+        if (sides == null || !sides.containsKey(key)) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(sides.get(key));
+    }
+
     private List<SourceTable> currentUsingParticipants(String key) {
         if (stackUsing.isEmpty()) {
             return new ArrayList<>();
@@ -3164,12 +3189,13 @@ public class DmlLineage {
 
     /**
      * Record the tables an unnamed scalar subquery reads as a table-level claim on
-     * the target, so the write keeps its lineage even without a column name.
+     * the target. When the written column is known (UPDATE/VALUES), the claim is
+     * bound to that column; otherwise it occupies one projection position.
      */
     private void recordScalarTableLevel(ScalarSubquery inner, String targetTable,
-            int position) {
-        String prefix = inner.temp + ".";
+            int position, String targetColumn) {
         Set<String> tables = new LinkedHashSet<>();
+        String prefix = inner.temp + ".";
         for (Instruction instruction : instructions) {
             String to = instruction.getTo();
             if (to == null) {
@@ -3183,18 +3209,39 @@ public class DmlLineage {
             if (from == null) {
                 continue;
             }
-            int dot = from.lastIndexOf('.');
-            String table = dot >= 0 ? from.substring(0, dot) : from;
+            String table;
+            if (instruction.getOperation() == OperationType.COLUMNS_INJECT
+                    || instruction.getOperation() == OperationType.TABLE_MAPPING) {
+                // The wildcard keeps the whole table identity (including schema).
+                table = from;
+            } else {
+                int dot = from.lastIndexOf('.');
+                table = dot >= 0 ? from.substring(0, dot) : from;
+            }
             if (!table.isEmpty()) {
                 tables.add(table);
             }
         }
         for (String table : tables) {
-            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT, table,
-                    targetTable, position, false, tempTables.contains(targetTable));
-            wildcard.setPositionalWildcard(true);
-            instructions.add(wildcard);
-            targetWildcardContribution.put(targetTable, Boolean.TRUE);
+            if (targetColumn != null) {
+                String rendered = renderIdentifier(targetColumn);
+                Instruction edge = new Instruction(OperationType.COLUMNS_INJECT,
+                        table, targetTable + "(" + rendered + ")", -1, false, false);
+                edge.setPositionalWildcard(true);
+                edge.setWildcardTable(targetTable);
+                edge.setPopulatedColumns(rendered);
+                instructions.add(edge);
+            } else {
+                Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
+                        table, targetTable, position, false,
+                        tempTables.contains(targetTable));
+                wildcard.setPositionalWildcard(true);
+                wildcard.setWildcardWidthKnown(true);
+                wildcard.setWildcardWidth(1);
+                instructions.add(wildcard);
+                recordWildcardSpan(targetTable, position, position + 1, table, false);
+                targetWildcardContribution.put(targetTable, Boolean.TRUE);
+            }
         }
     }
 
@@ -3217,7 +3264,7 @@ public class DmlLineage {
             return 1;
         }
         if (inner.columns.isEmpty()) {
-            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal);
+            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal, null);
             return 1;
         }
         List<String> declaredColumns = currentTargetColumnAliases(targetTable);
@@ -3521,9 +3568,12 @@ public class DmlLineage {
         }
         recordTargetShape(target);
         List<String> outputs = copyOutputs(targetOutputs.get(target));
-        if (outputs.size() > 1) {
+        boolean widthKnown = Boolean.TRUE.equals(targetWidthKnown.get(target));
+        int minimum = targetMinimumColumns(target, widthKnown, outputs.size());
+        int width = Math.max(outputs.size(), minimum);
+        if (width > 1) {
             throw new IllegalStateException(
-                    "Scalar subquery must return one column: " + outputs.size());
+                    "Scalar subquery must return one column: " + width);
         }
         List<String> columns = new ArrayList<>();
         for (String output : outputs) {
@@ -5615,7 +5665,8 @@ public class DmlLineage {
             return;
         }
         if (inner.columns.isEmpty()) {
-            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal);
+            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal,
+                    stackTargetColumn.peek());
             return;
         }
         String targetTable = stackTargetTable.peek();
@@ -6948,7 +6999,24 @@ public class DmlLineage {
         Map<String, List<SourceTable>> using = stackUsing.isEmpty()
                 ? null : stackUsing.peek();
         if (using != null && using.containsKey(columnKey)) {
-            return using.get(columnKey);
+            List<SourceTable> participants = using.get(columnKey);
+            List<SourceTable> sides = participantsForCurrentUsing(columnKey);
+            List<SourceTable> extras = new ArrayList<>();
+            for (SourceTable source : sources) {
+                if (participants.contains(source) || sides.contains(source)) {
+                    continue;
+                }
+                if (ownsOuterColumn(source, columnKey)
+                        || !sourceColumnNamesKnown(source)) {
+                    extras.add(source);
+                }
+            }
+            if (!extras.isEmpty()) {
+                List<SourceTable> all = new ArrayList<>(participants);
+                all.addAll(extras);
+                throw new AmbiguousColumnException(columnName, displayNames(all));
+            }
+            return participants;
         }
 
         if (context == null) {
@@ -7455,7 +7523,7 @@ public class DmlLineage {
                 return;
             }
             if (inner.columns.isEmpty()) {
-                recordScalarTableLevel(inner, tableName, -1);
+                recordScalarTableLevel(inner, tableName, -1, column);
                 return;
             }
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,

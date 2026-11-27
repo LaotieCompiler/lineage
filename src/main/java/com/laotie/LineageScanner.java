@@ -102,6 +102,8 @@ public class LineageScanner {
         // must not contribute its observations, so rebuild the candidate from the
         // statements that succeed and repeat until it stops changing.
         ScanResult scan = analyze(sqlLog, candidate, true);
+        List<LearnedMetadata> seen = new java.util.ArrayList<>();
+        seen.add(candidate);
         for (int round = 0; round < MAX_METADATA_ROUNDS; round++) {
             LearnedMetadata rebuilt = new LearnedMetadata(base);
             String accepted = successfulSql(scan.getResults());
@@ -111,6 +113,24 @@ public class LineageScanner {
             if (rebuilt.sameAs(candidate)) {
                 break;
             }
+            boolean cycled = false;
+            for (LearnedMetadata previous : seen) {
+                if (rebuilt.sameAs(previous)) {
+                    cycled = true;
+                    break;
+                }
+            }
+            if (cycled) {
+                // The log has no consistent fixed point (a statement's successful
+                // projections change what the same statement can prove). Keep the
+                // smaller candidate: it does not persist an observation whose only
+                // support is the statement it makes fail.
+                candidate = rebuilt.columnCount() < candidate.columnCount()
+                        ? rebuilt : candidate;
+                scan = analyze(sqlLog, candidate, true);
+                break;
+            }
+            seen.add(candidate);
             candidate = rebuilt;
             scan = analyze(sqlLog, candidate, true);
         }
@@ -149,7 +169,8 @@ public class LineageScanner {
                 continue;
             }
             if (sql.length() > 0) {
-                sql.append(";\n");
+                // A trailing line comment must not swallow the separator.
+                sql.append("\n;\n");
             }
             sql.append(result.getSql());
         }

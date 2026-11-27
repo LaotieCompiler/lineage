@@ -142,6 +142,17 @@ public class LearnedMetadata {
                 : Collections.unmodifiableSet(new LinkedHashSet<>(known));
     }
 
+    /**
+     * The number of table/column observations, used to compare candidates.
+     */
+    public synchronized int columnCount() {
+        int count = 0;
+        for (Set<String> columnsOfTable : columns.values()) {
+            count += columnsOfTable.size();
+        }
+        return count;
+    }
+
     public synchronized boolean isEmpty() {
         return columns.isEmpty();
     }

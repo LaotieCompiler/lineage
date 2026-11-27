@@ -13,6 +13,7 @@ import org.junit.Test;
 
 import com.alibaba.druid.DbType;
 import com.laotie.model.ScanResult;
+import com.laotie.exception.AmbiguousColumnException;
 import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.metadata.Column;
@@ -418,6 +419,60 @@ public class AdvancedDmlTest {
         assertEquals(0, result.getFailures().size());
         assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
                 sources(result, "t.`a.b`"));
+    }
+
+    @Test
+    public void unnamedScalarUpdateClaimsOnlyTheWrittenColumn() {
+        MetadataContext context = catalog("CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("UPDATE t SET c1 = (SELECT * FROM sch.missing);"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("sch.missing.*"))),
+                sources(result, "t.c1"));
+        assertFalse(sources(result, "t.c2").contains(new Column("sch.missing.*")));
+    }
+
+    @Test
+    public void unnamedScalarReplaceClaimsOnlyTheWrittenColumn() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("REPLACE INTO t(c1) VALUES ((SELECT * FROM missing));"
+                        + " SELECT c2 FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("missing.*"))),
+                sources(result, "t.c1"));
+        assertFalse(sources(result, "t.c2").contains(new Column("missing.*")));
+    }
+
+    @Test
+    public void scalarWithUnknownWildcardAndKnownTableIsRejected() {
+        MetadataContext context = catalog(
+                "CREATE TABLE b (c1 INT, c2 INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT"
+                        + " (SELECT missing.*, b.* FROM missing CROSS JOIN b);");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof IllegalStateException);
+    }
+
+    @Test
+    public void mergeUnqualifiedUsingKeyIsAmbiguousWithTarget() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE b (c1 INT, c2 INT);"
+                        + " CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s JOIN b USING(c1)) AS src"
+                        + " ON t.c1 = src.c1"
+                        + " WHEN MATCHED THEN UPDATE SET c2 = c1;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
     }
 
     @Test

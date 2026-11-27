@@ -204,6 +204,36 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void twoPassLearningDoesNotPersistAContradiction() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        assertEquals(0, scanner.scan("SELECT A.y, x FROM A;").getFailures().size());
+        // A.y must not be kept in a way that hides A.x from later scans.
+        assertEquals(0, scanner.scan("SELECT x FROM A;").getFailures().size());
+    }
+
+    @Test
+    public void metadataReplayKeepsTheStatementBoundaryAfterComments() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("USE db1 -- note\n;\nUSE db2;\nSELECT A.k, B.y FROM A,B;");
+        ScanResult result = scanner.scan("SELECT k FROM A,B;");
+
+        // The db2 observation must not resolve an unqualified column in db1.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
+    public void metadataDiscoverySeesReferencesAfterAFailingProjection() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k, A.k, B.y FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
+    @Test
     public void twoPassLearningDropsContradictedInferences() {
         LineageScanner scanner = LineageScanner.withoutMetadata(
                 DbType.postgresql, inferring());

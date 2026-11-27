@@ -602,14 +602,6 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
-    public void nonStrictParsingStoresNoSourceText() {
-        DmlLineage lineage = new DmlLineage(DbType.derby, optional());
-        com.alibaba.druid.sql.ast.SQLStatement statement =
-                lineage.parseStatement("SELECT 1;");
-        assertNull(statement.getAttribute("com.laotie.sourceSql"));
-    }
-
-    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

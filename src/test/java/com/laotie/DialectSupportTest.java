@@ -670,6 +670,26 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void literalBackticksInDoubleQuotedNameSurviveScalar() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " SELECT a.\"`K`\" AS direct,"
+                        + " (SELECT a.\"`K`\") AS copied FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "`k`"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt2.temp0.direct")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "`k`"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt2.temp0.copied")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

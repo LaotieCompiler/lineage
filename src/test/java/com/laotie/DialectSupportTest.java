@@ -644,6 +644,32 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void spacePaddedQuotedNameSurvivesScalarAndJoin() {
+        for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
+            ScanResult result = LineageScanner.withoutMetadata(
+                    dialect, optional()).scan(
+                    "INSERT OVERWRITE TABLE t (k, ` k `)"
+                            + " SELECT a.x, a.y FROM a;"
+                            + " SELECT t.` k ` AS direct FROM t;"
+                            + " SELECT (SELECT t.` k `) AS copied FROM t;"
+                            + " SELECT j.` k ` AS joined"
+                            + " FROM (t JOIN b USING (` k `)) AS j;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt1.temp0.direct")));
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt2.temp0.copied")));
+            assertEquals(new HashSet<>(Arrays.asList(
+                    new Column("a.y"), new Column("b", " k "))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt3.temp0.joined")));
+        }
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

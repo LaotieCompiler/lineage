@@ -8828,7 +8828,7 @@ public class DmlLineage {
     /** Strip one Hive SQL identifier layer, keeping inner quote characters. */
     /** Fold an already-logical Hive/Spark planned column name. */
     private static String hivePlannedColumn(String column) {
-        String value = column == null ? null : column.trim();
+        String value = column;
         if (value != null && value.length() >= 2
                 && value.charAt(0) == '`'
                 && value.charAt(value.length() - 1) == '`') {

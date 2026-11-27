@@ -661,6 +661,18 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void nonTimestampEscapeDoesNotShiftAlignment() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn CAST(\"c\" AS DATE)},"
+                        + " TIMESTAMPADD(sql_tsi_day, 1) FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn CAST(\"c\" AS DATE)} FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

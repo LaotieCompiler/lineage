@@ -441,7 +441,8 @@ public class DmlLineage {
             }
             if (ch == '{') {
                 int[] span = jdbcEscapeMethod(sql, i);
-                if (span != null) {
+                if (span != null
+                        && isJdbcTimestampMethod(sql.substring(span[0], span[1]))) {
                     out.append(sql, i, span[0]);
                     out.append(JDBC_MARKER);
                     out.append(sql, span[0], span[1]);
@@ -482,6 +483,11 @@ public class DmlLineage {
             }
         }
         return i;
+    }
+
+    private static boolean isJdbcTimestampMethod(String method) {
+        return "TIMESTAMPADD".equalsIgnoreCase(method)
+                || "TIMESTAMPDIFF".equalsIgnoreCase(method);
     }
 
     private static int[] jdbcEscapeMethod(String sql, int brace) {

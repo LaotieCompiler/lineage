@@ -285,7 +285,15 @@ public class MetadataCatalog {
      */
     public synchronized TableLocation addScannedTable(String instance, String database,
             String schema, String tableName, List<Column> columns) {
-        return addTableInternal(instance, database, schema, tableName, columns, true);
+        TableLocation location = addTableInternal(instance, database, schema,
+                tableName, columns, true);
+        if (dialect == DbType.postgresql && tableName != null
+                && (!tableName.equals(tableName.toLowerCase(Locale.ROOT))
+                        || !tableName.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
+            location.getTable().setQuotedName(true);
+            cachedChecksum = null;
+        }
+        return location;
     }
 
     private TableLocation addTableInternal(String instance, String database, String schema,
@@ -641,7 +649,8 @@ public class MetadataCatalog {
                         hasTable = true;
                         tableLines.add("CREATE TABLE " + canonicalPath(forDdl,
                                 instance.getName(), database.getName(), schema.getName(),
-                                table.getName()) + " (" + columnDefinitions(table) + ");");
+                                table.getName(), table.isQuotedName())
+                                + " (" + columnDefinitions(table) + ");");
                     }
                 }
                 if (!hasTable) {
@@ -666,8 +675,16 @@ public class MetadataCatalog {
 
     private String canonicalPath(boolean forDdl, String instance, String database, String schema,
             String table) {
+        return canonicalPath(forDdl, instance, database, schema, table, false);
+    }
+
+    private String canonicalPath(boolean forDdl, String instance, String database,
+            String schema, String table, boolean quotedTable) {
         if (isRepresentable(instance, database, schema)) {
-            return path(instance, database, schema, table);
+            String parent = path(instance, database, schema);
+            String renderedTable = quotedTable ? quoteAlways(table) : quote(table);
+            return parent.isEmpty() ? renderedTable
+                    : parent + "." + renderedTable;
         }
         if (forDdl) {
             throw new MetadataPersistenceException("table path cannot be represented as DDL: "
@@ -718,6 +735,12 @@ public class MetadataCatalog {
             }
         }
         return String.join(".", result);
+    }
+
+    private String quoteAlways(String identifier) {
+        char quote = isMySqlFamily() ? '`' : '"';
+        return quote + identifier.replace(String.valueOf(quote),
+                String.valueOf(quote) + quote) + quote;
     }
 
     private String quote(String identifier) {

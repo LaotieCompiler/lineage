@@ -5964,10 +5964,13 @@ public class DmlLineage {
             lookupReference = tableRef;
             lookupSchemaDefault = null;
             if (preserved.length >= 4) {
-                instanceDefault = preserved[preserved.length - 4];
-                databaseDefault = preserved[preserved.length - 3];
+                instanceDefault = MetadataCatalog.normalizeIdentifier(
+                        preserved[preserved.length - 4]);
+                databaseDefault = MetadataCatalog.normalizeIdentifier(
+                        preserved[preserved.length - 3]);
             } else if (preserved.length == 3) {
-                databaseDefault = preserved[0];
+                databaseDefault = MetadataCatalog.normalizeIdentifier(
+                        preserved[0]);
             }
         }
 

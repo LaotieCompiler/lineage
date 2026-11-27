@@ -4224,4 +4224,39 @@ public class MetadataFreeAnalysisTest {
         assertEquals(0, result.getFailures().size());
     }
 
+    @Test
+    public void scalarLearningUsesItsOwnAliasScope() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT 1+(SELECT x.k FROM B AS x) AS z FROM A AS x;"
+                        + " SELECT A.y, C.y FROM A,C;"
+                        + " SELECT k FROM A,C;");
+
+        assertNull(result.getResults().get(0).getError());
+        assertNull(result.getResults().get(1).getError());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.z")));
+        // The inner alias belongs to B, so A.k must never be learned from it.
+        if (result.getResults().get(2).getError() == null) {
+            assertFalse(result.getGraph().getSources(
+                    Column.temporary("stmt2.temp0.k"))
+                    .contains(new Column("a.k")));
+        }
+    }
+
+    @Test
+    public void metadataDiscoveryReadsInSubqueryBodies() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,B;"
+                        + " SELECT 1 IN (SELECT A.k FROM A) FROM B;"
+                        + " SELECT A.y, B.y FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

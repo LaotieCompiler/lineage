@@ -577,4 +577,23 @@ public class AdvancedDmlTest {
         assertTrue(sources.contains(new Column("b.c1")));
     }
 
+    @Test
+    public void mergeScalarNestedAliasHidesItsTables() {
+        MetadataContext context = catalog(
+                "CREATE TABLE t (c2 INT); CREATE TABLE s (c1 INT);"
+                        + " CREATE TABLE b (c1 INT); CREATE TABLE d (c3 INT);");
+        ScanResult hidden = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING s ON true WHEN MATCHED THEN UPDATE SET"
+                        + " c2=(SELECT (SELECT b.c1) FROM (b CROSS JOIN d) AS j);");
+        assertTrue(hidden.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+
+        ScanResult alias = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING s ON true WHEN MATCHED THEN UPDATE SET"
+                        + " c2=(SELECT (SELECT j.c1) FROM (b CROSS JOIN d) AS j);");
+        assertEquals(0, alias.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(alias, "t.c2"));
+    }
+
 }

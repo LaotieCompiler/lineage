@@ -8446,6 +8446,7 @@ public class DmlLineage {
         int groupStart = -1;
         int lastStart = -1;
         int lastEnd = -1;
+        boolean seenInsert = false;
         char quote = 0;
         for (int i = 0; i < sql.length(); i++) {
             char ch = sql.charAt(i);
@@ -8462,6 +8463,30 @@ public class DmlLineage {
                 }
                 continue;
             }
+            if (ch == '-' && next == '-') {
+                int end = sql.indexOf('\n', i);
+                if (end < 0) {
+                    break;
+                }
+                i = end;
+                continue;
+            }
+            if (ch == '/' && next == '*') {
+                int end = sql.indexOf("*/", i + 2);
+                if (end < 0) {
+                    break;
+                }
+                i = end + 1;
+                continue;
+            }
+            if (ch == '#') {
+                int end = sql.indexOf('\n', i);
+                if (end < 0) {
+                    break;
+                }
+                i = end;
+                continue;
+            }
             if (ch == '\'' || ch == '"' || ch == '`') {
                 quote = ch;
                 continue;
@@ -8470,13 +8495,13 @@ public class DmlLineage {
                 break;
             }
             if (ch == '(') {
-                if (depth == 0) {
+                if (depth == 0 && seenInsert) {
                     groupStart = i;
                 }
                 depth++;
             } else if (ch == ')') {
                 depth--;
-                if (depth == 0 && groupStart >= 0) {
+                if (depth == 0 && seenInsert && groupStart >= 0) {
                     lastStart = groupStart;
                     lastEnd = i;
                 }
@@ -8487,7 +8512,11 @@ public class DmlLineage {
                     end++;
                 }
                 String word = sql.substring(i, end);
-                if ("SELECT".equalsIgnoreCase(word)
+                if (!seenInsert) {
+                    if ("INSERT".equalsIgnoreCase(word)) {
+                        seenInsert = true;
+                    }
+                } else if ("SELECT".equalsIgnoreCase(word)
                         || "VALUES".equalsIgnoreCase(word)
                         || "WITH".equalsIgnoreCase(word)) {
                     break;

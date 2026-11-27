@@ -765,6 +765,36 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void commentDoesNotSupplyInsertQuoteStyle() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " INSERT OVERWRITE TABLE t ('K')"
+                        + " /* (\"fake\") */ SELECT a.y FROM a;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertTrue(result.getResults().get(2).getError()
+                instanceof com.laotie.exception.ColumnNotFoundException);
+    }
+
+    @Test
+    public void leadingCteKeepsDoubleQuotedInsertTarget() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " WITH q AS (SELECT a.y FROM a)"
+                        + " INSERT INTO t (\"K\") SELECT q.y FROM q;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt3.temp0.copied")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

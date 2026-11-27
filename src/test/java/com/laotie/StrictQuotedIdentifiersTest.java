@@ -477,6 +477,41 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void jdbcMarkerNameAloneIsNotAnEscape() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT LO_JDBC_TIMESTAMPADD(sql_tsi_day, 1)"
+                        + " FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+    }
+
+    @Test
+    public void jdbcEscapeAllowsCommentsAndStringBackslashes() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn /* jdbc */ TIMESTAMPADD(SQL_TSI_DAY, 1,"
+                        + " \"c\")} FROM \"t\";")
+                .getFailures().size());
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT '\\', {fn TIMESTAMPADD(SQL_TSI_DAY, 1,"
+                        + " \"c\")} FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void parsedStatementOverloadUsesItsSourceText() {
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement statement = lineage.parseStatement(
+                "SELECT TIMESTAMPADD(sql_tsi_day, 1) FROM \"t\";");
+        try {
+            lineage.getLineage(statement);
+            org.junit.Assert.fail("unquoted column must be rejected");
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

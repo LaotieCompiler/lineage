@@ -311,7 +311,8 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     public List<Instruction> getLineage(SQLStatement statement) {
-        return getLineage(statement, null);
+        String source = statement == lastParsedStatement ? lastParsedSql : null;
+        return getLineage(statement, source);
     }
 
     private List<Instruction> getLineage(SQLStatement statement, String sourceSql) {
@@ -337,7 +338,11 @@ public class DmlLineage {
     }
 
     public SQLStatement parseStatement(String sqlStr) {
-        return parseWithDialectFallback(sqlStr, resolveDialect());
+        SQLStatement statement = parseWithDialectFallback(sqlStr,
+                resolveDialect());
+        this.lastParsedStatement = statement;
+        this.lastParsedSql = sqlStr;
+        return statement;
     }
 
     /**
@@ -361,9 +366,7 @@ public class DmlLineage {
                 while (i < sql.length()) {
                     char c = sql.charAt(i);
                     out.append(c);
-                    if (c == '\\' && quote == '\'' && i + 1 < sql.length()) {
-                        out.append(sql.charAt(++i));
-                    } else if (c == quote) {
+                    if (c == quote) {
                         if (i + 1 < sql.length() && sql.charAt(i + 1) == quote) {
                             out.append(sql.charAt(++i));
                         } else {
@@ -411,11 +414,43 @@ public class DmlLineage {
         return out.toString();
     }
 
-    private static int[] jdbcEscapeMethod(String sql, int brace) {
-        int i = brace + 1;
-        while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
-            i++;
+    private static int skipSpaceAndComments(String sql, int start) {
+        int i = start;
+        while (i < sql.length()) {
+            char ch = sql.charAt(i);
+            char next = i + 1 < sql.length() ? sql.charAt(i + 1) : 0;
+            if (Character.isWhitespace(ch)) {
+                i++;
+            } else if (ch == '-' && next == '-') {
+                int end = sql.indexOf('\n', i);
+                i = end < 0 ? sql.length() : end + 1;
+            } else if (ch == '/' && next == '*') {
+                int end = sql.indexOf("*/", i + 2);
+                i = end < 0 ? sql.length() : end + 2;
+            } else {
+                break;
+            }
         }
+        return i;
+    }
+
+    private static void markJdbcEscapedArguments(SQLStatement statement) {
+        statement.accept(new SQLASTVisitorAdapter() {
+            @Override
+            public boolean visit(SQLMethodInvokeExpr x) {
+                if (x.getMethodName() != null
+                        && x.getMethodName().startsWith("LO_JDBC_")
+                        && !x.getArguments().isEmpty()) {
+                    x.getArguments().get(0).putAttribute(
+                            JDBC_UNIT_ATTRIBUTE, Boolean.TRUE);
+                }
+                return true;
+            }
+        });
+    }
+
+    private static int[] jdbcEscapeMethod(String sql, int brace) {
+        int i = skipSpaceAndComments(sql, brace + 1);
         if (i + 2 > sql.length()
                 || !sql.regionMatches(true, i, "fn", 0, 2)) {
             return null;
@@ -424,9 +459,7 @@ public class DmlLineage {
         if (i >= sql.length() || !Character.isWhitespace(sql.charAt(i))) {
             return null;
         }
-        while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
-            i++;
-        }
+        i = skipSpaceAndComments(sql, i);
         int start = i;
         if (i >= sql.length()
                 || !(Character.isLetter(sql.charAt(i)) || sql.charAt(i) == '_'
@@ -452,6 +485,7 @@ public class DmlLineage {
             if (!marked.equals(statementSql)) {
                 try {
                     statement = parseWithDialectFallback(marked, dialect);
+                    markJdbcEscapedArguments(statement);
                 } catch (RuntimeException ignored) {
                     // Validate the original AST if the marker form is rejected.
                 }
@@ -776,9 +810,9 @@ public class DmlLineage {
             return false;
         }
         String method = call.getMethodName();
-        boolean jdbcMarked = false;
-        if (method.startsWith("LO_JDBC_")) {
-            jdbcMarked = true;
+        boolean jdbcMarked = Boolean.TRUE.equals(
+                identifier.getAttribute(JDBC_UNIT_ATTRIBUTE));
+        if (jdbcMarked && method.startsWith("LO_JDBC_")) {
             method = method.substring("LO_JDBC_".length());
         }
         boolean mysqlFamily = dialect == DbType.mysql
@@ -6286,6 +6320,10 @@ public class DmlLineage {
     private boolean ansiEnabled;
     private boolean ansiDoubleQuotedIdentifiers;
     private String statementSql;
+    private SQLStatement lastParsedStatement;
+    private String lastParsedSql;
+    private static final String JDBC_UNIT_ATTRIBUTE =
+            "com.laotie.jdbcUnit";
     private static final String ANSI_IDENTIFIER_ATTRIBUTE =
             "com.laotie.ansiQuotedIdentifier";
 

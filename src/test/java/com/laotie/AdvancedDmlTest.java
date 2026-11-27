@@ -271,6 +271,105 @@ public class AdvancedDmlTest {
     }
 
     @Test
+    public void mergeInsertValuesReadTheSourceOnly() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING s ON t.c1 = s.c1"
+                        + " WHEN NOT MATCHED THEN INSERT (c2) VALUES (c1);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.c1"))),
+                sources(result, "t.c2"));
+    }
+
+    @Test
+    public void mergeUsingJoinAliasIsVisible() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE b (c1 INT, c2 INT);"
+                        + " CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s JOIN b USING(c1)) AS src"
+                        + " ON t.c1 = src.c1"
+                        + " WHEN MATCHED THEN UPDATE SET c2 = src.c1;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(sources(result, "t.c2").contains(new Column("s.c1")));
+        assertTrue(sources(result, "t.c2").contains(new Column("b.c1")));
+    }
+
+    @Test
+    public void mergeQuotedDottedColumnKeepsItsIdentity() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT);"
+                        + " CREATE TABLE t (c1 INT, \"a.b\" INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING s ON t.c1 = s.c1"
+                        + " WHEN MATCHED THEN UPDATE SET \"a.b\" = s.c1;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.c1"))),
+                sources(result, "t.\"a.b\""));
+    }
+
+    @Test
+    public void nestedScalarWithoutOuterFromIsAnalyzed() {
+        MetadataContext context = catalog(
+                "CREATE TABLE b (c1 INT); CREATE TABLE t (c1 INT);");
+        ScanResult cast = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT CAST((SELECT c1 FROM b) AS int);");
+        assertEquals(0, cast.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(cast, "t.c1"));
+
+        ScanResult arithmetic = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT 1+(SELECT c1 FROM b);");
+        assertEquals(0, arithmetic.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(arithmetic, "t.c1"));
+    }
+
+    @Test
+    public void scalarAliasWithDotKeepsItsIdentity() {
+        MetadataContext context = catalog(
+                "CREATE TABLE b (c1 INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT (SELECT c1 AS \"A.B\" FROM b);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void replaceCompositeValueKeepsLineage() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE b (c1 INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("REPLACE INTO t(c1) VALUES (1+(SELECT c1 FROM b));");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void replaceLiteralValueHasNoSource() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE b (c1 INT); CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("REPLACE INTO t(c1,c2) VALUES (1,(SELECT c1 FROM b));");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.c1")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c2"));
+    }
+
+    @Test
     public void scalarSubqueryKeepsItsOwnSource() {
         MetadataContext context = catalog(
                 "CREATE TABLE a (c1 INT); CREATE TABLE t (c1 INT);");

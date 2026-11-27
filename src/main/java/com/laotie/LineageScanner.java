@@ -82,6 +82,23 @@ public class LineageScanner {
     }
 
     public ScanResult scan(String sqlLog) {
+        if (learnedMetadata != null && sqlLog != null && !sqlLog.isEmpty()) {
+            // First pass: discover metadata from the whole log without producing
+            // lineage, so the second pass resolves every statement against the
+            // complete picture (including tables referenced later in the log).
+            DmlLineage learner = newLineage();
+            learner.setLearningOnly(true);
+            learner.parseScript(sqlLog);
+        }
+
+        DmlLineage lineage = newLineage();
+        List<LineageResult> results = lineage.parseScript(sqlLog);
+        LineageGraph graph = new LineageGraph();
+        graph.buildByResults(results);
+        return new ScanResult(results, graph);
+    }
+
+    private DmlLineage newLineage() {
         DmlLineage lineage;
         if (context != null) {
             lineage = new DmlLineage(context, options);
@@ -93,11 +110,7 @@ public class LineageScanner {
         if (learnedMetadata != null) {
             lineage.setLearnedMetadata(learnedMetadata);
         }
-
-        List<LineageResult> results = lineage.parseScript(sqlLog);
-        LineageGraph graph = new LineageGraph();
-        graph.buildByResults(results);
-        return new ScanResult(results, graph);
+        return lineage;
     }
 
     public ScanResult scan(Iterable<String> logLines) {

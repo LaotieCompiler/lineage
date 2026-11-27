@@ -190,6 +190,32 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void metadataLearningScansTheWholeLogBeforeLineage() {
+        // The first statement is ambiguous on its own; the second statement later in
+        // the same log teaches that c1 belongs to A. The metadata pass therefore has
+        // to see the whole log before the lineage pass starts.
+        ScanResult result = LineageScanner.withoutMetadata(inferring())
+                .scan("SELECT c1 FROM A,B; SELECT A.c1, B.c2 FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("A.c1"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.c1")));
+    }
+
+    @Test
+    public void metadataLearningIsWhatResolvesTheEarlierStatement() {
+        // The same log without inference keeps the first statement ambiguous, which
+        // proves the two-pass scan is what resolves it.
+        ScanResult withoutInference = LineageScanner.withoutMetadata(optional())
+                .scan("SELECT c1 FROM A,B; SELECT A.c1, B.c2 FROM A,B;");
+
+        assertEquals(1, withoutInference.getFailures().size());
+        assertTrue(withoutInference.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
+    @Test
     public void inferenceIsScopedToTheScanner() {
         ScanResult first = LineageScanner.withoutMetadata(inferring())
                 .scan("SELECT A.c1 FROM A;");

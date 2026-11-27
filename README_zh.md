@@ -72,8 +72,9 @@ LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
 ```
 
 开启推断后，`select A.c1, B.c2 from A,B` 会记录 `c1` 属于 `A`、`c2` 属于 `B`；之后
-`select c1 from A,B` 可解析为 `A.c1` 而不报错。学习结果只在当前 scanner 实例内生效，
-且不会用于展开通配符。
+`select c1 from A,B` 可解析为 `A.c1` 而不报错。一次扫描分两趟：第一趟只遍历整段日志
+发现元数据，第二趟在完整信息下做列级血缘，因此同一日志中后出现的语句也能帮助前面的语句
+完成解析。学习结果只在当前 scanner 实例内生效，且不会用于展开通配符。
 
 #### 无元数据契约
 

@@ -81,8 +81,10 @@ LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
 
 With inference enabled, a statement such as `select A.c1, B.c2 from A,B` records that `c1`
 belongs to `A` and `c2` belongs to `B`; a later `select c1 from A,B` resolves to `A.c1`
-instead of failing. Learned metadata is scoped to the scanner instance and never used to
-expand a wildcard.
+instead of failing. A scan runs two passes: the first walks the whole log to discover
+metadata only, the second performs column-level lineage against the completed picture, so a
+statement can be resolved by knowledge that appears later in the same log. Learned metadata
+is scoped to the scanner instance and never used to expand a wildcard.
 
 #### metadata-free contract
 

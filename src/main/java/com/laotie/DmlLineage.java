@@ -100,6 +100,11 @@ public class DmlLineage {
     private int currentOrdinal = -1;
     private int uncertainOrdinal = -1;
     private int currentStarBudget = -1;
+    /**
+     * When true the traversal still learns metadata but emits no lineage
+     * instructions, used for the metadata-discovery pass of a two-pass scan.
+     */
+    private boolean learningOnly;
     private Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
 
     private Set<String> tempTables;
@@ -185,6 +190,13 @@ public class DmlLineage {
     /**
      * Attach the session-scoped metadata learned from earlier statements.
      */
+    /**
+     * Analyze only to discover metadata: instructions are discarded.
+     */
+    public void setLearningOnly(boolean learningOnly) {
+        this.learningOnly = learningOnly;
+    }
+
     public void setLearnedMetadata(LearnedMetadata learnedMetadata) {
         this.learnedMetadata = learnedMetadata;
     }
@@ -1838,6 +1850,10 @@ public class DmlLineage {
                     width = recordUnboundSelectItem(item, position);
                     if (!outerSources.isEmpty()) {
                         recordOuterExpressionMappings(item, position);
+                    } else if (containsScalarSubquery(item.getExpr())) {
+                        // A projection without FROM can still read a scalar
+                        // subquery, which carries its own lineage.
+                        recordUnboundScalarMappings(item, position);
                     }
                 }
                 position += width;
@@ -3160,12 +3176,184 @@ public class DmlLineage {
             return 1;
         }
         for (int i = 0; i < inner.columns.size(); i++) {
-            String source = inner.temp + "." + inner.columns.get(i);
+            String source = inner.references.get(i);
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
                     targetTable + "." + renderIdentifier(targetColumn), currentOrdinal,
                     true, tempTables.contains(targetTable)));
         }
         return 1;
+    }
+
+    private boolean containsScalarSubquery(SQLExpr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof SQLQueryExpr) {
+            return true;
+        }
+        if (expr instanceof SQLBinaryOpExpr) {
+            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
+            return containsScalarSubquery(binary.getLeft())
+                    || containsScalarSubquery(binary.getRight());
+        }
+        if (expr instanceof SQLMethodInvokeExpr) {
+            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
+                if (containsScalarSubquery(argument)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof SQLCastExpr) {
+            return containsScalarSubquery(((SQLCastExpr) expr).getExpr());
+        }
+        if (expr instanceof SQLNotExpr) {
+            return containsScalarSubquery(((SQLNotExpr) expr).getExpr());
+        }
+        if (expr instanceof SQLUnaryExpr) {
+            return containsScalarSubquery(((SQLUnaryExpr) expr).getExpr());
+        }
+        if (expr instanceof SQLBetweenExpr) {
+            SQLBetweenExpr between = (SQLBetweenExpr) expr;
+            return containsScalarSubquery(between.getTestExpr())
+                    || containsScalarSubquery(between.getBeginExpr())
+                    || containsScalarSubquery(between.getEndExpr());
+        }
+        if (expr instanceof SQLCaseExpr) {
+            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
+            if (containsScalarSubquery(caseExpr.getValueExpr())
+                    || containsScalarSubquery(caseExpr.getElseExpr())) {
+                return true;
+            }
+            if (caseExpr.getItems() != null) {
+                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
+                    if (containsScalarSubquery(caseItem.getConditionExpr())
+                            || containsScalarSubquery(caseItem.getValueExpr())) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        if (expr instanceof SQLListExpr) {
+            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
+                if (containsScalarSubquery(element)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof SQLInListExpr) {
+            SQLInListExpr in = (SQLInListExpr) expr;
+            if (containsScalarSubquery(in.getExpr())) {
+                return true;
+            }
+            if (in.getTargetList() != null) {
+                for (SQLExpr element : in.getTargetList()) {
+                    if (containsScalarSubquery(element)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        if (expr instanceof SQLInSubQueryExpr) {
+            return containsScalarSubquery(((SQLInSubQueryExpr) expr).getExpr());
+        }
+        if (expr instanceof SQLExtractExpr) {
+            return containsScalarSubquery(((SQLExtractExpr) expr).getValue());
+        }
+        return false;
+    }
+
+    private void recordUnboundScalarMappings(SQLSelectItem item, int position) {
+        String targetTable = stackTargetTable.peek();
+        List<String> outputs = copyOutputs(targetOutputs.get(targetTable));
+        String name = outputs != null && position < outputs.size() && outputs.get(position) != null
+                ? outputs.get(position) : "col" + (position + 1);
+        recordUnboundScalarExpression(item.getExpr(), targetTable, name, position);
+    }
+
+    private void recordUnboundScalarExpression(SQLExpr expr, String targetTable,
+            String targetName, int position) {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof SQLQueryExpr) {
+            ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) expr);
+            if (inner == null || inner.columns.isEmpty()) {
+                return;
+            }
+            instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                    inner.references.get(0),
+                    targetTable + "." + renderIdentifier(targetName), position, true,
+                    tempTables.contains(targetTable)));
+            return;
+        }
+        if (expr instanceof SQLBinaryOpExpr) {
+            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
+            recordUnboundScalarExpression(binary.getLeft(), targetTable, targetName,
+                    position);
+            recordUnboundScalarExpression(binary.getRight(), targetTable, targetName,
+                    position);
+        } else if (expr instanceof SQLMethodInvokeExpr) {
+            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
+                recordUnboundScalarExpression(argument, targetTable, targetName,
+                        position);
+            }
+        } else if (expr instanceof SQLCastExpr) {
+            recordUnboundScalarExpression(((SQLCastExpr) expr).getExpr(), targetTable,
+                    targetName, position);
+        } else if (expr instanceof SQLNotExpr) {
+            recordUnboundScalarExpression(((SQLNotExpr) expr).getExpr(), targetTable,
+                    targetName, position);
+        } else if (expr instanceof SQLUnaryExpr) {
+            recordUnboundScalarExpression(((SQLUnaryExpr) expr).getExpr(), targetTable,
+                    targetName, position);
+        } else if (expr instanceof SQLBetweenExpr) {
+            SQLBetweenExpr between = (SQLBetweenExpr) expr;
+            recordUnboundScalarExpression(between.getTestExpr(), targetTable, targetName,
+                    position);
+            recordUnboundScalarExpression(between.getBeginExpr(), targetTable,
+                    targetName, position);
+            recordUnboundScalarExpression(between.getEndExpr(), targetTable, targetName,
+                    position);
+        } else if (expr instanceof SQLCaseExpr) {
+            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
+            recordUnboundScalarExpression(caseExpr.getValueExpr(), targetTable,
+                    targetName, position);
+            if (caseExpr.getItems() != null) {
+                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
+                    recordUnboundScalarExpression(caseItem.getConditionExpr(),
+                            targetTable, targetName, position);
+                    recordUnboundScalarExpression(caseItem.getValueExpr(), targetTable,
+                            targetName, position);
+                }
+            }
+            recordUnboundScalarExpression(caseExpr.getElseExpr(), targetTable,
+                    targetName, position);
+        } else if (expr instanceof SQLListExpr) {
+            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
+                recordUnboundScalarExpression(element, targetTable, targetName,
+                        position);
+            }
+        } else if (expr instanceof SQLInListExpr) {
+            SQLInListExpr in = (SQLInListExpr) expr;
+            recordUnboundScalarExpression(in.getExpr(), targetTable, targetName,
+                    position);
+            if (in.getTargetList() != null) {
+                for (SQLExpr element : in.getTargetList()) {
+                    recordUnboundScalarExpression(element, targetTable, targetName,
+                            position);
+                }
+            }
+        } else if (expr instanceof SQLInSubQueryExpr) {
+            recordUnboundScalarExpression(((SQLInSubQueryExpr) expr).getExpr(),
+                    targetTable, targetName, position);
+        } else if (expr instanceof SQLExtractExpr) {
+            recordUnboundScalarExpression(((SQLExtractExpr) expr).getValue(),
+                    targetTable, targetName, position);
+        }
     }
 
     private int recordUnboundSelectItem(SQLSelectItem item, int position) {
@@ -3221,10 +3409,17 @@ public class DmlLineage {
     private static final class ScalarSubquery {
         private final String temp;
         private final List<String> columns;
+        /**
+         * The exact references the inner analysis wrote, so the outer projection
+         * names the same vertices.
+         */
+        private final List<String> references;
 
-        private ScalarSubquery(String temp, List<String> columns) {
+        private ScalarSubquery(String temp, List<String> columns,
+                List<String> references) {
             this.temp = temp;
             this.columns = columns;
+            this.references = references;
         }
     }
 
@@ -3259,7 +3454,24 @@ public class DmlLineage {
         for (String output : outputs) {
             columns.add(output);
         }
-        return new ScalarSubquery(target, columns);
+        // Reuse the inner instructions' own spelling of each column, so a quoted or
+        // dotted name keeps its boundaries on both sides.
+        List<String> references = new ArrayList<>();
+        String prefix = target + ".";
+        for (Instruction instruction : instructions) {
+            if (instruction.getOperation() != OperationType.COLUMN_MAPPING
+                    && instruction.getOperation() != OperationType.EXPR_MAPPING) {
+                continue;
+            }
+            String to = instruction.getTo();
+            if (to != null && to.startsWith(prefix)) {
+                references.add(to);
+            }
+        }
+        while (references.size() < columns.size()) {
+            references.add(prefix + columns.get(references.size()));
+        }
+        return new ScalarSubquery(target, columns, references);
     }
 
     private int processSelectItem(SQLSelectItem item) {
@@ -5333,7 +5545,7 @@ public class DmlLineage {
             return;
         }
         for (int i = 0; i < inner.columns.size(); i++) {
-            String source = inner.temp + "." + inner.columns.get(i);
+            String source = inner.references.get(i);
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
                     targetTable + "." + targetColumn, currentOrdinal, true,
                     tempTables.contains(targetTable)));
@@ -7123,50 +7335,99 @@ public class DmlLineage {
         if (valueClauses == null || valueClauses.isEmpty()) {
             return;
         }
-        String valuesTemp = getTempTableName();
-        stackTargetTable.push(valuesTemp);
-        intermediateTargets.add(valuesTemp);
-        try {
-            for (SQLInsertStatement.ValuesClause clause : valueClauses) {
-                List<SQLExpr> values = clause.getValues();
-                for (int i = 0; i < values.size(); i++) {
-                    SQLExpr value = values.get(i);
-                    if (!(value instanceof SQLQueryExpr)) {
-                        continue;
-                    }
-                    ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) value);
-                    if (inner == null || inner.columns.isEmpty()) {
-                        continue;
-                    }
-                    String column = i < insertColumns.size()
-                            ? lastIdentifier(rawColumnName(insertColumns.get(i)))
-                            : inner.columns.get(0);
-                    String source = inner.temp + "." + inner.columns.get(0);
-                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
-                            valuesTemp + "." + renderIdentifier(column), i, true, true));
+        List<String> columnNames = new ArrayList<>();
+        if (insertColumns != null) {
+            for (SQLExpr column : insertColumns) {
+                columnNames.add(renderInsertColumn(targetMetadata, tableName, column));
+            }
+        }
+        for (SQLInsertStatement.ValuesClause clause : valueClauses) {
+            List<SQLExpr> values = clause.getValues();
+            for (int i = 0; i < values.size(); i++) {
+                SQLExpr value = values.get(i);
+                if (!containsScalarSubquery(value)) {
+                    // A literal has no source, so the target column keeps none.
+                    continue;
+                }
+                if (i >= columnNames.size()) {
+                    break;
+                }
+                String column = columnNames.get(i);
+                recordValueScalarMappings(value, tableName, column);
+            }
+        }
+    }
+
+    /**
+     * Record the sources of every scalar subquery inside a written value.
+     */
+    private void recordValueScalarMappings(SQLExpr value, String tableName,
+            String column) {
+        if (value == null) {
+            return;
+        }
+        if (value instanceof SQLQueryExpr) {
+            ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) value);
+            if (inner == null || inner.columns.isEmpty()) {
+                return;
+            }
+            instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                    inner.references.get(0),
+                    tableName + "." + renderIdentifier(column), -1, true, false));
+            return;
+        }
+        if (value instanceof SQLBinaryOpExpr) {
+            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) value;
+            recordValueScalarMappings(binary.getLeft(), tableName, column);
+            recordValueScalarMappings(binary.getRight(), tableName, column);
+        } else if (value instanceof SQLMethodInvokeExpr) {
+            for (SQLExpr argument : ((SQLMethodInvokeExpr) value).getArguments()) {
+                recordValueScalarMappings(argument, tableName, column);
+            }
+        } else if (value instanceof SQLCastExpr) {
+            recordValueScalarMappings(((SQLCastExpr) value).getExpr(), tableName,
+                    column);
+        } else if (value instanceof SQLNotExpr) {
+            recordValueScalarMappings(((SQLNotExpr) value).getExpr(), tableName,
+                    column);
+        } else if (value instanceof SQLUnaryExpr) {
+            recordValueScalarMappings(((SQLUnaryExpr) value).getExpr(), tableName,
+                    column);
+        } else if (value instanceof SQLBetweenExpr) {
+            SQLBetweenExpr between = (SQLBetweenExpr) value;
+            recordValueScalarMappings(between.getTestExpr(), tableName, column);
+            recordValueScalarMappings(between.getBeginExpr(), tableName, column);
+            recordValueScalarMappings(between.getEndExpr(), tableName, column);
+        } else if (value instanceof SQLCaseExpr) {
+            SQLCaseExpr caseExpr = (SQLCaseExpr) value;
+            recordValueScalarMappings(caseExpr.getValueExpr(), tableName, column);
+            if (caseExpr.getItems() != null) {
+                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
+                    recordValueScalarMappings(caseItem.getConditionExpr(), tableName,
+                            column);
+                    recordValueScalarMappings(caseItem.getValueExpr(), tableName,
+                            column);
                 }
             }
-            String fromTable = stackTargetTable.peek();
-            boolean fromTemporary = tempTables.contains(fromTable);
-            if (insertColumns != null && !insertColumns.isEmpty()) {
-                final Table insertMetadata = targetMetadata;
-                final String insertTable = tableName;
-                String colStr = insertColumns.stream()
-                        .map(column -> renderInsertColumn(insertMetadata, insertTable,
-                                column))
-                        .collect(Collectors.joining(","));
-                Instruction insertEdge = new Instruction(OperationType.COLUMNS_INJECT,
-                        fromTable, String.format("%s(%s)", tableName, colStr), -1,
-                        fromTemporary, false);
-                insertEdge.setWildcardTable(tableName);
-                insertEdge.setPopulatedColumns(colStr);
-                instructions.add(insertEdge);
-            } else {
-                instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                        fromTable, tableName, -1, fromTemporary, false));
+            recordValueScalarMappings(caseExpr.getElseExpr(), tableName, column);
+        } else if (value instanceof SQLListExpr) {
+            for (SQLExpr element : ((SQLListExpr) value).getItems()) {
+                recordValueScalarMappings(element, tableName, column);
             }
-        } finally {
-            stackTargetTable.pop();
+        } else if (value instanceof SQLInListExpr) {
+            SQLInListExpr in = (SQLInListExpr) value;
+            recordValueScalarMappings(in.getExpr(), tableName, column);
+            if (in.getTargetList() != null) {
+                for (SQLExpr element : in.getTargetList()) {
+                    recordValueScalarMappings(element, tableName, column);
+                }
+            }
+        } else if (value instanceof SQLInSubQueryExpr) {
+            recordValueScalarMappings(((SQLInSubQueryExpr) value).getExpr(), tableName,
+                    column);
+        } else if (value instanceof SQLExtractExpr) {
+            recordValueScalarMappings(((SQLExtractExpr) value).getValue(), tableName,
+                    column);
         }
     }
 
@@ -7204,13 +7465,15 @@ public class DmlLineage {
         registerTable(written, tableName, tableName, null, false);
 
         Map<String, List<SourceTable>> using = new LinkedHashMap<>();
-        List<SourceTable> sources = new ArrayList<>();
-        // The target table is visible to the update expression, so its own columns
-        // can be read while writing.
-        sources.addAll(buildSourceNode(target, using).sources);
+        List<SourceTable> targetSources = new ArrayList<>();
+        targetSources.addAll(buildSourceNode(target, using).sources);
+        List<SourceTable> sourceSources = new ArrayList<>();
+        // The join bindings of the USING clause (for example its alias) stay visible
+        // to both clauses.
+        stackJoinBindings.push(new HashMap<String, SourceNode>());
         if (merge.getUsing() instanceof SQLTableSource) {
-            sources.addAll(buildSourceNode((SQLTableSource) merge.getUsing(), using)
-                    .sources);
+            sourceSources.addAll(buildSourceNode((SQLTableSource) merge.getUsing(),
+                    using).sources);
         }
         Table targetTableMetadata = null;
         if (context != null) {
@@ -7220,46 +7483,59 @@ public class DmlLineage {
             }
         }
         stackTargetTable.push(tableName);
-        stackSources.push(sources);
         stackUsing.push(using);
         stackSourceTable.push(tableName);
         inTargetExpression = true;
         try {
             SQLMergeStatement.MergeUpdateClause update = merge.getUpdateClause();
             if (update != null) {
-                for (SQLUpdateSetItem item : update.getItems()) {
-                    stackTargetColumn.push(renderIdentifier(
-                            mergeTargetColumn(targetTableMetadata, tableName,
-                                    item.getColumn())));
-                    currentOrdinal = -1;
-                    visitExpr(item.getValue());
-                    stackTargetColumn.pop();
+                // The update expression reads the target and the source.
+                List<SourceTable> scope = new ArrayList<>(targetSources);
+                scope.addAll(sourceSources);
+                stackSources.push(scope);
+                try {
+                    for (SQLUpdateSetItem item : update.getItems()) {
+                        stackTargetColumn.push(renderIdentifier(
+                                mergeTargetColumn(targetTableMetadata, tableName,
+                                        item.getColumn())));
+                        currentOrdinal = -1;
+                        visitExpr(item.getValue());
+                        stackTargetColumn.pop();
+                    }
+                } finally {
+                    stackSources.pop();
                 }
                 collectTablesFromExpression(update.getWhere());
             }
             SQLMergeStatement.MergeInsertClause insert = merge.getInsertClause();
             if (insert != null && insert.getValues() != null) {
+                // The inserted values come from the source only.
                 List<SQLExpr> columns = insert.getColumns();
                 List<SQLExpr> values = insert.getValues();
                 boolean hasColumnList = columns != null && !columns.isEmpty();
                 List<String> targetColumns = hasColumnList ? null
                         : mergeTargetColumns(targetTableMetadata, tableName,
                                 values.size());
-                for (int i = 0; i < values.size(); i++) {
-                    String column;
-                    if (hasColumnList) {
-                        if (i >= columns.size()) {
-                            break;
+                stackSources.push(new ArrayList<>(sourceSources));
+                try {
+                    for (int i = 0; i < values.size(); i++) {
+                        String column;
+                        if (hasColumnList) {
+                            if (i >= columns.size()) {
+                                break;
+                            }
+                            column = mergeTargetColumn(targetTableMetadata, tableName,
+                                    columns.get(i));
+                        } else {
+                            column = targetColumns.get(i);
                         }
-                        column = mergeTargetColumn(targetTableMetadata, tableName,
-                                columns.get(i));
-                    } else {
-                        column = targetColumns.get(i);
+                        stackTargetColumn.push(renderIdentifier(column));
+                        currentOrdinal = -1;
+                        visitExpr(values.get(i));
+                        stackTargetColumn.pop();
                     }
-                    stackTargetColumn.push(renderIdentifier(column));
-                    currentOrdinal = -1;
-                    visitExpr(values.get(i));
-                    stackTargetColumn.pop();
+                } finally {
+                    stackSources.pop();
                 }
                 collectTablesFromExpression(insert.getWhere());
             }
@@ -7267,14 +7543,17 @@ public class DmlLineage {
             inTargetExpression = false;
             stackSourceTable.pop();
             stackUsing.pop();
-            stackSources.pop();
             stackTargetTable.pop();
+            stackJoinBindings.pop();
         }
         collectTablesFromExpression(merge.getOn());
     }
 
     private String mergeTargetColumn(Table metadata, String tableName, SQLExpr column) {
-        String raw = lastIdentifier(rawColumnName(column));
+        String raw = rawColumnName(column);
+        if (!MetadataCatalog.isQuotedIdentifier(raw)) {
+            raw = lastIdentifier(raw);
+        }
         if (metadata != null) {
             String resolved = MetadataCatalog.resolveColumnName(metadata, raw,
                     currentDialect());
@@ -7578,7 +7857,28 @@ public class DmlLineage {
         lastQueryBlockMinWidth = 0;
         stackStarPlan = new Stack<>();
         stackSourceNode = new Stack<>();
-        instructions = new ArrayList<>();
+        instructions = learningOnly
+                ? new java.util.AbstractList<Instruction>() {
+                    @Override
+                    public Instruction get(int index) {
+                        throw new IndexOutOfBoundsException();
+                    }
+
+                    @Override
+                    public int size() {
+                        return 0;
+                    }
+
+                    @Override
+                    public boolean add(Instruction element) {
+                        return true;
+                    }
+
+                    @Override
+                    public void add(int index, Instruction element) {
+                    }
+                }
+                : new ArrayList<>();
         stackSourceTable = new Stack<>();
         stackTargetTable = new Stack<>();
         stackTargetColumn = new Stack<>();

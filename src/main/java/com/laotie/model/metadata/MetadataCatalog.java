@@ -868,6 +868,9 @@ public class MetadataCatalog {
                 if (first == '`') {
                     return inner.replace("``", "`");
                 }
+                if (first == '[') {
+                    return inner.replace("]]", "]");
+                }
                 return inner;
             }
         }

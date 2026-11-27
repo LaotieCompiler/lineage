@@ -645,6 +645,36 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void sqlServerBracketLookupUnescapesClosingBracket() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE dbo.\"a]b\" (expected_k INT);"
+                + " CREATE TABLE dbo.\"a]]b\" (wrong_k INT);");
+        TableLocation location = catalog.findTable("dbo.[a]]b]");
+
+        assertEquals("a]b", location.getTable().getName());
+        assertEquals("expected_k",
+                location.getTable().getColumns().get(0).getColumnName());
+    }
+
+    @Test
+    public void trailingBackslashTableKeepsItsIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a\\] ([k] INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT [k] FROM [dbo].[a\\];");
+
+        assertEquals(0, result.getFailures().size());
+        java.util.Set<Column> sources = result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.k"));
+        assertEquals(1, sources.size());
+        Column source = sources.iterator().next();
+        assertEquals("k", source.getColumnName());
+        assertTrue(source.getTableName().contains("a"));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

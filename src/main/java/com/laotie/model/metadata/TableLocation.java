@@ -67,9 +67,12 @@ public class TableLocation {
         if (identifier.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             return identifier;
         }
-        char quote = isMySqlFamily(dialect) ? '`' : '"';
-        return quote + identifier.replace(String.valueOf(quote), String.valueOf(quote) + quote)
-                + quote;
+        if (isMySqlFamily(dialect)) {
+            return "`" + identifier.replace("`", "``") + "`";
+        }
+        String inner = identifier.replace("\\", "\\\\")
+                .replace("\"", "\"\"");
+        return "\"" + inner + "\"";
     }
 
     private static boolean isMySqlFamily(DbType dbType) {

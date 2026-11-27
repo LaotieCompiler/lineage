@@ -418,6 +418,35 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void hsqlTimestampUnitsAreKeywords() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.hsql, strict())
+                .scan("SELECT TIMESTAMPADD(DAY, 1, \"c\") FROM \"t\";")
+                .getFailures().size());
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.hsql, strict())
+                .scan("SELECT TIMESTAMPADD(SQL_TSI_MILLI_SECOND, 1, \"c\")"
+                        + " FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void sqlServerDatePartNamesAreKeywords() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("SELECT DATEPART(weekday, [c]) FROM [t];")
+                .getFailures().size());
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("SELECT DATEPART(dayofyear, [c]) FROM [t];")
+                .getFailures().size());
+    }
+
+    @Test
+    public void derbyPlainTimestampaddIsNotAnEscape() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT TIMESTAMPADD(sql_tsi_day, 1) FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

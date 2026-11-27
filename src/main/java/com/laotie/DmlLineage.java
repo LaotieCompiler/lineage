@@ -346,16 +346,19 @@ public class DmlLineage {
      */
     private void validateQuotedIdentifiers(SQLStatement statement) {
         DbType dialect = currentDialect();
+        boolean jdbcEscape = statementSql != null
+                && statementSql.toLowerCase(Locale.ROOT).contains("{fn");
         SQLASTVisitor visitor;
         switch (dialect) {
             case oracle:
-                visitor = new OracleQuotedIdentifierVisitor(dialect);
+                visitor = new OracleQuotedIdentifierVisitor(dialect, jdbcEscape);
                 break;
             case sqlserver:
-                visitor = new SqlServerQuotedIdentifierVisitor(dialect);
+                visitor = new SqlServerQuotedIdentifierVisitor(dialect,
+                        jdbcEscape);
                 break;
             default:
-                visitor = new QuotedIdentifierVisitor(dialect);
+                visitor = new QuotedIdentifierVisitor(dialect, jdbcEscape);
                 break;
         }
         statement.accept(visitor);
@@ -412,14 +415,16 @@ public class DmlLineage {
     private static final class SqlServerQuotedIdentifierVisitor
             extends SQLServerASTVisitorAdapter {
         private final DbType dialect;
+        private final boolean jdbcEscape;
 
-        private SqlServerQuotedIdentifierVisitor(DbType dialect) {
+        private SqlServerQuotedIdentifierVisitor(DbType dialect, boolean jdbcEscape) {
             this.dialect = dialect;
+            this.jdbcEscape = jdbcEscape;
         }
 
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x, dialect);
+            checkIdentifier(x, dialect, jdbcEscape);
             return true;
         }
 
@@ -471,14 +476,16 @@ public class DmlLineage {
 
     private static final class QuotedIdentifierVisitor extends SQLASTVisitorAdapter {
         private final DbType dialect;
+        private final boolean jdbcEscape;
 
-        private QuotedIdentifierVisitor(DbType dialect) {
+        private QuotedIdentifierVisitor(DbType dialect, boolean jdbcEscape) {
             this.dialect = dialect;
+            this.jdbcEscape = jdbcEscape;
         }
 
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x, dialect);
+            checkIdentifier(x, dialect, jdbcEscape);
             return true;
         }
 
@@ -531,14 +538,16 @@ public class DmlLineage {
     private static final class OracleQuotedIdentifierVisitor
             extends OracleASTVisitorAdapter {
         private final DbType dialect;
+        private final boolean jdbcEscape;
 
-        private OracleQuotedIdentifierVisitor(DbType dialect) {
+        private OracleQuotedIdentifierVisitor(DbType dialect, boolean jdbcEscape) {
             this.dialect = dialect;
+            this.jdbcEscape = jdbcEscape;
         }
 
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x, dialect);
+            checkIdentifier(x, dialect, jdbcEscape);
             return true;
         }
 
@@ -608,8 +617,8 @@ public class DmlLineage {
     }
 
     private static void checkIdentifier(SQLIdentifierExpr identifier,
-            DbType dialect) {
-        if (isFunctionUnit(identifier, dialect)) {
+            DbType dialect, boolean jdbcEscape) {
+        if (isFunctionUnit(identifier, dialect, jdbcEscape)) {
             return;
         }
         requireQuotedIdentifier(identifier.getName());
@@ -631,7 +640,7 @@ public class DmlLineage {
                 // SQL Server date-part abbreviations.
                 "YY", "YYYY", "QQ", "Q", "MM", "M", "DY", "Y", "DD", "D",
                 "WK", "WW", "DW", "HH", "MI", "N", "SS", "S", "MS", "MCS",
-                "NS", "ISOWW", "ISO_WEEK",
+                "NS", "ISOWW", "ISO_WEEK", "WEEKDAY", "DAYOFYEAR",
                 // PostgreSQL date-part fields.
                 "EPOCH", "DOW", "ISODOW", "DOY", "ISOYEAR", "CENTURY",
                 "DECADE", "MILLENNIUM", "MICROSECONDS", "MILLISECONDS",
@@ -639,11 +648,13 @@ public class DmlLineage {
         java.util.Collections.addAll(SQL_TSI_UNITS,
                 "SQL_TSI_FRAC_SECOND", "SQL_TSI_SECOND", "SQL_TSI_MINUTE",
                 "SQL_TSI_HOUR", "SQL_TSI_DAY", "SQL_TSI_WEEK",
-                "SQL_TSI_MONTH", "SQL_TSI_QUARTER", "SQL_TSI_YEAR");
+                "SQL_TSI_MONTH", "SQL_TSI_QUARTER", "SQL_TSI_YEAR",
+                "SQL_TSI_MILLI_SECOND", "SQL_TSI_MICRO_SECOND",
+                "SQL_TSI_NANO_SECOND");
     }
 
     private static boolean isFunctionUnit(SQLIdentifierExpr identifier,
-            DbType dialect) {
+            DbType dialect, boolean jdbcEscape) {
         SQLObject parent = identifier.getParent();
         if (!(parent instanceof SQLMethodInvokeExpr)) {
             return false;
@@ -698,11 +709,11 @@ public class DmlLineage {
             return false;
         }
         String upper = unit.toUpperCase(Locale.ROOT);
-        boolean jdbcTimestamp = dialect == DbType.derby || dialect == DbType.hsql;
-        if (jdbcTimestamp && ("TIMESTAMPADD".equalsIgnoreCase(method)
-                || "TIMESTAMPDIFF".equalsIgnoreCase(method))) {
-            // Only the JDBC escape form's SQL_TSI_* names are keywords there.
-            return SQL_TSI_UNITS.contains(upper);
+        boolean timestampCall = "TIMESTAMPADD".equalsIgnoreCase(method)
+                || "TIMESTAMPDIFF".equalsIgnoreCase(method);
+        if (dialect == DbType.derby && timestampCall) {
+            // Derby only treats the JDBC escape form's unit as a keyword.
+            return jdbcEscape && SQL_TSI_UNITS.contains(upper);
         }
         return SQL_TSI_UNITS.contains(upper)
                 || UNIT_KEYWORDS.contains(upper);

@@ -5357,16 +5357,16 @@ public class DmlLineage {
         String name = normalizeIdentifier(rawName);
         DbType dialect = currentDialect();
         if (dialect == DbType.mysql || dialect == DbType.mariadb) {
-            return name.toLowerCase();
+            return name.toLowerCase(Locale.ROOT);
         }
         if (dialect == DbType.postgresql) {
-            return quoted ? name : name.toLowerCase();
+            return quoted ? name : name.toLowerCase(Locale.ROOT);
         }
         if (dialect == DbType.hive || dialect == DbType.antspark) {
             // Hive/Spark identifiers are case-insensitive even when quoted.
             return foldCase(name);
         }
-        return quoted ? name : name.toUpperCase();
+        return quoted ? name : name.toUpperCase(Locale.ROOT);
     }
 
     private Map<String, List<String>> namedTargetOutputs() {
@@ -8257,9 +8257,19 @@ public class DmlLineage {
             }
             return;
         }
-        String mappedName = source.metadataTable == null
-                ? canonicalColumnName(columnName) : columnName;
-        addColumnMapping(sourceName, mappedName, source.temporary, source.metadataTable);
+        if (source.metadataTable == null) {
+            DbType dialect = currentDialect();
+            if (dialect == DbType.hive || dialect == DbType.antspark) {
+                addResolvedColumnMapping(sourceName, hiveLogicalName(columnName),
+                        source.temporary);
+            } else {
+                addColumnMapping(sourceName, canonicalColumnName(columnName),
+                        source.temporary, null);
+            }
+            return;
+        }
+        addColumnMapping(sourceName, columnName, source.temporary,
+                source.metadataTable);
     }
 
     private void addColumnMapping(String sourceTable, String columnName,

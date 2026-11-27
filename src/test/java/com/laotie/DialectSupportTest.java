@@ -435,6 +435,42 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void turkishLocalePostgresFoldsIdentifiersWithRoot() {
+        java.util.Locale previous = java.util.Locale.getDefault();
+        try {
+            java.util.Locale.setDefault(new java.util.Locale("tr", "TR"));
+            MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+            catalog.loadDdl("CREATE TABLE a (\"id\" INT);");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "SELECT a.ID AS copied FROM a;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.id"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt0.temp0.copied")));
+        } finally {
+            java.util.Locale.setDefault(previous);
+        }
+    }
+
+    @Test
+    public void sparkUncatalogedLiteralQuotedNameStaysDistinct() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SELECT a.k AS regular, a.`\"k\"` AS quoted FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.regular")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "\"k\""))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.quoted")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

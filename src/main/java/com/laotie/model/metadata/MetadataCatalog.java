@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Logger;
 
@@ -746,14 +747,14 @@ public class MetadataCatalog {
         } else if (quoted) {
             column = table.getColumnExact(name);
         } else if (dialect == DbType.postgresql) {
-            column = table.getColumnExact(name.toLowerCase());
+            column = table.getColumnExact(name.toLowerCase(Locale.ROOT));
             if (column == null) {
                 // PostgreSQL quoted names keep their case; only unquoted
                 // catalog names may match leniently.
                 column = table.getUnquotedColumnIgnoreCase(name);
             }
         } else {
-            column = table.getColumnExact(name.toUpperCase());
+            column = table.getColumnExact(name.toUpperCase(Locale.ROOT));
             if (column == null) {
                 column = table.getColumnIgnoreCase(name);
             }

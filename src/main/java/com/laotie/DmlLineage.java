@@ -6113,21 +6113,47 @@ public class DmlLineage {
         }
     }
 
-    private static void addSingleTable(Set<String> sides,
-            Iterable<String> localValues) {
-        Set<String> tables = new LinkedHashSet<>();
-        for (String value : localValues) {
-            if (value == null || LOCAL_AMBIGUOUS.equals(value)
-                    || value.contains(LOCAL_TABLE_SEPARATOR)) {
-                // A composite side (including a derived table or CTE) proves
-                // nothing about which table owns a merged key.
-                return;
+    /**
+     * Add a side's table only when the side is exactly one physical FROM instance.
+     */
+    private void addSideInstances(Set<String> sides, SQLTableSource side,
+            Set<String> ctes) {
+        List<String> instances = sourceInstances(side, ctes);
+        if (instances != null && instances.size() == 1) {
+            sides.add(instances.get(0));
+        }
+    }
+
+    private List<String> sourceInstances(SQLTableSource from, Set<String> ctes) {
+        if (from == null) {
+            return null;
+        }
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            List<String> left = sourceInstances(join.getLeft(), ctes);
+            List<String> right = sourceInstances(join.getRight(), ctes);
+            if (left == null || right == null) {
+                return null;
             }
-            tables.add(value);
+            List<String> instances = new ArrayList<>(left);
+            instances.addAll(right);
+            return instances;
         }
-        if (tables.size() == 1) {
-            sides.add(tables.iterator().next());
+        if (from instanceof SQLExprTableSource) {
+            SQLExprTableSource table = (SQLExprTableSource) from;
+            String name = extractTableName(table);
+            if (name == null) {
+                return null;
+            }
+            if (isSingleSegmentName(name)
+                    && ctes.contains(qualifiedKey(name))) {
+                // A CTE is not a physical table instance.
+                return null;
+            }
+            return new ArrayList<>(java.util.Collections.singletonList(
+                    learnedTableKey(name)));
         }
+        return null;
     }
 
     private String usingBindingMark(SQLJoinTableSource join,
@@ -6147,14 +6173,14 @@ public class DmlLineage {
                 case LEFT_OUTER_JOIN:
                 case LEFT_SEMI_JOIN:
                 case LEFT_ANTI_JOIN:
-                    addSingleTable(sides, leftLocals.values());
+                    addSideInstances(sides, join.getLeft(), ctes);
                     break;
                 case RIGHT_OUTER_JOIN:
-                    addSingleTable(sides, rightLocals.values());
+                    addSideInstances(sides, join.getRight(), ctes);
                     break;
                 default:
-                    addSingleTable(sides, leftLocals.values());
-                    addSingleTable(sides, rightLocals.values());
+                    addSideInstances(sides, join.getLeft(), ctes);
+                    addSideInstances(sides, join.getRight(), ctes);
                     break;
             }
             if (sides.isEmpty()) {

@@ -4995,4 +4995,21 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.k")));
     }
 
+    @Test
+    public void selfJoinUsingSideCountsInstancesNotPhysicalTables() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 IN (SELECT 1 FROM ((A AS a1 CROSS JOIN A AS a2)"
+                        + " JOIN B USING (k)) AS j WHERE j.k = 1);"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        // Two A instances make the USING side composite, so k is not learned for a.k.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+        assertNull(result.getResults().get(1).getError());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(Column.temporary("stmt2.temp0.y")));
+    }
+
 }

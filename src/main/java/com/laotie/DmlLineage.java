@@ -5352,6 +5352,10 @@ public class DmlLineage {
         if (dialect == DbType.postgresql) {
             return quoted ? name : name.toLowerCase();
         }
+        if (dialect == DbType.hive || dialect == DbType.antspark) {
+            // Hive/Spark identifiers are case-insensitive even when quoted.
+            return foldCase(name);
+        }
         return quoted ? name : name.toUpperCase();
     }
 
@@ -8728,13 +8732,27 @@ public class DmlLineage {
      * backtick/double-quote layer is syntactic.
      */
     private static String partitionKey(String raw) {
-        String name = hiveLogicalName(raw);
-        return name == null ? null : name.toLowerCase(Locale.ROOT);
+        return foldCase(hiveLogicalName(raw));
     }
 
     private static String partitionColumnKey(String columnName) {
-        return columnName == null ? null
-                : columnName.toLowerCase(Locale.ROOT);
+        return foldCase(columnName);
+    }
+
+    /**
+     * Case fold matching {@link String#equalsIgnoreCase}: per-character
+     * upper-then-lower, independent of the JVM locale.
+     */
+    private static String foldCase(String value) {
+        if (value == null) {
+            return null;
+        }
+        StringBuilder folded = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            folded.append(Character.toLowerCase(
+                    Character.toUpperCase(value.charAt(i))));
+        }
+        return folded.toString();
     }
 
     /** Strip one Hive SQL identifier layer, keeping inner quote characters. */

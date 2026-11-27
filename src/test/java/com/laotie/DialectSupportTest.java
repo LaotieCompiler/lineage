@@ -287,6 +287,42 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void sparkDerivedQuotedReadIsCaseInsensitive() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE t (day STRING) USING parquet;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.`DAY` AS copied"
+                        + " FROM (SELECT day AS `day` FROM t) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("t.day"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.copied")));
+    }
+
+    @Test
+    public void unicodePartitionKeyMatchesCaseInsensitively() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (x INT, src_day STRING)"
+                + " USING parquet;"
+                + " CREATE TABLE t (x INT, id STRING, dt STRING)"
+                + " USING parquet PARTITIONED BY (id, dt);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t"
+                        + " PARTITION (`\u0130D` = '1', dt)"
+                        + " SELECT x, src_day FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_day"))),
+                result.getGraph().getSources(new Column("t.dt")));
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.id")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

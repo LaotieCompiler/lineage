@@ -709,6 +709,47 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void insertTargetWithBackslashQuoteTracesBack() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a] ([c\\\"d] INT);"
+                + " CREATE TABLE [dbo].[src] ([x] INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "INSERT INTO [dbo].[a] ([c\\\"d])"
+                        + " SELECT [x] FROM [dbo].[src];"
+                        + " SELECT [c\\\"d] AS [copied] FROM [dbo].[a];");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("dbo.src.x"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.copied")));
+    }
+
+    @Test
+    public void wildcardKeepsBackslashQuoteColumnName() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a] ([c\\\"d] INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT * FROM [dbo].[a];");
+
+        assertEquals(0, result.getFailures().size());
+        boolean found = false;
+        for (Column vertex : result.getGraph().getReverseGraph()
+                .vertexSet()) {
+            if (vertex.isTemporary() || !"dbo.a".equals(
+                    vertex.getTableName())) {
+                continue;
+            }
+            if ("c\\\"d".equals(vertex.getColumnName())) {
+                found = true;
+            }
+        }
+        assertTrue(found);
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

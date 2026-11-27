@@ -540,7 +540,8 @@ public class Instruction {
         if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             return name;
         }
-        return "\"" + name.replace("\"", "\"\"") + "\"";
+        return "\"" + name.replace("\\", "\\\\")
+                .replace("\"", "\"\"") + "\"";
     }
 
     private static void putTempColumns(Map<String, List<Column>> tempColumns, String table,

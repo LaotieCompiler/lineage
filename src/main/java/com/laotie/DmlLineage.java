@@ -1111,7 +1111,7 @@ public class DmlLineage {
     private static String rawSchemaToken(SQLExpr value) {
         if (value instanceof SQLTextLiteralExpr) {
             String text = ((SQLTextLiteralExpr) value).getText();
-            return "\"" + text.replace("\"", "\"\"") + "\"";
+            return quoteIdentifierValue(text);
         }
         return value.toString().trim();
     }
@@ -3598,7 +3598,7 @@ public class DmlLineage {
         }
         String rendered = quoted == null
                 ? renderIdentifier(column)
-                : quoted ? "\"" + column.replace("\"", "\"\"") + "\""
+                : quoted ? quoteIdentifierValue(column)
                         : renderIdentifier(column);
         instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                 lineageTableName(source) + "." + rendered,
@@ -3607,7 +3607,7 @@ public class DmlLineage {
         if (source.wildcardContribution && source.temporary) {
             int relative = -1;
             String key = quoted != null && quoted
-                    ? identifierKey("\"" + column.replace("\"", "\"\"") + "\"")
+                    ? identifierKey(quoteIdentifierValue(column))
                     : identifierKey(column);
             for (int i = 0; i < source.outputKeys.size(); i++) {
                 if (key != null && key.equals(source.outputKeys.get(i))) {
@@ -6776,7 +6776,7 @@ public class DmlLineage {
         if (dialect == DbType.mysql || dialect == DbType.mariadb) {
             return "`" + name.replace("`", "``") + "`";
         }
-        return "\"" + name.replace("\"", "\"\"") + "\"";
+        return quoteIdentifierValue(name);
     }
 
     private void learnExplicitReference(SQLPropertyExpr property) {
@@ -8058,7 +8058,7 @@ public class DmlLineage {
 
     private static String renderSourceColumn(StarColumn column) {
         if (column.quoted) {
-            return "\"" + column.column.replace("\"", "\"\"") + "\"";
+            return quoteIdentifierValue(column.column);
         }
         return renderIdentifier(column.column);
     }
@@ -9121,7 +9121,7 @@ public class DmlLineage {
             if (metadata == null) {
                 return renderHiveIdentifier(foldCase(name));
             }
-            String quoted = "\"" + name.replace("\"", "\"\"") + "\"";
+            String quoted = quoteIdentifierValue(name);
             String resolved = MetadataCatalog.resolveColumnName(metadata, quoted,
                     dialect);
             if (resolved == null) {
@@ -9141,7 +9141,7 @@ public class DmlLineage {
             if (dialect == DbType.hive || dialect == DbType.antspark) {
                 return renderHiveIdentifier(resolved);
             }
-            return "\"" + resolved.replace("\"", "\"\"") + "\"";
+            return quoteIdentifierValue(resolved);
         }
         return renderIdentifier(resolved);
     }
@@ -9238,6 +9238,11 @@ public class DmlLineage {
                 sourceTable + "." + renderIdentifier(columnName),
                 targetTable + "." + stackTargetColumn.peek(), currentOrdinal,
                 sourceTemporary, tempTables.contains(targetTable)));
+    }
+
+    private static String quoteIdentifierValue(String name) {
+        return "\"" + name.replace("\\", "\\\\")
+                .replace("\"", "\"\"") + "\"";
     }
 
     private static String renderIdentifier(String name) {
@@ -9869,7 +9874,7 @@ public class DmlLineage {
         if (dialect == DbType.mysql || dialect == DbType.mariadb) {
             return "`" + column.getColumnName().replace("`", "``") + "`";
         }
-        return "\"" + column.getColumnName().replace("\"", "\"\"") + "\"";
+        return quoteIdentifierValue(column.getColumnName());
     }
 
     private String mergeTargetColumn(Table metadata, String tableName, SQLExpr column) {

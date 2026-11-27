@@ -617,6 +617,8 @@ public class DmlLineage {
 
     private static final Set<String> UNIT_KEYWORDS = new HashSet<>();
 
+    private static final Set<String> SQL_TSI_UNITS = new HashSet<>();
+
     static {
         java.util.Collections.addAll(UNIT_KEYWORDS,
                 "YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE",
@@ -625,7 +627,19 @@ public class DmlLineage {
                 "YEAR_MONTH", "DAY_HOUR", "DAY_MINUTE", "DAY_SECOND",
                 "DAY_MICROSECOND", "HOUR_MINUTE", "HOUR_SECOND",
                 "HOUR_MICROSECOND", "MINUTE_SECOND", "MINUTE_MICROSECOND",
-                "SECOND_MICROSECOND");
+                "SECOND_MICROSECOND",
+                // SQL Server date-part abbreviations.
+                "YY", "YYYY", "QQ", "Q", "MM", "M", "DY", "Y", "DD", "D",
+                "WK", "WW", "DW", "HH", "MI", "N", "SS", "S", "MS", "MCS",
+                "NS", "ISOWW", "ISO_WEEK",
+                // PostgreSQL date-part fields.
+                "EPOCH", "DOW", "ISODOW", "DOY", "ISOYEAR", "CENTURY",
+                "DECADE", "MILLENNIUM", "MICROSECONDS", "MILLISECONDS",
+                "TIMEZONE", "TIMEZONE_HOUR", "TIMEZONE_MINUTE", "JULIAN");
+        java.util.Collections.addAll(SQL_TSI_UNITS,
+                "SQL_TSI_FRAC_SECOND", "SQL_TSI_SECOND", "SQL_TSI_MINUTE",
+                "SQL_TSI_HOUR", "SQL_TSI_DAY", "SQL_TSI_WEEK",
+                "SQL_TSI_MONTH", "SQL_TSI_QUARTER", "SQL_TSI_YEAR");
     }
 
     private static boolean isFunctionUnit(SQLIdentifierExpr identifier,
@@ -683,10 +697,15 @@ public class DmlLineage {
         if (unit == null) {
             return false;
         }
-        if (unit.regionMatches(true, 0, "SQL_TSI_", 0, 8)) {
-            return true;
+        String upper = unit.toUpperCase(Locale.ROOT);
+        boolean jdbcTimestamp = dialect == DbType.derby || dialect == DbType.hsql;
+        if (jdbcTimestamp && ("TIMESTAMPADD".equalsIgnoreCase(method)
+                || "TIMESTAMPDIFF".equalsIgnoreCase(method))) {
+            // Only the JDBC escape form's SQL_TSI_* names are keywords there.
+            return SQL_TSI_UNITS.contains(upper);
         }
-        return UNIT_KEYWORDS.contains(unit.toUpperCase(Locale.ROOT));
+        return SQL_TSI_UNITS.contains(upper)
+                || UNIT_KEYWORDS.contains(upper);
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

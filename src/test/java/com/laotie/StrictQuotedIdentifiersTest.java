@@ -392,6 +392,32 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void commonDatePartSpellingsAreNotColumns() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("SELECT DATEADD(dd, 1, [c]) FROM [t];")
+                .getFailures().size());
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("SELECT EXTRACT(EPOCH FROM \"c\") FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void jdbcTimestampUnitsMustUseSqlTsiNames() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT TIMESTAMPADD(day, 1) FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT TIMESTAMPADD(sql_tsi_counter, 1) FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                        + " FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

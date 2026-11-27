@@ -8449,6 +8449,9 @@ public class DmlLineage {
         boolean seenInsert = false;
         boolean expectPartition = false;
         boolean groupIsPartition = false;
+        boolean sawIntoOrTable = false;
+        boolean tableNameSeen = false;
+        boolean nextNameIsTablePart = false;
         char quote = 0;
         for (int i = 0; i < sql.length(); i++) {
             char ch = sql.charAt(i);
@@ -8490,6 +8493,11 @@ public class DmlLineage {
                 continue;
             }
             if (ch == '\'' || ch == '"' || ch == '`') {
+                if (seenInsert && depth == 0 && !tableNameSeen
+                        && sawIntoOrTable) {
+                    tableNameSeen = true;
+                    nextNameIsTablePart = false;
+                }
                 quote = ch;
                 continue;
             }
@@ -8512,6 +8520,8 @@ public class DmlLineage {
                     lastStart = groupStart;
                     lastEnd = i;
                 }
+            } else if (depth == 0 && ch == '.' && tableNameSeen) {
+                nextNameIsTablePart = true;
             } else if (depth == 0 && Character.isLetter(ch)) {
                 int end = i + 1;
                 while (end < sql.length()
@@ -8523,6 +8533,17 @@ public class DmlLineage {
                     if ("INSERT".equalsIgnoreCase(word)) {
                         seenInsert = true;
                     }
+                } else if (!tableNameSeen) {
+                    if ("INTO".equalsIgnoreCase(word)
+                            || "TABLE".equalsIgnoreCase(word)) {
+                        sawIntoOrTable = true;
+                    } else if (!"OVERWRITE".equalsIgnoreCase(word)
+                            && !"IGNORE".equalsIgnoreCase(word)) {
+                        tableNameSeen = true;
+                        nextNameIsTablePart = false;
+                    }
+                } else if (nextNameIsTablePart) {
+                    nextNameIsTablePart = false;
                 } else if ("PARTITION".equalsIgnoreCase(word)) {
                     expectPartition = true;
                 } else if ("SELECT".equalsIgnoreCase(word)

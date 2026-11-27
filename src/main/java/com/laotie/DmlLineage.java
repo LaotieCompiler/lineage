@@ -8147,6 +8147,17 @@ public class DmlLineage {
      * USING merges and UNION names still apply), while unknown sources stay table-level
      * wildcards. Placeholder names are never registered.
      */
+    private boolean hasColumnMappingTo(String targetReference) {
+        for (Instruction instruction : instructions) {
+            if ((instruction.getOperation() == OperationType.COLUMN_MAPPING
+                    || instruction.getOperation() == OperationType.EXPR_MAPPING)
+                    && targetReference.equals(instruction.getTo())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private int emitDetachedStar(String targetTable, List<SourceTable> sources,
             int startPosition) {
         SourceNode node = stackSourceNode.isEmpty() ? null : stackSourceNode.peek();
@@ -8216,17 +8227,28 @@ public class DmlLineage {
                 List<String> declaredTarget = currentTargetColumnAliases(targetTable);
                 for (int relative = 0; !uncertainPosition
                         && relative < totalWidth; relative++) {
-                    if (coveredBySpan(spans, relative)
-                            || !sourceOutputNameKnown(source, relative)
-                            || relative >= sourceNames.size()) {
+                    if (relative >= sourceNames.size()) {
                         continue;
                     }
                     String name = sourceNames.get(relative);
+                    if (name == null) {
+                        continue;
+                    }
+                    String sourceReference = source.displayName + "."
+                            + renderIdentifier(name);
+                    boolean covered = coveredBySpan(spans, relative);
+                    if (covered) {
+                        if (!hasColumnMappingTo(sourceReference)) {
+                            continue;
+                        }
+                    } else if (!sourceOutputNameKnown(source, relative)) {
+                        continue;
+                    }
                     String outputName = declaredTarget != null
                             && startPosition + relative < declaredTarget.size()
                                     ? declaredTarget.get(startPosition + relative) : name;
                     instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                            source.displayName + "." + renderIdentifier(name),
+                            sourceReference,
                             targetTable + "." + renderIdentifier(outputName),
                             startPosition + relative, source.temporary,
                             targetTemporary));

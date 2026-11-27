@@ -5783,25 +5783,15 @@ public class DmlLineage {
             if (recursive) {
                 for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
                     if (entry.getAlias() != null) {
-                        String key = qualifiedKey(entry.getAlias());
-                        locals.put(key, null);
-                        ctes.add(key);
+                        ctes.add(qualifiedKey(entry.getAlias()));
                     }
                 }
             }
-            Set<String> usedNames = new HashSet<>();
-            collectFromNames(select.getQuery(), usedNames);
             for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
                 // A non-recursive body still sees a physical table of the same name.
                 learnSelectExplicitReferences(entry.getSubQuery(), locals, ctes);
                 if (!recursive && entry.getAlias() != null) {
-                    String key = qualifiedKey(entry.getAlias());
-                    if (usedNames.contains(key)) {
-                        // Only a CTE that the query actually reads shadows the outer
-                        // scope; an unused declaration must not hide an alias.
-                        locals.put(key, null);
-                        ctes.add(key);
-                    }
+                    ctes.add(qualifiedKey(entry.getAlias()));
                 }
             }
         }
@@ -5881,13 +5871,18 @@ public class DmlLineage {
             Set<String> ctes) {
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;
-            learnJoinConditions(join.getLeft(), locals, ctes);
-            learnJoinConditions(join.getRight(), locals, ctes);
+            Map<String, String> subtree = new HashMap<>();
+            collectLocalNames(join.getLeft(), subtree, ctes);
+            collectLocalNames(join.getRight(), subtree, ctes);
+            Map<String, String> conditionLocals = new HashMap<>(locals);
+            conditionLocals.putAll(subtree);
+            learnJoinConditions(join.getLeft(), conditionLocals, ctes);
+            learnJoinConditions(join.getRight(), conditionLocals, ctes);
             if (join.getCondition() != null) {
-                learnExplicitReferences(join.getCondition(), locals, ctes);
+                // An ON condition sees the joined subtree's aliases even when the
+                // whole join is aliased for the outer query.
+                learnExplicitReferences(join.getCondition(), conditionLocals, ctes);
             }
-        } else if (from instanceof SQLSubqueryTableSource) {
-            // The derived body is analyzed with its own scope.
         }
     }
 

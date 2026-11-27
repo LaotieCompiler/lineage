@@ -4475,4 +4475,59 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.k")));
     }
 
+    @Test
+    public void cteReadThroughAliasIsNotLearnedAsATable() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (WITH q AS (SELECT 1 AS k)"
+                + " SELECT x.k FROM q AS x) FROM Z;"
+                + " SELECT q.y, C.y FROM q,C;");
+        ScanResult result = scanner.scan("SELECT k FROM q,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void laterCteBodyReferenceKeepsTheCteName() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (WITH q AS (SELECT 1 AS k),"
+                + " w AS (SELECT q.k FROM q) SELECT w.k FROM w) FROM Z;"
+                + " SELECT q.y, C.y FROM q,C;");
+        ScanResult result = scanner.scan("SELECT k FROM q,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void aliasedJoinConditionSeesItsChildAliases() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT 1 FROM"
+                + " (A AS x JOIN D ON x.k=D.y) AS j) FROM Z;"
+                + " SELECT x.y, C.y FROM x,C;");
+        ScanResult result = scanner.scan("SELECT k FROM x,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void cteShadowingIsPerUnionBranch() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,C;"
+                        + " SELECT 1 IN (SELECT 1 IN (WITH q AS (SELECT 1 AS k)"
+                        + " SELECT q.k UNION ALL SELECT q.k FROM q)"
+                        + " FROM A AS q) FROM Z;"
+                        + " SELECT A.y, C.y FROM A,C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

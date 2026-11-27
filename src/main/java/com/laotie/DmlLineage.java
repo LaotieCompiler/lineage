@@ -392,9 +392,13 @@ public class DmlLineage {
                 if (markedMethod != null
                         && markedMethod.startsWith(JDBC_MARKER)
                         && !markedMethod.equals(x.getMethodName())
-                        && !x.getArguments().isEmpty()) {
-                    x.putAttribute(JDBC_ESCAPE_ATTRIBUTE,
-                            x.getArguments().get(0));
+                        && !x.getArguments().isEmpty()
+                        && x.getArguments().get(0)
+                                instanceof SQLIdentifierExpr) {
+                    x.putAttribute(JDBC_ESCAPE_ATTRIBUTE, new JdbcEscape(
+                            ((SQLIdentifierExpr) x.getArguments().get(0))
+                                    .getName(),
+                            x.getArguments().size()));
                 }
                 return true;
             }
@@ -834,10 +838,15 @@ public class DmlLineage {
             return false;
         }
         String method = call.getMethodName();
-        Object escapeArg = call.getAttribute(JDBC_ESCAPE_ATTRIBUTE);
-        boolean jdbcMarked = escapeArg != null
+        Object escape = call.getAttribute(JDBC_ESCAPE_ATTRIBUTE);
+        boolean jdbcMarked = false;
+        if (escape instanceof JdbcEscape
+                && call.getArguments().size() == ((JdbcEscape) escape).argumentCount
                 && !call.getArguments().isEmpty()
-                && escapeArg == call.getArguments().get(0);
+                && call.getArguments().get(0) instanceof SQLIdentifierExpr) {
+            jdbcMarked = ((JdbcEscape) escape).unit.equalsIgnoreCase(
+                    ((SQLIdentifierExpr) call.getArguments().get(0)).getName());
+        }
         boolean mysqlFamily = dialect == DbType.mysql
                 || dialect == DbType.mariadb;
         boolean hiveFamily = dialect == DbType.hive
@@ -6349,6 +6358,16 @@ public class DmlLineage {
     private String statementSql;
     private static final String JDBC_ESCAPE_ATTRIBUTE =
             "com.laotie.jdbcEscape";
+
+    private static final class JdbcEscape {
+        private final String unit;
+        private final int argumentCount;
+
+        private JdbcEscape(String unit, int argumentCount) {
+            this.unit = unit;
+            this.argumentCount = argumentCount;
+        }
+    }
     private static final String JDBC_MARKER = "LO_JDBC_";
     private static final String ANSI_IDENTIFIER_ATTRIBUTE =
             "com.laotie.ansiQuotedIdentifier";

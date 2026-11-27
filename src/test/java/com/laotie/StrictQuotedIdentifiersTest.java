@@ -708,6 +708,40 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void clonedEscapeAstStillValidates() {
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement statement =
+                lineage.parseStatement("SELECT {fn TIMESTAMPADD("
+                        + "SQL_TSI_DAY, 1, \"c\")} FROM \"t\";");
+        lineage.getLineage(statement.clone());
+    }
+
+    @Test
+    public void inPlaceEscapeEditLosesTheExemption() {
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement statement =
+                lineage.parseStatement("SELECT {fn TIMESTAMPADD("
+                        + "SQL_TSI_DAY, 1, \"c\")} FROM \"t\";");
+        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr call =
+                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                        statement).getSelect().getQuery())
+                                .getSelectList().get(0).getExpr();
+        ((com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr)
+                call.getArguments().get(0)).setName("sql_tsi_day");
+        call.getArguments().remove(2);
+        try {
+            lineage.getLineage(statement);
+            org.junit.Assert.fail("edited escape must lose its exemption");
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

@@ -13,6 +13,8 @@ import com.alibaba.druid.DbType;
 import com.laotie.exception.UnquotedIdentifierException;
 import com.laotie.model.ScanResult;
 import com.laotie.model.metadata.Column;
+import com.laotie.model.metadata.MetadataCatalog;
+import com.laotie.model.metadata.MetadataContext;
 import com.laotie.model.metadata.MetadataMode;
 
 /**
@@ -626,6 +628,36 @@ public class StrictQuotedIdentifiersTest {
                         + " \"c\")} FROM \"t\";");
         first.getLineage(statement);
         new DmlLineage(DbType.derby, options).getLineage(statement);
+    }
+
+    @Test
+    public void plainCallBeforeEscapeDoesNotStealAnnotation() {
+        String sql = "SELECT TIMESTAMPADD(sql_tsi_day, 1),"
+                + " {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")} FROM \"t\";";
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement statement =
+                lineage.parseStatement(sql);
+        com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock block =
+                (com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                statement).getSelect().getQuery();
+        block.getSelectList().remove(1);
+        try {
+            lineage.getLineage(statement);
+            org.junit.Assert.fail("plain call must reject its bare column");
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
+    }
+
+    @Test
+    public void publicStringApiKeepsItsCatalogDialect() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.derby);
+        DmlLineage lineage = new DmlLineage(MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        lineage.getLineage("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                + " FROM \"t\" FETCH FIRST 1 ROW ONLY;");
     }
 
     @Test

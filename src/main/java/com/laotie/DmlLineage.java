@@ -336,7 +336,7 @@ public class DmlLineage {
         DbType dialect = resolveDialect();
         SQLStatement statement = parseWithDialectFallback(sqlStr, dialect);
         if (dialect == DbType.derby && options.isStrictQuotedIdentifiers()) {
-            annotateJdbcEscapes(statement, sqlStr);
+            annotateJdbcEscapes(statement, sqlStr, dialect);
         }
         return statement;
     }
@@ -360,53 +360,39 @@ public class DmlLineage {
         }
     }
 
-    private void annotateJdbcEscapes(SQLStatement statement, String source) {
+    private void annotateJdbcEscapes(SQLStatement statement, String source,
+            DbType dialect) {
         String marked = markJdbcEscapes(source);
         if (marked.equals(source)) {
             return;
         }
-        List<EscapeUnit> units = new ArrayList<>();
+        List<String> markedMethods = new ArrayList<>();
         try {
             SQLStatement markedStatement =
-                    parseWithDialectFallback(marked, currentDialect());
+                    parseWithDialectFallback(marked, dialect);
             markedStatement.accept(new SQLASTVisitorAdapter() {
                 @Override
                 public boolean visit(SQLMethodInvokeExpr x) {
-                    String method = x.getMethodName();
-                    if (method != null && method.startsWith(JDBC_MARKER)
-                            && !x.getArguments().isEmpty()
-                            && x.getArguments().get(0)
-                                    instanceof SQLIdentifierExpr) {
-                        units.add(new EscapeUnit(
-                                method.substring(JDBC_MARKER.length()),
-                                ((SQLIdentifierExpr) x.getArguments().get(0))
-                                        .getName()));
-                    }
+                    markedMethods.add(x.getMethodName());
                     return true;
                 }
             });
         } catch (RuntimeException e) {
             return;
         }
+        int[] index = {0};
         statement.accept(new SQLASTVisitorAdapter() {
             @Override
             public boolean visit(SQLMethodInvokeExpr x) {
-                if (x.getArguments().isEmpty()
-                        || !(x.getArguments().get(0)
-                                instanceof SQLIdentifierExpr)) {
+                int i = index[0]++;
+                if (i >= markedMethods.size()) {
                     return true;
                 }
-                SQLIdentifierExpr unitExpr =
-                        (SQLIdentifierExpr) x.getArguments().get(0);
-                for (int i = 0; i < units.size(); i++) {
-                    EscapeUnit candidate = units.get(i);
-                    if (candidate.method.equalsIgnoreCase(x.getMethodName())
-                            && candidate.unit.equalsIgnoreCase(
-                                    unitExpr.getName())) {
-                        x.putAttribute(JDBC_ESCAPE_ATTRIBUTE, Boolean.TRUE);
-                        units.remove(i);
-                        break;
-                    }
+                String markedMethod = markedMethods.get(i);
+                if (markedMethod != null
+                        && markedMethod.startsWith(JDBC_MARKER)
+                        && !markedMethod.equals(x.getMethodName())) {
+                    x.putAttribute(JDBC_ESCAPE_ATTRIBUTE, Boolean.TRUE);
                 }
                 return true;
             }
@@ -987,7 +973,7 @@ public class DmlLineage {
             statement = parseWithDialectFallback(sql, dialect);
             if (dialect == DbType.derby
                     && options.isStrictQuotedIdentifiers()) {
-                annotateJdbcEscapes(statement, sql);
+                annotateJdbcEscapes(statement, sql, dialect);
             }
         } catch (Throwable t) {
             return failed(sql, base, session, t);

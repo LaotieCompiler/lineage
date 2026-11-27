@@ -6780,6 +6780,9 @@ public class DmlLineage {
                             MetadataCatalog.splitQualifiedNamePreservingQuotes(
                                     source.displayName));
                 }
+                if (!matched && source.implicitName != null) {
+                    matched = qualifiedKey(source.implicitName).equals(ownerKey);
+                }
                 if (!matched && ownerParts.length > 0) {
                     String[] referenceParts = MetadataCatalog
                             .splitQualifiedNamePreservingQuotes(reference);
@@ -6819,7 +6822,9 @@ public class DmlLineage {
                         || source.rawName != null
                                 && qualifiedKey(source.rawName).equals(ownerKey)
                         || source.writtenName != null
-                                && qualifiedKey(source.writtenName).equals(ownerKey);
+                                && qualifiedKey(source.writtenName).equals(ownerKey)
+                        || source.implicitName != null
+                                && qualifiedKey(source.implicitName).equals(ownerKey);
             }
             if (matched) {
                 return source;
@@ -6854,6 +6859,10 @@ public class DmlLineage {
                 && (source.rawName == null
                         || !hasQuotedSegment(source.rawName))
                 && qualifiedKey(source.displayName).equals(ownerKey)) {
+            return true;
+        }
+        if (source.implicitName != null
+                && qualifiedKey(source.implicitName).equals(ownerKey)) {
             return true;
         }
         if (source.displayName != null && source.rawName != null

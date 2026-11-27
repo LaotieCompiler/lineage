@@ -5165,6 +5165,22 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void lineageResolutionUsesFunctionImplicitName() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT (SELECT generate_series.generate_series"
+                        + " FROM generate_series(1, 3) LIMIT 1)"
+                        + " FROM A AS generate_series;");
+
+        assertNull(result.getResults().get(0).getError());
+        Set<Column> sources = result.getGraph().getSources(
+                Column.temporary("stmt0.temp1.generate_series"));
+        assertTrue(sources.contains(
+                new Column("generate_series(1, 3).generate_series")));
+        assertFalse(sources.contains(new Column("a.generate_series")));
+    }
+
+    @Test
     public void standaloneJoinPlanDoesNotLearnTableFunctions() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.postgresql, inferring()).scan(

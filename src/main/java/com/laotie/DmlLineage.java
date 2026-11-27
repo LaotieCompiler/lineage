@@ -5649,6 +5649,9 @@ public class DmlLineage {
         }
     }
 
+    /** A local short name that matches more than one table in the same frame. */
+    private static final String LOCAL_AMBIGUOUS = "\u0000local-ambiguous";
+
     private void learnExplicitReferences(SQLExpr expr) {
         learnExplicitReferences(expr, new HashMap<String, String>(),
                 new HashSet<String>());
@@ -5671,7 +5674,8 @@ public class DmlLineage {
                         : qualifiedKey(property.getOwner().toString());
                 if (ownerKey != null && locals.containsKey(ownerKey)) {
                     String learnedTable = locals.get(ownerKey);
-                    if (learnedTable != null) {
+                    if (learnedTable != null
+                            && !LOCAL_AMBIGUOUS.equals(learnedTable)) {
                         pendingLearned.computeIfAbsent(learnedTable,
                                 k -> new LinkedHashSet<String>())
                                 .add(identifierKey(rawName));
@@ -5808,7 +5812,10 @@ public class DmlLineage {
         if (query instanceof SQLSelectQueryBlock) {
             SQLSelectQueryBlock block = (SQLSelectQueryBlock) query;
             Map<String, String> locals = new HashMap<>(inheritedLocals);
-            collectLocalNames(block.getFrom(), locals, ctes);
+            Map<String, String> frameLocals = new HashMap<>();
+            collectLocalNames(block.getFrom(), frameLocals, ctes);
+            // A local table shadows an inherited short name.
+            locals.putAll(frameLocals);
             for (SQLSelectItem item : block.getSelectList()) {
                 learnExplicitReferences(item.getExpr(), locals, ctes);
             }
@@ -5856,11 +5863,16 @@ public class DmlLineage {
                 } else {
                     String learnedTable = name == null ? null : learnedTableKey(name);
                     locals.put(referenceKey, learnedTable);
-                    if (name != null && !isSingleSegmentName(name)) {
-                        // A short reference inside the subquery refers to its local
-                        // table, not to an outer table with the same leaf name.
+                    if (name != null && !isSingleSegmentName(name)
+                            && table.getAlias() == null) {
+                        // An unaliased table can also be referenced by its short name
+                        // inside this scope; an alias hides the original name.
                         String shortKey = qualifiedKey(lastSegment(name));
-                        if (!locals.containsKey(shortKey)) {
+                        if (locals.containsKey(shortKey)
+                                && !String.valueOf(learnedTable).equals(
+                                        String.valueOf(locals.get(shortKey)))) {
+                            locals.put(shortKey, LOCAL_AMBIGUOUS);
+                        } else {
                             locals.put(shortKey, learnedTable);
                         }
                     }

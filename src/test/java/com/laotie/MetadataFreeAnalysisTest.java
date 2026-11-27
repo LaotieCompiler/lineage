@@ -4396,4 +4396,42 @@ public class MetadataFreeAnalysisTest {
                 instanceof ColumnNotFoundException);
     }
 
+    @Test
+    public void aliasedTableDoesNotExposeItsShortNameToLearning() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT a.k FROM s2.a AS x) FROM s1.a AS a;"
+                + " SELECT s2.a.y, C.y FROM s2.a,C;");
+        ScanResult result = scanner.scan("SELECT k FROM s2.a,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void innerShortNameShadowsAnInheritedOne() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT 1 IN"
+                + " (SELECT a.k FROM s2.a) FROM s1.a) FROM Z;"
+                + " SELECT s1.a.y, C.y FROM s1.a,C;");
+        ScanResult result = scanner.scan("SELECT k FROM s1.a,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void duplicateLocalShortNamesLearnNothing() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT a.k FROM"
+                + " s1.a CROSS JOIN s2.a) FROM Z;"
+                + " SELECT s1.a.y, C.y FROM s1.a,C;");
+        ScanResult result = scanner.scan("SELECT k FROM s1.a,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
 }

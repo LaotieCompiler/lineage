@@ -4570,4 +4570,31 @@ public class MetadataFreeAnalysisTest {
                 instanceof ColumnNotFoundException);
     }
 
+    @Test
+    public void unboundCteReferenceIsNotLearnedAsATable() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("WITH q AS (SELECT 1 AS k)"
+                + " SELECT 1 IN (SELECT q.k) FROM Z;"
+                + " SELECT q.y, C.y FROM q, C;");
+        ScanResult result = scanner.scan("SELECT k FROM q, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void standaloneJoinConditionIsDiscovered() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM A AS q JOIN D ON q.k = D.y;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

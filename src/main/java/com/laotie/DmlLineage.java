@@ -1919,6 +1919,9 @@ public class DmlLineage {
         stackSourceNode.push(node);
         stackSourceTable.push(sources.get(0).displayName);
         targetOutputs.computeIfAbsent(stackTargetTable.peek(), k -> new ArrayList<String>());
+        if (metadataPass) {
+            learnBlockExplicitReferences(queryBlock);
+        }
 
         List<SQLSelectItem> selectItems = queryBlock.getSelectList();
         int inferredUnknownWidth = -1;
@@ -5759,11 +5762,10 @@ public class DmlLineage {
                     }
                 }
             }
-        } else if (property.getOwner() != null) {
-            String key = learnedTableKey(property.getOwner().toString());
-            pendingLearned.computeIfAbsent(key, k -> new LinkedHashSet<String>())
-                    .add(identifierKey(rawName));
         }
+        // An owner that is neither visible locally nor through an enclosing scope
+        // (for example a CTE name without a FROM, or a hidden sibling alias) must
+        // not be guessed to be a physical table.
     }
 
     private void learnSelectExplicitReferences(SQLSelect select,
@@ -5855,7 +5857,9 @@ public class DmlLineage {
             // A non-LATERAL derived body and a JOIN ON see the enclosing scope,
             // not the other sibling sources of this FROM.
             learnDerivedBodies(block.getFrom(), inheritedLocals, ctes);
-            learnJoinConditions(block.getFrom(), inheritedLocals, ctes);
+            Set<String> fromNames = new HashSet<>();
+            collectFromNames(block.getFrom(), fromNames);
+            learnJoinConditions(block.getFrom(), inheritedLocals, ctes, fromNames);
             for (SQLSelectItem item : block.getSelectList()) {
                 learnExplicitReferences(item.getExpr(), locals, ctes);
             }
@@ -5889,8 +5893,32 @@ public class DmlLineage {
         }
     }
 
+    private Set<String> currentCteKeys() {
+        Set<String> ctes = new HashSet<>();
+        for (Map<String, String> frame : cteScopes) {
+            ctes.addAll(frame.keySet());
+        }
+        return ctes;
+    }
+
+    private void learnBlockExplicitReferences(SQLSelectQueryBlock block) {
+        Set<String> ctes = currentCteKeys();
+        Map<String, String> inherited = new HashMap<>();
+        Map<String, String> frameLocals = new HashMap<>();
+        collectLocalNames(block.getFrom(), frameLocals, ctes);
+        Set<String> fromNames = new HashSet<>();
+        collectFromNames(block.getFrom(), fromNames);
+        learnDerivedBodies(block.getFrom(), inherited, ctes);
+        learnJoinConditions(block.getFrom(), inherited, ctes, fromNames);
+        Map<String, String> locals = new HashMap<>(frameLocals);
+        for (SQLSelectItem item : block.getSelectList()) {
+            learnExplicitReferences(item.getExpr(), locals, ctes);
+        }
+        learnExplicitReferences(block.getWhere(), locals, ctes);
+    }
+
     private void learnJoinConditions(SQLTableSource from, Map<String, String> locals,
-            Set<String> ctes) {
+            Set<String> ctes, Set<String> fromNames) {
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;
             Map<String, String> subtree = new HashMap<>();
@@ -5898,9 +5926,15 @@ public class DmlLineage {
             collectLocalNames(join.getRight(), subtree, ctes);
             Map<String, String> conditionLocals = new HashMap<>(locals);
             conditionLocals.putAll(subtree);
+            for (String name : fromNames) {
+                if (!subtree.containsKey(name) && !locals.containsKey(name)) {
+                    // A source outside this join's subtree is not visible in ON.
+                    conditionLocals.put(name, LOCAL_AMBIGUOUS);
+                }
+            }
             // A child join's ON cannot see the parent join's other side.
-            learnJoinConditions(join.getLeft(), locals, ctes);
-            learnJoinConditions(join.getRight(), locals, ctes);
+            learnJoinConditions(join.getLeft(), locals, ctes, fromNames);
+            learnJoinConditions(join.getRight(), locals, ctes, fromNames);
             if (join.getCondition() != null) {
                 // An ON condition sees the joined subtree's aliases even when the
                 // whole join is aliased for the outer query.

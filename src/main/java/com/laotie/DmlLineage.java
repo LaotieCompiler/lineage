@@ -8259,9 +8259,15 @@ public class DmlLineage {
                             targetTable + "." + renderIdentifier(outputName),
                             startPosition + relative, source.temporary,
                             targetTemporary));
+                    List<String> declaredKeys = currentDeclaredKeys(targetTable);
+                    String declaredKey = declaredKeys != null
+                            && startPosition + relative < declaredKeys.size()
+                                    ? declaredKeys.get(startPosition + relative)
+                                    : null;
                     setTargetOutput(targetTable, startPosition + relative,
                             outputName, lockedKey != null ? lockedKey
-                                    : identifierKey(outputName));
+                                    : declaredKey != null ? declaredKey
+                                            : identifierKey(outputName));
                 }
                 return totalWidth;
             }

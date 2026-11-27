@@ -3765,8 +3765,18 @@ public class DmlLineage {
         inTargetExpression = true;
         if (metadataPass) {
             // Discover every explicit reference even when an earlier part of the
-            // expression cannot be resolved.
-            learnExplicitReferences(item.getExpr());
+            // expression cannot be resolved. The enclosing CTE names are not
+            // physical tables.
+            Map<String, String> seedLocals = new HashMap<>();
+            Set<String> seedCtes = new HashSet<>();
+            for (Map<String, String> frame : cteScopes) {
+                for (String alias : frame.keySet()) {
+                    String key = qualifiedKey(alias);
+                    seedLocals.put(key, null);
+                    seedCtes.add(key);
+                }
+            }
+            learnExplicitReferences(item.getExpr(), seedLocals, seedCtes);
         }
         visitExpr(item.getExpr());
         inTargetExpression = false;
@@ -5764,14 +5774,24 @@ public class DmlLineage {
         Set<String> ctes = new HashSet<>(inheritedCtes);
         SQLWithSubqueryClause with = select.getWithSubQuery();
         if (with != null) {
+            boolean recursive = Boolean.TRUE.equals(with.getRecursive());
+            if (recursive) {
+                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                    if (entry.getAlias() != null) {
+                        String key = qualifiedKey(entry.getAlias());
+                        locals.put(key, null);
+                        ctes.add(key);
+                    }
+                }
+            }
             for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
-                if (entry.getAlias() != null) {
+                // A non-recursive body still sees a physical table of the same name.
+                learnSelectExplicitReferences(entry.getSubQuery(), locals, ctes);
+                if (!recursive && entry.getAlias() != null) {
                     String key = qualifiedKey(entry.getAlias());
-                    // A CTE name is not a physical table.
                     locals.put(key, null);
                     ctes.add(key);
                 }
-                learnSelectExplicitReferences(entry.getSubQuery(), locals, ctes);
             }
         }
         learnQueryExplicitReferences(select.getQuery(), locals, ctes);
@@ -5810,9 +5830,15 @@ public class DmlLineage {
         }
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;
-            collectLocalNames(join.getLeft(), locals, ctes);
-            collectLocalNames(join.getRight(), locals, ctes);
+            Map<String, String> childLocals = join.getAlias() != null
+                    ? new HashMap<String, String>() : locals;
+            collectLocalNames(join.getLeft(), childLocals, ctes);
+            collectLocalNames(join.getRight(), childLocals, ctes);
+            if (join.getCondition() != null) {
+                learnExplicitReferences(join.getCondition(), childLocals, ctes);
+            }
             if (join.getAlias() != null) {
+                // An alias hides every qualifier inside the joined subtree.
                 locals.put(qualifiedKey(join.getAlias()), null);
             }
         } else if (from instanceof SQLExprTableSource) {
@@ -6020,6 +6046,30 @@ public class DmlLineage {
             Map<String, List<SourceTable>> using = frame < stackUsing.size()
                     ? stackUsing.get(frame) : null;
             if (using != null && using.containsKey(key)) {
+                List<StarOutput> framePlan = frame < stackStarPlan.size()
+                        ? stackStarPlan.get(frame)
+                        : java.util.Collections.<StarOutput>emptyList();
+                List<StarOutput> planMatches = new ArrayList<>();
+                for (StarOutput output : framePlan) {
+                    for (StarColumn column : output.sources) {
+                        if (key.equals(column.key)) {
+                            planMatches.add(output);
+                            break;
+                        }
+                    }
+                }
+                if (planMatches.size() > 1) {
+                    List<SourceTable> all = new ArrayList<>();
+                    for (StarOutput output : planMatches) {
+                        for (StarColumn column : output.sources) {
+                            if (!all.contains(column.source)) {
+                                all.add(column.source);
+                            }
+                        }
+                    }
+                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                            displayNames(all));
+                }
                 List<SourceTable> participants = using.get(key);
                 List<SourceTable> sides = participantsForFrame(frame, key);
                 List<SourceTable> extras = frameCandidates(frame, key, sides,
@@ -7179,6 +7229,20 @@ public class DmlLineage {
                         throw new AmbiguousColumnException(columnName,
                                 displayNames(allSources(matchedSources, unknown)));
                     }
+                    List<SourceTable> extras = new ArrayList<>();
+                    for (SourceTable source : sources) {
+                        if (matchedSources.contains(source)
+                                || !sourceColumnNamesKnown(source)) {
+                            continue;
+                        }
+                        if (ownsOuterColumn(source, columnKey)) {
+                            extras.add(source);
+                        }
+                    }
+                    if (!extras.isEmpty()) {
+                        throw new AmbiguousColumnException(columnName,
+                                displayNames(allSources(matchedSources, extras)));
+                    }
                 }
                 return matchedSources;
             }
@@ -7856,11 +7920,13 @@ public class DmlLineage {
 
     private void pushClauseScope(List<SourceTable> sources,
             Map<String, List<SourceTable>> using,
-            Map<String, SourceNode> bindings, Set<SourceTable> hidden) {
+            Map<String, SourceNode> bindings, Set<SourceTable> hidden,
+            List<StarOutput> plan) {
         stackSources.push(sources);
         lateralScopes.push(Boolean.FALSE);
         stackUsing.push(using);
-        stackStarPlan.push(new ArrayList<StarOutput>());
+        stackStarPlan.push(plan == null ? new ArrayList<StarOutput>()
+                : new ArrayList<>(plan));
         stackHiddenSources.push(new HashSet<>(hidden));
         stackJoinBindings.push(new HashMap<>(bindings));
     }
@@ -7901,10 +7967,13 @@ public class DmlLineage {
         Set<SourceTable> usingHidden = new HashSet<>();
         stackJoinBindings.push(usingBindings);
         stackHiddenSources.push(usingHidden);
+        List<StarOutput> usingPlan = new ArrayList<>();
         try {
             if (merge.getUsing() instanceof SQLTableSource) {
-                sourceSources.addAll(buildSourceNode(
-                        (SQLTableSource) merge.getUsing(), using).sources);
+                SourceNode usingNode = buildSourceNode(
+                        (SQLTableSource) merge.getUsing(), using);
+                sourceSources.addAll(usingNode.sources);
+                usingPlan.addAll(usingNode.plan);
             }
         } finally {
             stackHiddenSources.pop();
@@ -7926,7 +7995,7 @@ public class DmlLineage {
                 // The update expression reads the target and the source.
                 List<SourceTable> scope = new ArrayList<>(targetSources);
                 scope.addAll(sourceSources);
-                pushClauseScope(scope, using, usingBindings, usingHidden);
+                pushClauseScope(scope, using, usingBindings, usingHidden, usingPlan);
                 try {
                     for (SQLUpdateSetItem item : update.getItems()) {
                         stackTargetColumn.push(renderIdentifier(
@@ -7951,7 +8020,7 @@ public class DmlLineage {
                         : mergeTargetColumns(targetTableMetadata, tableName,
                                 values.size());
                 pushClauseScope(new ArrayList<>(sourceSources), using, usingBindings,
-                        usingHidden);
+                        usingHidden, usingPlan);
                 try {
                     for (int i = 0; i < values.size(); i++) {
                         String column;

@@ -4300,4 +4300,59 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.k")));
     }
 
+    @Test
+    public void outerCteNamesAreNotLearnedAsPhysicalTables() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("WITH x AS (SELECT 1 AS k)"
+                + " SELECT 1 IN (SELECT x.k FROM x) FROM Z;"
+                + " SELECT x.y, C.y FROM x,C;");
+        ScanResult result = scanner.scan("SELECT k FROM x,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void nonRecursiveCteBodyStillSeesThePhysicalTable() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,B;"
+                        + " SELECT 1 IN (WITH A AS (SELECT A.k FROM A)"
+                        + " SELECT A.k FROM A) FROM Z;"
+                        + " SELECT A.y, B.y FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void joinAliasHidesChildAliasesWhileLearning() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT x.k FROM"
+                + " (B AS x CROSS JOIN D) AS j) FROM A AS x;"
+                + " SELECT B.y, C.y FROM B,C;");
+        ScanResult result = scanner.scan("SELECT k FROM B,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void joinOnReferencesAreDiscovered() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,B;"
+                        + " SELECT 1 IN (SELECT 1 FROM A JOIN B ON A.k=B.y) FROM Z;"
+                        + " SELECT A.y, B.y FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

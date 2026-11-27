@@ -612,4 +612,19 @@ public class AdvancedDmlTest {
                 new Column("c.k"), new Column("d.k"))), sources(result, "t.v"));
     }
 
+    @Test
+    public void mergeDuplicateUsingOutputsAreAmbiguous() {
+        MetadataContext context = catalog(
+                "CREATE TABLE t (v INT); CREATE TABLE s (k INT); CREATE TABLE b (k INT);"
+                        + " CREATE TABLE c (k INT); CREATE TABLE d (k INT);"
+                        + " CREATE TABLE o (u INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING ((s JOIN b USING(k))"
+                        + " CROSS JOIN (c JOIN d USING(k))) AS src ON true"
+                        + " WHEN MATCHED THEN UPDATE SET v = (SELECT k FROM o);");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof AmbiguousColumnException);
+    }
+
 }

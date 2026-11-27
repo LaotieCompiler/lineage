@@ -178,7 +178,8 @@ ANSI settings. No further adversarial review rounds were run for that batch.
 
 ### metadata
 
-1. Cross multiple database/schema
+Cross-database and cross-schema lineage, including default database/schema selected via
+`USE` or `search_path`, is covered by `CrossDatabaseSchemaTest`.
 
 ### support DB
 

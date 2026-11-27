@@ -125,8 +125,8 @@ public class LineageGraph {
                                 int targetWidth = physicalColumnNames(
                                         to.getTableName(), result.getContext()).size();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
-                                        source, columns, targetWidth, prefix, fromTable,
-                                        fromTemporary, tempColumnsByPosition,
+                                        source, columns, targetWidth, true, prefix,
+                                        fromTable, fromTemporary, tempColumnsByPosition,
                                         tempWidthKnown, tempWildcardRegions));
                             }
                         } else if (!to.isTemporary() && result.getContext() != null) {
@@ -160,8 +160,8 @@ public class LineageGraph {
                                 String fromTable = instruction.getFrom();
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,
-                                        source, names, targetWidth, prefix, fromTable,
-                                        fromTemporary, tempColumnsByPosition,
+                                        source, names, targetWidth, false, prefix,
+                                        fromTable, fromTemporary, tempColumnsByPosition,
                                         tempWidthKnown, tempWildcardRegions));
                             }
                     }
@@ -268,18 +268,19 @@ public class LineageGraph {
      * INSERTs into the same table keep their own sources.
      */
     private void linkPopulatedColumns(Column target, Column sourceWildcard, String columns,
-            int targetWidth, String prefix, String fromTable, boolean fromTemporary,
+            int targetWidth, boolean explicitTargets, String prefix, String fromTable,
+            boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
             Set<String> tempWidthKnown,
             Map<String, java.util.List<WildcardRegion>> tempWildcardRegions) {
         linkPopulatedColumns(target, sourceWildcard, splitColumns(columns),
-                targetWidth, prefix, fromTable, fromTemporary,
+                targetWidth, explicitTargets, prefix, fromTable, fromTemporary,
                 tempColumnsByPosition, tempWidthKnown, tempWildcardRegions);
     }
 
     private void linkPopulatedColumns(Column target, Column sourceWildcard,
-            java.util.List<String> names, int targetWidth, String prefix,
-            String fromTable, boolean fromTemporary,
+            java.util.List<String> names, int targetWidth, boolean explicitTargets,
+            String prefix, String fromTable, boolean fromTemporary,
             Map<String, Map<Integer, String>> tempColumnsByPosition,
             Set<String> tempWidthKnown,
             Map<String, java.util.List<WildcardRegion>> tempWildcardRegions) {
@@ -312,7 +313,8 @@ public class LineageGraph {
                 if (!columnVertex.equals(precise)) {
                     reverseGraph.addEdge(columnVertex, precise);
                 }
-                if (targetWidth == 1 && names.size() == 1) {
+                if (explicitTargets
+                        || targetWidth == 1 && names.size() == 1) {
                     for (Column positionalSource : positionalSources) {
                         reverseGraph.addVertex(positionalSource);
                         if (!columnVertex.equals(positionalSource)) {

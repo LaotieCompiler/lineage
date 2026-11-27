@@ -43,6 +43,7 @@ import com.alibaba.druid.sql.ast.expr.SQLUnaryExpr;
 import com.alibaba.druid.sql.ast.statement.SQLAssignItem;
 import com.alibaba.druid.sql.ast.statement.SQLCreateTableStatement;
 import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
+import com.alibaba.druid.sql.ast.statement.SQLColumnDefinition;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
 import com.alibaba.druid.sql.ast.statement.SQLMergeStatement;
@@ -62,12 +63,14 @@ import com.alibaba.druid.sql.ast.statement.SQLUnionQueryTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateSetItem;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.alibaba.druid.sql.ast.statement.SQLUseStatement;
+import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
 import com.alibaba.druid.sql.ast.statement.SQLWithSubqueryClause;
 
 import com.laotie.exception.AmbiguousColumnException;
 import com.laotie.exception.AmbiguousTableException;
 import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
+import com.laotie.exception.UnquotedIdentifierException;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
@@ -302,6 +305,9 @@ public class DmlLineage {
         MetadataContext previous = this.context;
         this.context = effectiveContext();
         try {
+            if (options.isStrictQuotedIdentifiers()) {
+                validateQuotedIdentifiers(statement);
+            }
             init(true);
             stackTargetTable.push(getTempTableName());
             processStatement(statement);
@@ -325,6 +331,72 @@ public class DmlLineage {
      * statements (for example INSERT OVERWRITE TABLE). Fall back to the Hive parser
      * only when the dialect's own parser rejects the statement.
      */
+    /**
+     * Strict quoted syntax: every table and column reference (and table alias /
+     * CTE name, which act as qualifiers) must carry identifier quotes.
+     */
+    private void validateQuotedIdentifiers(SQLStatement statement) {
+        statement.accept(new SQLASTVisitorAdapter() {
+            @Override
+            public boolean visit(SQLIdentifierExpr x) {
+                requireQuotedIdentifier(x.getName());
+                return true;
+            }
+
+            @Override
+            public boolean visit(SQLPropertyExpr x) {
+                if (!isStarProperty(x)) {
+                    requireQuotedIdentifier(x.getName());
+                }
+                return true;
+            }
+
+            @Override
+            public boolean visit(SQLExprTableSource x) {
+                requireQuotedIdentifier(x.getAlias());
+                return true;
+            }
+
+            @Override
+            public boolean visit(SQLJoinTableSource x) {
+                requireQuotedIdentifier(x.getAlias());
+                return true;
+            }
+
+            @Override
+            public boolean visit(SQLSubqueryTableSource x) {
+                requireQuotedIdentifier(x.getAlias());
+                return true;
+            }
+
+            @Override
+            public boolean visit(SQLUnionQueryTableSource x) {
+                requireQuotedIdentifier(x.getAlias());
+                return true;
+            }
+
+            @Override
+            public boolean visit(SQLWithSubqueryClause.Entry x) {
+                requireQuotedIdentifier(x.getAlias());
+                return true;
+            }
+
+            @Override
+            public boolean visit(SQLColumnDefinition x) {
+                requireQuotedIdentifier(x.getColumnName());
+                return true;
+            }
+        });
+    }
+
+    private static void requireQuotedIdentifier(String name) {
+        if (name == null || "*".equals(name)
+                || MetadataCatalog.isQuotedIdentifier(name)) {
+            return;
+        }
+        throw new UnquotedIdentifierException(name);
+    }
+
     private SQLStatement parseWithDialectFallback(String sql, DbType dialect) {
         try {
             return SQLUtils.parseSingleStatement(sql, dialect);
@@ -415,6 +487,9 @@ public class DmlLineage {
         this.ansiEnabled = session.ansiEnabled;
         this.ansiDoubleQuotedIdentifiers = session.ansiDoubleQuotedIdentifiers;
         try {
+            if (options.isStrictQuotedIdentifiers()) {
+                validateQuotedIdentifiers(statement);
+            }
             init(true);
             stackTargetTable.push(getTempTableName());
             processStatement(statement);

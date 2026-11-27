@@ -72,6 +72,17 @@ LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, false))
 LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
         .scan(sqlLog);
 ```
+#### 强制引用标识符
+
+`LineageOptions.of` 的第三个参数为 `true` 时，所有表、列、表别名和 CTE 名都必须使用标识符
+引号；未加引号的标识符会抛出 `UnquotedIdentifierException`：
+
+```java
+LineageScanner.withoutMetadata(
+        LineageOptions.of(MetadataMode.OPTIONAL, false, true))
+        .scan(sqlLog);
+```
+
 
 开启推断后，`select A.c1, B.c2 from A,B` 会记录 `c1` 属于 `A`、`c2` 属于 `B`；之后
 `select c1 from A,B` 可解析为 `A.c1` 而不报错。一次扫描分两趟：第一趟只遍历整段日志

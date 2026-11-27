@@ -80,6 +80,18 @@ LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, false))
 LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
         .scan(sqlLog);
 ```
+#### strict quoted identifiers
+
+Pass `true` as the third argument to require every table and column reference, table alias,
+and CTE name to be written with identifier quotes. An unquoted identifier throws
+`UnquotedIdentifierException`:
+
+```java
+LineageScanner.withoutMetadata(
+        LineageOptions.of(MetadataMode.OPTIONAL, false, true))
+        .scan(sqlLog);
+```
+
 
 With inference enabled, a statement such as `select A.c1, B.c2 from A,B` records that `c1`
 belongs to `A` and `c2` belongs to `B`; a later `select c1 from A,B` resolves to `A.c1`
@@ -156,8 +168,7 @@ ANSI settings. No further adversarial review rounds were run for that batch.
 
 ### metadata
 
-1. Strict syntax, all the talbe and colmuns must be quoated.
-2. Cross multiple database/schema
+1. Cross multiple database/schema
 
 ### support DB
 

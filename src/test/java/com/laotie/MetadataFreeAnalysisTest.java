@@ -4964,4 +4964,35 @@ public class MetadataFreeAnalysisTest {
                 instanceof ColumnNotFoundException);
     }
 
+    @Test
+    public void hiddenJoinAliasDoesNotTakeTheVisibleToken() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM ((A JOIN B USING (k)) AS j CROSS JOIN Z)"
+                        + " AS p CROSS JOIN ((SELECT 1 AS k) AS d CROSS JOIN D) AS j"
+                        + " WHERE j.k = 1;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        // The visible j is the derived-constant join, never the hidden A/B one.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void schemaQualifiedSingleTableStillAttributesUsingKey() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM s.a, C;"
+                        + " SELECT 1 IN (SELECT 1 FROM"
+                        + " (s.a JOIN B USING (k)) AS j WHERE j.k = 1);"
+                        + " SELECT s.a.y, C.y FROM s.a, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("s.a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

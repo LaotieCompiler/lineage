@@ -6115,20 +6115,19 @@ public class DmlLineage {
 
     private static void addSingleTable(Set<String> sides,
             Iterable<String> localValues) {
-        List<String> values = new ArrayList<>();
+        Set<String> tables = new LinkedHashSet<>();
         for (String value : localValues) {
-            values.add(value);
+            if (value == null || LOCAL_AMBIGUOUS.equals(value)
+                    || value.contains(LOCAL_TABLE_SEPARATOR)) {
+                // A composite side (including a derived table or CTE) proves
+                // nothing about which table owns a merged key.
+                return;
+            }
+            tables.add(value);
         }
-        if (values.size() != 1) {
-            // A composite side (including a derived table or CTE) proves nothing.
-            return;
+        if (tables.size() == 1) {
+            sides.add(tables.iterator().next());
         }
-        String value = values.get(0);
-        if (value == null || LOCAL_AMBIGUOUS.equals(value)
-                || value.contains(LOCAL_TABLE_SEPARATOR)) {
-            return;
-        }
-        sides.add(value);
     }
 
     private String usingBindingMark(SQLJoinTableSource join,
@@ -6205,8 +6204,12 @@ public class DmlLineage {
                     locals.put(key, bindingToken(binding));
                 }
             }
-            upgradeBindings(join.getLeft(), locals);
-            upgradeBindings(join.getRight(), locals);
+            if (join.getAlias() == null) {
+                // A join alias hides every qualifier inside its subtree, so those
+                // child aliases must not take this scope's names.
+                upgradeBindings(join.getLeft(), locals);
+                upgradeBindings(join.getRight(), locals);
+            }
         }
     }
 

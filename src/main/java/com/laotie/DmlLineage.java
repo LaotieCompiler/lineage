@@ -311,7 +311,9 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     public List<Instruction> getLineage(SQLStatement statement) {
-        return getLineage(statement, parsedSources.get(statement));
+        Object source = statement.getAttribute(SOURCE_SQL_ATTRIBUTE);
+        return getLineage(statement, source instanceof String
+                ? (String) source : null);
     }
 
     private List<Instruction> getLineage(SQLStatement statement, String sourceSql) {
@@ -339,7 +341,9 @@ public class DmlLineage {
     public SQLStatement parseStatement(String sqlStr) {
         SQLStatement statement = parseWithDialectFallback(sqlStr,
                 resolveDialect());
-        parsedSources.put(statement, sqlStr);
+        if (options.isStrictQuotedIdentifiers()) {
+            statement.putAttribute(SOURCE_SQL_ATTRIBUTE, sqlStr);
+        }
         return statement;
     }
 
@@ -377,13 +381,9 @@ public class DmlLineage {
                 continue;
             }
             if (ch == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
-                int end = sql.indexOf('\n', i);
-                if (end < 0) {
-                    out.append(sql, i, sql.length());
-                    break;
-                }
-                out.append(sql, i, end + 1);
-                i = end + 1;
+                int end = lineCommentEnd(sql, i + 2);
+                out.append(sql, i, end);
+                i = end;
                 continue;
             }
             if (ch == '/' && i + 1 < sql.length() && sql.charAt(i + 1) == '*') {
@@ -412,6 +412,16 @@ public class DmlLineage {
         return out.toString();
     }
 
+    private static int lineCommentEnd(String sql, int start) {
+        for (int i = start; i < sql.length(); i++) {
+            char ch = sql.charAt(i);
+            if (ch == '\n' || ch == '\r') {
+                return i + 1;
+            }
+        }
+        return sql.length();
+    }
+
     private static int skipSpaceAndComments(String sql, int start) {
         int i = start;
         while (i < sql.length()) {
@@ -420,8 +430,7 @@ public class DmlLineage {
             if (Character.isWhitespace(ch)) {
                 i++;
             } else if (ch == '-' && next == '-') {
-                int end = sql.indexOf('\n', i);
-                i = end < 0 ? sql.length() : end + 1;
+                i = lineCommentEnd(sql, i + 2);
             } else if (ch == '/' && next == '*') {
                 int end = sql.indexOf("*/", i + 2);
                 i = end < 0 ? sql.length() : end + 2;
@@ -527,8 +536,11 @@ public class DmlLineage {
                 try {
                     SQLStatement markedStatement =
                             parseWithDialectFallback(marked, dialect);
-                    markJdbcEscapedArguments(statement,
-                            jdbcEscapeUnits(markedStatement));
+                    if (statement.toString().equals(markedStatement.toString()
+                            .replace("LO_JDBC_", ""))) {
+                        markJdbcEscapedArguments(statement,
+                                jdbcEscapeUnits(markedStatement));
+                    }
                 } catch (RuntimeException ignored) {
                     // Validate the original AST if the marker form is rejected.
                 }
@@ -6363,8 +6375,8 @@ public class DmlLineage {
     private boolean ansiEnabled;
     private boolean ansiDoubleQuotedIdentifiers;
     private String statementSql;
-    private final java.util.IdentityHashMap<SQLStatement, String> parsedSources =
-            new java.util.IdentityHashMap<>();
+    private static final String SOURCE_SQL_ATTRIBUTE =
+            "com.laotie.sourceSql";
     private static final String JDBC_UNIT_ATTRIBUTE =
             "com.laotie.jdbcUnit";
     private static final String ANSI_IDENTIFIER_ATTRIBUTE =

@@ -566,6 +566,50 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void carriageReturnEndsLineCommentInsideEscape() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn-- note\r TIMESTAMPADD(SQL_TSI_DAY, 1,"
+                        + " \"c\")} FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void swappedProjectionDoesNotInheritAnEscape() {
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement escaped = lineage.parseStatement(
+                "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                        + " FROM \"t\";");
+        com.alibaba.druid.sql.ast.SQLStatement plain = lineage.parseStatement(
+                "SELECT TIMESTAMPADD(sql_tsi_day, 1) FROM \"t\";");
+        com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock escapedBlock =
+                (com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                escaped).getSelect().getQuery();
+        com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock plainBlock =
+                (com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                plain).getSelect().getQuery();
+        escapedBlock.getSelectList().clear();
+        escapedBlock.getSelectList().add(
+                plainBlock.getSelectList().get(0));
+        try {
+            lineage.getLineage(escaped);
+            org.junit.Assert.fail("swapped unquoted column must be rejected");
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
+    }
+
+    @Test
+    public void nonStrictParsingStoresNoSourceText() {
+        DmlLineage lineage = new DmlLineage(DbType.derby, optional());
+        com.alibaba.druid.sql.ast.SQLStatement statement =
+                lineage.parseStatement("SELECT 1;");
+        assertNull(statement.getAttribute("com.laotie.sourceSql"));
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

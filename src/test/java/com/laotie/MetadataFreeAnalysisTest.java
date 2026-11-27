@@ -542,7 +542,8 @@ public class MetadataFreeAnalysisTest {
                         + " SELECT A.c1,B.c2 FROM A,B; SELECT c1 FROM A,B;");
 
         assertNull(result.getResults().get(3).getError());
-        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("A.c1"))),
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("db2.A.c1"))),
                 result.getGraph().getSources(Column.temporary("stmt3.temp0.c1")));
     }
 

@@ -105,6 +105,103 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void mysqlUseDoesNotBlockExplicitDatabase() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE db2.b (c2 INT);"
+                + " CREATE TABLE db3.t (v INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "USE db1; INSERT INTO db3.t SELECT b.* FROM db2.b AS b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.b.c2"))),
+                result.getGraph().getSources(new Column("db3.t.v")));
+    }
+
+    @Test
+    public void useOverridesCatalogDefaultDatabase() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE db1.a (c INT);"
+                + " CREATE TABLE db2.a (c INT);");
+        catalog.setDefaultDatabase("db1");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "USE db2; SELECT c FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.a.c"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.c")));
+    }
+
+    @Test
+    public void searchPathOverridesCatalogDefaultSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.a (c INT);"
+                + " CREATE TABLE s2.a (c INT);");
+        catalog.setDefaultSchema("s1");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO s2; SELECT c FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s2.a.c"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.c")));
+    }
+
+    @Test
+    public void hiveUseResolvesUnqualifiedTable() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+        catalog.loadDdl("CREATE TABLE db1.a (c INT);"
+                + " CREATE TABLE db2.a (c INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "USE db2; SELECT c FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.a.c"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.c")));
+    }
+
+    @Test
+    public void quotedSearchPathKeepsCaseDistinctSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.a (k INT);"
+                + " CREATE TABLE \"S\".a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO \"S\"; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("S.a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
+    public void useSeparatesUncatalogedTargets() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.mysql, optional()).scan(
+                "USE db1;"
+                        + " INSERT INTO t (k) SELECT a.x FROM a;"
+                        + " USE db2;"
+                        + " INSERT INTO t (k) SELECT b.y FROM b;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.b.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt4.temp0.copied")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

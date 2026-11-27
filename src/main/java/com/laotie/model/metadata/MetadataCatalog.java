@@ -357,7 +357,22 @@ public class MetadataCatalog {
     /* ------------------------------------------------------------------ */
 
     public List<TableLocation> findAllTables(String reference) {
-        String[] pattern = referencePattern(reference);
+        return findAllTables(reference, defaultInstance, defaultDatabase,
+                defaultSchema);
+    }
+
+    /**
+     * Find tables using the given defaults; a null default is a wildcard. Values
+     * present in the reference always take precedence.
+     */
+    public List<TableLocation> findAllTables(String reference, String instanceDefault,
+            String databaseDefault, String schemaDefault) {
+        String[] pattern = referencePattern(reference, instanceDefault,
+                databaseDefault, schemaDefault);
+        return findTables(pattern);
+    }
+
+    private List<TableLocation> findTables(String[] pattern) {
         List<TableLocation> result = new ArrayList<>();
         for (Instance instance : instances.values()) {
             for (Database database : instance.getDatabases()) {
@@ -436,7 +451,8 @@ public class MetadataCatalog {
         return result;
     }
 
-    private String[] referencePattern(String reference) {
+    private String[] referencePattern(String reference, String instanceDefault,
+            String databaseDefault, String schemaDefault) {
         String[] parts = splitQualifiedName(reference);
         String[] pattern = new String[4];
         if (parts.length >= 4) {
@@ -459,13 +475,13 @@ public class MetadataCatalog {
             pattern[3] = parts[0];
         }
         if (pattern[0] == null) {
-            pattern[0] = defaultInstance;
+            pattern[0] = instanceDefault;
         }
         if (pattern[1] == null) {
-            pattern[1] = defaultDatabase;
+            pattern[1] = databaseDefault;
         }
         if (pattern[2] == null) {
-            pattern[2] = defaultSchema;
+            pattern[2] = schemaDefault;
         }
         return pattern;
     }

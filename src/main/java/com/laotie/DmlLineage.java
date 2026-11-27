@@ -173,6 +173,7 @@ public class DmlLineage {
     private LearnedMetadata learnedMetadata;
     private String sessionDatabase;
     private String sessionSchema;
+    private List<String> sessionRawSchemas = new ArrayList<>();
     private Map<String, Set<String>> pendingLearned = new HashMap<>();
 
     private MetadataContext context;
@@ -314,6 +315,7 @@ public class DmlLineage {
         MetadataContext previous = this.context;
         this.context = effectiveContext();
         this.statementSql = null;
+        this.sessionRawSchemas = new ArrayList<>();
         try {
             if (options.isStrictQuotedIdentifiers()) {
                 validateQuotedIdentifiers(statement);
@@ -1005,6 +1007,7 @@ public class DmlLineage {
         this.context = working;
         this.tempTableNum = 0;
         this.sessionDatabase = session.database;
+        this.sessionRawSchemas = new ArrayList<>(session.rawSchemas);
         List<String> rawSchemas = session.rawSchemas.isEmpty()
                 ? session.schemas : session.rawSchemas;
         this.sessionSchema = rawSchemas.isEmpty() ? null
@@ -5647,7 +5650,7 @@ public class DmlLineage {
         Table metadataTable = null;
         String display = alias != null ? alias
                 : detachedMetadata() && rawName != null
-                        ? canonicalPhysicalReference(rawName)
+                        ? sessionPhysicalReference(rawName)
                         : lastIdentifier(written);
         String cteTarget = isPhysicalTableExpression(table)
                 && isSingleSegmentName(rawName)
@@ -5899,30 +5902,61 @@ public class DmlLineage {
 
     private TableLocation resolveMetadataTable(String written) {
         MetadataCatalog catalog = context.getCatalog();
-        List<TableLocation> candidates = catalog.findAllTables(written);
-        List<TableLocation> filtered = new ArrayList<>();
-        for (TableLocation candidate : candidates) {
-            if (context.getInstance() != null
-                    && !context.getInstance().equalsIgnoreCase(candidate.getInstance())) {
-                continue;
-            }
-            if (context.getDatabase() != null
-                    && !context.getDatabase().equalsIgnoreCase(candidate.getDatabase())) {
-                continue;
-            }
-            filtered.add(candidate);
+        DbType dialect = currentDialect();
+        String[] parts = MetadataCatalog.splitQualifiedName(written);
+        boolean explicitInstance = parts.length >= 4;
+        boolean explicitDatabase = dialect == DbType.mysql
+                || dialect == DbType.mariadb
+                        ? parts.length >= 2 : parts.length >= 3;
+        boolean explicitSchema = hasExplicitSchema(written);
+        boolean hiveFamily = dialect == DbType.hive
+                || dialect == DbType.antspark;
+
+        String instanceDefault = explicitInstance ? null
+                : context.getInstance() != null ? context.getInstance()
+                        : catalog.getDefaultInstance();
+        String databaseDefault;
+        if (explicitDatabase || hiveFamily) {
+            databaseDefault = null;
+        } else if (context.getDatabase() != null) {
+            databaseDefault = context.getDatabase();
+        } else {
+            databaseDefault = catalog.getDefaultDatabase();
+        }
+        String schemaDefault;
+        if (explicitSchema || !context.getSchemas().isEmpty()) {
+            schemaDefault = null;
+        } else {
+            schemaDefault = catalog.getDefaultSchema();
         }
 
-        boolean schemaExplicit = hasExplicitSchema(written);
-        if (!schemaExplicit && !context.getSchemas().isEmpty()) {
-            for (String schema : context.getSchemas()) {
+        List<TableLocation> filtered = catalog.findAllTables(written,
+                instanceDefault, databaseDefault, schemaDefault);
+
+        if (!explicitSchema) {
+            List<String> searchPath = !sessionRawSchemas.isEmpty()
+                    ? sessionRawSchemas : context.getSchemas();
+            if (!searchPath.isEmpty()) {
+                for (String schema : searchPath) {
+                    for (TableLocation candidate : filtered) {
+                        if (schemaMatches(schema, candidate.getSchema())) {
+                            return candidate;
+                        }
+                    }
+                }
+                return missingTable(written);
+            }
+            if (hiveFamily && context.getDatabase() != null) {
                 for (TableLocation candidate : filtered) {
-                    if (schema.equalsIgnoreCase(candidate.getSchema())) {
+                    if (schemaMatches(context.getDatabase(),
+                            candidate.getSchema())
+                            || schemaMatches(context.getDatabase(),
+                                    candidate.getDatabase())) {
                         return candidate;
                     }
                 }
+                return missingTable(written);
             }
-            return missingTable(written);
         }
 
         if (filtered.isEmpty()) {
@@ -5936,6 +5970,24 @@ public class DmlLineage {
             throw new AmbiguousTableException(written, names);
         }
         return filtered.get(0);
+    }
+
+    private boolean schemaMatches(String reference, String actual) {
+        if (reference == null || actual == null) {
+            return false;
+        }
+        boolean quoted = MetadataCatalog.isQuotedIdentifier(reference);
+        String name = MetadataCatalog.normalizeIdentifier(reference);
+        DbType dialect = currentDialect();
+        if (dialect == DbType.postgresql) {
+            return quoted ? name.equals(actual)
+                    : name.toLowerCase(Locale.ROOT).equals(actual);
+        }
+        if (dialect == DbType.mysql || dialect == DbType.mariadb
+                || dialect == DbType.hive || dialect == DbType.antspark) {
+            return foldCase(name).equals(foldCase(actual));
+        }
+        return quoted ? name.equals(actual) : name.equalsIgnoreCase(actual);
     }
 
     /**
@@ -8285,6 +8337,15 @@ public class DmlLineage {
         return reference.toString();
     }
 
+    private String sessionPhysicalReference(String rawName) {
+        String reference = rawName;
+        if (sessionDatabase != null && rawName != null
+                && isSingleSegmentName(rawName)) {
+            reference = sessionDatabase + "." + rawName;
+        }
+        return canonicalPhysicalReference(reference);
+    }
+
     private String foldName(String name) {
         DbType dialect = currentDialect();
         return dialect == DbType.mysql || dialect == DbType.mariadb
@@ -8298,7 +8359,7 @@ public class DmlLineage {
             return source.displayName;
         }
         if (source.rawName != null) {
-            return canonicalPhysicalReference(source.rawName);
+            return sessionPhysicalReference(source.rawName);
         }
         return source.writtenName == null ? source.displayName : source.writtenName;
     }
@@ -9356,7 +9417,7 @@ public class DmlLineage {
         String rawName = extractTableName(tableSource);
         String written = normalizeQualifiedName(rawName);
         String tableName = detachedMetadata() && context == null && rawName != null
-                ? canonicalPhysicalReference(rawName) : written;
+                ? sessionPhysicalReference(rawName) : written;
         Table targetMetadata = null;
         if (context != null && findCteTarget(identifierKey(rawName)) == null) {
             TableLocation location = resolveMetadataTable(rawName);
@@ -9677,7 +9738,7 @@ public class DmlLineage {
         // The graph identity of an unaliased target keeps its written reference when
         // metadata is not available, so later reads resolve to the same vertex.
         String tableName = detachedMetadata() && context == null && rawName != null
-                ? canonicalPhysicalReference(rawName) : written;
+                ? sessionPhysicalReference(rawName) : written;
         Table targetMetadata = null;
         if (context != null && findCteTarget(identifierKey(rawName)) == null) {
             TableLocation location = resolveMetadataTable(rawName);
@@ -9687,7 +9748,7 @@ public class DmlLineage {
             } else if (detachedMetadata() && rawName != null) {
                 // The target table is missing from the catalog: keep its written
                 // identity so the table-level edge matches later reads.
-                tableName = canonicalPhysicalReference(rawName);
+                tableName = sessionPhysicalReference(rawName);
             }
         }
         registerTable(written, tableName, tableName, tableSource.getAlias() == null

@@ -627,4 +627,21 @@ public class AdvancedDmlTest {
                 instanceof AmbiguousColumnException);
     }
 
+    @Test
+    public void outerJoinUsingKeyIsNotAmbiguous() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (k INT); CREATE TABLE b (k INT);"
+                        + " CREATE TABLE t (v INT);");
+        ScanResult select = LineageScanner.withMetadata(context, optional())
+                .scan("SELECT k FROM s LEFT JOIN b USING(k);");
+        assertEquals(0, select.getFailures().size());
+
+        ScanResult merge = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s LEFT JOIN b USING(k)) AS src"
+                        + " ON true WHEN MATCHED THEN UPDATE SET v = k;");
+        assertEquals(0, merge.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.k"))),
+                sources(merge, "t.v"));
+    }
+
 }

@@ -4355,4 +4355,45 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.k")));
     }
 
+    @Test
+    public void quotedOuterCteNamesAreNotLearnedAsTables() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("WITH \"X\" AS (SELECT 1 AS k)"
+                + " SELECT 1 IN (SELECT \"X\".k FROM \"X\") FROM Z;"
+                + " SELECT \"X\".y, C.y FROM \"X\", C;");
+        ScanResult result = scanner.scan("SELECT k FROM \"X\", C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void physicalAliasSharingACteNameIsStillLearned() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,B;"
+                        + " SELECT 1 IN (WITH x AS (SELECT 0)"
+                        + " SELECT x.k FROM A AS x) FROM Z;"
+                        + " SELECT A.y, B.y FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void shortNameStaysInsideItsSchemaInLearning() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        assertEquals(0, scanner.scan(
+                "SELECT 1 IN (SELECT a.k FROM s2.a) FROM s1.a;").getFailures().size());
+        scanner.scan("SELECT s1.a.y, C.y FROM s1.a,C;");
+        ScanResult result = scanner.scan("SELECT k FROM s1.a,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
 }

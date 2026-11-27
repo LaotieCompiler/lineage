@@ -3771,9 +3771,10 @@ public class DmlLineage {
             Set<String> seedCtes = new HashSet<>();
             for (Map<String, String> frame : cteScopes) {
                 for (String alias : frame.keySet()) {
-                    String key = qualifiedKey(alias);
-                    seedLocals.put(key, null);
-                    seedCtes.add(key);
+                    // The frame key is already the normalized identifier; folding it
+                    // again would lose a quoted spelling (for example "X").
+                    seedLocals.put(alias, null);
+                    seedCtes.add(alias);
                 }
             }
             learnExplicitReferences(item.getExpr(), seedLocals, seedCtes);
@@ -5849,11 +5850,20 @@ public class DmlLineage {
             if (reference != null) {
                 String referenceKey = qualifiedKey(reference);
                 String nameKey = name == null ? null : qualifiedKey(name);
-                if (ctes.contains(referenceKey) || ctes.contains(nameKey)) {
+                if (ctes.contains(nameKey)) {
+                    // A CTE reference, possibly through an alias.
                     locals.put(referenceKey, null);
                 } else {
-                    locals.put(referenceKey,
-                            name == null ? null : learnedTableKey(name));
+                    String learnedTable = name == null ? null : learnedTableKey(name);
+                    locals.put(referenceKey, learnedTable);
+                    if (name != null && !isSingleSegmentName(name)) {
+                        // A short reference inside the subquery refers to its local
+                        // table, not to an outer table with the same leaf name.
+                        String shortKey = qualifiedKey(lastSegment(name));
+                        if (!locals.containsKey(shortKey)) {
+                            locals.put(shortKey, learnedTable);
+                        }
+                    }
                 }
             }
         } else if (from instanceof SQLSubqueryTableSource) {
@@ -7230,8 +7240,10 @@ public class DmlLineage {
                                 displayNames(allSources(matchedSources, unknown)));
                     }
                     List<SourceTable> extras = new ArrayList<>();
+                    List<SourceTable> usingSides = participantsForCurrentUsing(columnKey);
                     for (SourceTable source : sources) {
                         if (matchedSources.contains(source)
+                                || usingSides.contains(source)
                                 || !sourceColumnNamesKnown(source)) {
                             continue;
                         }

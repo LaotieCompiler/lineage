@@ -4485,12 +4485,20 @@ public class DmlLineage {
         if (source.metadataTable != null) {
             List<String> keys = new ArrayList<>();
             DbType dialect = currentDialect();
+            boolean hiveFamily = dialect == DbType.hive
+                    || dialect == DbType.antspark;
             boolean caseInsensitive = dialect == DbType.mysql
-                    || dialect == DbType.mariadb
-                    || dialect == DbType.hive || dialect == DbType.antspark;
+                    || dialect == DbType.mariadb || hiveFamily;
             for (Column column : source.metadataTable.getFields()) {
-                keys.add(!caseInsensitive && column.isQuoted()
-                        ? column.getColumnName() : identifierKey(column.getColumnName()));
+                if (hiveFamily) {
+                    // The catalog name is already logical: do not strip a second
+                    // quote layer from a name that literally contains quotes.
+                    keys.add(MetadataCatalog.caseFold(column.getColumnName()));
+                } else {
+                    keys.add(!caseInsensitive && column.isQuoted()
+                            ? column.getColumnName()
+                            : identifierKey(column.getColumnName()));
+                }
             }
             return keys;
         }
@@ -8749,14 +8757,7 @@ public class DmlLineage {
         if (value == null) {
             return null;
         }
-        StringBuilder folded = new StringBuilder(value.length());
-        for (int i = 0; i < value.length(); ) {
-            int codePoint = value.codePointAt(i);
-            folded.appendCodePoint(Character.toLowerCase(
-                    Character.toUpperCase(codePoint)));
-            i += Character.charCount(codePoint);
-        }
-        return folded.toString();
+        return MetadataCatalog.caseFold(value);
     }
 
     /** Strip one Hive SQL identifier layer, keeping inner quote characters. */

@@ -227,7 +227,7 @@ public class MetadataCatalog {
         }
         if (dialect == DbType.mysql || dialect == DbType.mariadb
                 || dialect == DbType.hive || dialect == DbType.antspark) {
-            return left.equalsIgnoreCase(right);
+            return caseFold(left).equals(caseFold(right));
         }
         return left.equals(right);
     }
@@ -757,6 +757,24 @@ public class MetadataCatalog {
             }
         }
         return column == null ? null : column.getColumnName();
+    }
+
+    /**
+     * Locale-independent, code-point-aware case fold matching modern
+     * {@link String#equalsIgnoreCase} semantics.
+     */
+    public static String caseFold(String value) {
+        if (value == null) {
+            return null;
+        }
+        StringBuilder folded = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); ) {
+            int codePoint = value.codePointAt(i);
+            folded.appendCodePoint(Character.toLowerCase(
+                    Character.toUpperCase(codePoint)));
+            i += Character.charCount(codePoint);
+        }
+        return folded.toString();
     }
 
     public static String normalizeIdentifier(String identifier) {

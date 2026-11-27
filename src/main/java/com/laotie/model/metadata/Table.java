@@ -107,8 +107,9 @@ public class Table {
         if (columnName == null) {
             return null;
         }
+        String folded = MetadataCatalog.caseFold(columnName);
         for (Column column : columns) {
-            if (column.getColumnName().equalsIgnoreCase(columnName)) {
+            if (MetadataCatalog.caseFold(column.getColumnName()).equals(folded)) {
                 return immutable ? column.snapshot() : column;
             }
         }

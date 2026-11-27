@@ -360,6 +360,48 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void sparkJoinUsingLiteralQuotedCatalogNames() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (`\"KEY\"` STRING) USING parquet;"
+                + " CREATE TABLE b (`\"KEY\"` STRING) USING parquet;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT * FROM a JOIN b USING (`\"KEY\"`);");
+
+        assertEquals(0, result.getFailures().size());
+        Column target = new Column("stmt0.temp0", "\"KEY\"");
+        target.setTemporary(true);
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "\"KEY\""), new Column("b", "\"KEY\""))),
+                result.getGraph().getSources(target));
+    }
+
+    @Test
+    public void supplementaryUnicodeDirectReadMatchesJoin() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (`\uD801\uDC28` STRING)"
+                + " USING parquet;"
+                + " CREATE TABLE b (`\uD801\uDC28` STRING)"
+                + " USING parquet;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT a.`\uD801\uDC00` AS copied FROM a;"
+                        + " SELECT * FROM a JOIN b USING (`\uD801\uDC00`);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "\uD801\uDC28"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.copied")));
+        Column joined = new Column("stmt1.temp0", "\uD801\uDC28");
+        joined.setTemporary(true);
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "\uD801\uDC28"),
+                new Column("b", "\uD801\uDC28"))),
+                result.getGraph().getSources(joined));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

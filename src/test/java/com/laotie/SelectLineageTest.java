@@ -19,8 +19,10 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageGraph;
-import com.laotie.model.MetaBinder;
+import com.laotie.model.ScanResult;
 import com.laotie.model.metadata.Column;
+import com.laotie.model.metadata.MetadataCatalog;
+import com.laotie.model.metadata.MetadataContext;
 
 /**
  * Unit test for simple App.
@@ -272,40 +274,22 @@ public class SelectLineageTest {
             System.out.println("  " + tables);
             assertEquals(new HashSet<>(Arrays.asList("T", "TTT", "TB")), tables);
 
-            // parse column instructions by metadata
-            MetaBinder metaBinder = new MetaBinder();
-            List<Instruction> colInstructions = Instruction.toColumnInstructions(instructions, metaBinder);
-            System.out.println("column instructions:");
-            for (Instruction instruct : colInstructions) {
-                System.out.println("  " + instruct);
-            }
-            assertEquals(15, colInstructions.size());
-            assertInstruction(colInstructions.get(2), OperationType.COLUMN_MAPPING, "TA.C", "temp1.A");
-            assertInstruction(colInstructions.get(10), OperationType.COLUMN_MAPPING, "temp1.A", "TTT.col1");
-            assertInstruction(colInstructions.get(11), OperationType.COLUMN_MAPPING, "temp1.B", "TTT.col2");
-            assertInstruction(colInstructions.get(12), OperationType.COLUMN_MAPPING, "temp1.A1", "TTT.col3");
-            assertInstruction(colInstructions.get(13), OperationType.COLUMN_MAPPING, "temp1.D", "TTT.col4");
-            assertInstruction(colInstructions.get(14), OperationType.COLUMN_MAPPING, "temp1.C * D", "TTT.col5");
+            // expand with catalog metadata and verify the resulting graph
+            MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+            catalog.loadDdl("CREATE TABLE T (E INT, F INT, aid INT);"
+                    + " CREATE TABLE TB (C1 INT, bid INT, D1 INT);"
+                    + " CREATE TABLE TTT (col1 INT, col2 INT, col3 INT,"
+                    + " col4 INT, col5 INT);");
+            ScanResult scan = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), LineageOptions.defaults())
+                    .scan(sqlStr);
+            assertEquals(0, scan.getFailures().size());
 
-            // build lineage graph
-            LineageGraph lineageGraph = new LineageGraph();
-            lineageGraph.buildByInstructions(colInstructions);
-
-            // get shortten lineage (ignore the middle temporary table, just from source to target directly)
-            Set<Column> targets = new HashSet<>();
-            targets.add(new Column("TTT.col1"));
-            targets.add(new Column("TTT.col2"));
-            targets.add(new Column("TTT.col3"));
-            targets.add(new Column("TTT.col4"));
-            targets.add(new Column("TTT.col5"));
-            Map<Column, Set<Column>> sources = lineageGraph.getSources(targets);
-            System.out.println("Shortten lineage:");
-            for (Column target : sources.keySet()) {
-                System.out.println("  target: " + target);
-                for (Column source : sources.get(target)) {
-                    System.out.println("    " + source);
-                }
-            }
+            Set<Column> targets = new HashSet<>(Arrays.asList(
+                    new Column("TTT.col1"), new Column("TTT.col2"),
+                    new Column("TTT.col3"), new Column("TTT.col4"),
+                    new Column("TTT.col5")));
+            Map<Column, Set<Column>> sources = scan.getGraph().getSources(targets);
             assertEquals(columns("T.E", "T.F"), sources.get(new Column("TTT.col1")));
             assertEquals(columns("T.F"), sources.get(new Column("TTT.col2")));
             assertEquals(columns("TB.C1", "T.E"), sources.get(new Column("TTT.col3")));

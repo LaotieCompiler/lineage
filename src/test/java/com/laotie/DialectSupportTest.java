@@ -471,6 +471,40 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void turkishLocaleUncatalogedWriteAndReadAgree() {
+        java.util.Locale previous = java.util.Locale.getDefault();
+        try {
+            java.util.Locale.setDefault(new java.util.Locale("tr", "TR"));
+            ScanResult result = LineageScanner.withoutMetadata(
+                    DbType.postgresql, optional()).scan(
+                    "INSERT INTO t (ID) SELECT a.ID FROM a;"
+                            + " SELECT t.id AS copied FROM t;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.id"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt1.temp0.copied")));
+        } finally {
+            java.util.Locale.setDefault(previous);
+        }
+    }
+
+    @Test
+    public void sparkUncatalogedQuotedWriteAndReadAgree() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "INSERT OVERWRITE TABLE t (`\"k\"`)"
+                        + " SELECT a.`\"k\"` FROM a;"
+                        + " SELECT t.`\"k\"` AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "\"k\""))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.copied")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

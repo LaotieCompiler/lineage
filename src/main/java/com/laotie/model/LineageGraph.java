@@ -363,7 +363,12 @@ public class LineageGraph {
             if (quote != 0) {
                 current.append(ch);
                 if (ch == quote) {
-                    quote = 0;
+                    if (i + 1 < columns.length()
+                            && columns.charAt(i + 1) == quote) {
+                        current.append(columns.charAt(++i));
+                    } else {
+                        quote = 0;
+                    }
                 }
             } else if (ch == '"' || ch == '`') {
                 quote = ch;
@@ -545,7 +550,10 @@ public class LineageGraph {
             char last = value.charAt(value.length() - 1);
             if ((first == '"' && last == '"') || (first == '`' && last == '`')
                     || (first == '[' && last == ']')) {
-                return value.substring(1, value.length() - 1);
+                String inner = value.substring(1, value.length() - 1);
+                char close = first == '[' ? ']' : first;
+                return inner.replace(String.valueOf(close) + close,
+                        String.valueOf(close));
             }
         }
         return value;

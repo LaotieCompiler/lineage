@@ -7590,7 +7590,7 @@ public class DmlLineage {
                 || currentDialect() != DbType.postgresql) {
             return name;
         }
-        return name.toLowerCase();
+        return name.toLowerCase(Locale.ROOT);
     }
 
     private String canonicalPhysicalReference(String raw) {
@@ -7607,7 +7607,7 @@ public class DmlLineage {
                 // PostgreSQL folds unquoted identifiers to lower case, so A and a are
                 // the same table. Other dialects keep their spelling here.
                 reference.append(currentDialect() == DbType.postgresql
-                        ? name.toLowerCase() : name);
+                        ? name.toLowerCase(Locale.ROOT) : name);
                 continue;
             }
             // A quoted identifier that folds to itself is the same as the unquoted
@@ -7623,7 +7623,8 @@ public class DmlLineage {
         DbType dialect = currentDialect();
         return dialect == DbType.mysql || dialect == DbType.mariadb
                 || dialect == DbType.postgresql
-                        ? name.toLowerCase() : name.toUpperCase();
+                        ? name.toLowerCase(Locale.ROOT)
+                        : name.toUpperCase(Locale.ROOT);
     }
 
     private String lineageTableName(SourceTable source) {
@@ -8208,6 +8209,10 @@ public class DmlLineage {
         String raw = column.toString();
         String resolved = insertColumnName(metadata, tableName, column);
         if (MetadataCatalog.isQuotedIdentifier(raw)) {
+            DbType dialect = currentDialect();
+            if (dialect == DbType.hive || dialect == DbType.antspark) {
+                return renderHiveIdentifier(hiveLogicalName(raw));
+            }
             return "\"" + resolved.replace("\"", "\"\"") + "\"";
         }
         return renderIdentifier(resolved);

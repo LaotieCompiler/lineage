@@ -746,6 +746,9 @@ public class MetadataCatalog {
     }
 
     private String quoteAlways(String identifier) {
+        if (dialect == DbType.sqlserver) {
+            return "[" + identifier.replace("]", "]]") + "]";
+        }
         char quote = isMySqlFamily() ? '`' : '"';
         return quote + identifier.replace(String.valueOf(quote),
                 String.valueOf(quote) + quote) + quote;
@@ -755,9 +758,7 @@ public class MetadataCatalog {
         if (identifier.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             return identifier;
         }
-        char quote = isMySqlFamily() ? '`' : '"';
-        return quote + identifier.replace(String.valueOf(quote), String.valueOf(quote) + quote)
-                + quote;
+        return quoteAlways(identifier);
     }
 
     private static String sha256Hex(String text) {
@@ -885,7 +886,8 @@ public class MetadataCatalog {
             char ch = qualifiedName.charAt(i);
             if (quote != 0) {
                 current.append(ch);
-                if (ch == '\\' && i + 1 < qualifiedName.length()) {
+                if (ch == '\\' && quote != ']'
+                        && i + 1 < qualifiedName.length()) {
                     current.append(qualifiedName.charAt(++i));
                 } else if (ch == quote) {
                     if (i + 1 < qualifiedName.length()
@@ -922,10 +924,12 @@ public class MetadataCatalog {
         List<String> parts = new ArrayList<>();
         StringBuilder current = new StringBuilder();
         char quote = 0;
+        boolean quotedPart = false;
         for (int i = 0; i < qualifiedName.length(); i++) {
             char ch = qualifiedName.charAt(i);
             if (quote != 0) {
-                if (ch == '\\' && i + 1 < qualifiedName.length()) {
+                if (ch == '\\' && quote != ']'
+                        && i + 1 < qualifiedName.length()) {
                     current.append(qualifiedName.charAt(++i));
                 } else if (ch == quote) {
                     if (i + 1 < qualifiedName.length()
@@ -940,16 +944,21 @@ public class MetadataCatalog {
                 }
             } else if (ch == '`' || ch == '"') {
                 quote = ch;
+                quotedPart = true;
             } else if (ch == '[') {
                 quote = ']';
+                quotedPart = true;
             } else if (ch == '.') {
-                parts.add(current.toString().trim());
+                parts.add(quotedPart ? current.toString()
+                        : current.toString().trim());
                 current.setLength(0);
+                quotedPart = false;
             } else {
                 current.append(ch);
             }
         }
-        String last = current.toString().trim();
+        String last = quotedPart ? current.toString()
+                : current.toString().trim();
         if (!last.isEmpty() || !parts.isEmpty()) {
             parts.add(last);
         }

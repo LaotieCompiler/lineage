@@ -585,6 +585,38 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void sqlServerBackslashInsideBracketsIsLiteral() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a\\z] ([k] INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT [k] FROM [dbo].[a\\z];");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(!result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.k")).isEmpty());
+
+        MetadataCatalog reloaded = new MetadataCatalog(DbType.sqlserver);
+        reloaded.loadDdl(catalog.toDdl());
+        assertEquals(catalog.getChecksum(), reloaded.getChecksum());
+    }
+
+    @Test
+    public void postgresQuotedSpacesInTableNameAreSignificant() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.\" spaced \" (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM s.\" spaced \";");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(!result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.k")).isEmpty());
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

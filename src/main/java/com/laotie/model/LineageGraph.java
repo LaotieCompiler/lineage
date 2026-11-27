@@ -552,11 +552,35 @@ public class LineageGraph {
                     || (first == '[' && last == ']')) {
                 String inner = value.substring(1, value.length() - 1);
                 char close = first == '[' ? ']' : first;
+                if (first == '"') {
+                    return decodeDoubleQuoted(inner);
+                }
                 return inner.replace(String.valueOf(close) + close,
                         String.valueOf(close));
             }
         }
         return value;
+    }
+
+    private static String decodeDoubleQuoted(String inner) {
+        StringBuilder decoded = new StringBuilder(inner.length());
+        for (int i = 0; i < inner.length(); i++) {
+            char ch = inner.charAt(i);
+            char next = i + 1 < inner.length() ? inner.charAt(i + 1) : 0;
+            if (ch == '\\' && next == '\\') {
+                decoded.append('\\');
+                i++;
+            } else if (ch == '\\' && next == '"') {
+                decoded.append('"');
+                i++;
+            } else if (ch == '"' && next == '"') {
+                decoded.append('"');
+                i++;
+            } else {
+                decoded.append(ch);
+            }
+        }
+        return decoded.toString();
     }
 
     private static final String CONSTANT_COLUMN = "\u0000constant";

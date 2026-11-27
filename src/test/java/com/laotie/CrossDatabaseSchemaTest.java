@@ -750,6 +750,23 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void wildcardInsertTargetKeepsBackslashName() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a] ([c\\d] INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO [dbo].[a] ([c\\d])"
+                        + " SELECT * FROM dbo.missing;"
+                        + " SELECT [c\\d] AS [copied] FROM [dbo].[a];");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("dbo.missing.*"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.copied")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

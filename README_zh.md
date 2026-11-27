@@ -88,7 +88,24 @@ LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
 
 该契约是有意收敛的。相关 `LATERAL` 子查询、前向引用的递归 CTE、派生表重复输出名，以及
 未知宽度通配与显式投影混合的 `UNION`，按尽力而为分析：当位置无法唯一确定时保留表级边，
+不编造列名。该契约是有意收敛的。相关 `LATERAL` 子查询、前向引用的递归 CTE、派生表重复输出名，以及
+未知宽度通配与显式投影混合的 `UNION`，按尽力而为分析：当位置无法唯一确定时保留表级边，
 不编造列名。上述已列出的组合有回归测试覆盖，但不对同一特性的无限嵌套承诺逐列解析。
+
+#### 已知限制
+
+以下表函数（table function）的边界情况在元数据学习批次的审核失败超过 30 轮后仍然存在，
+记录于此，不再进行无界的模糊测试循环：
+
+- `resolveSource` 仍会把表函数的调用文本交给 catalog 查找。在 `OPTIONAL` 模式且 catalog
+  中存在名为 `"generate_series(1, 3)"` 的表时，
+  `SELECT generate_series.generate_series FROM generate_series(1, 3)` 会报告
+  `ColumnNotFoundException`；正确行为是解析到函数输出。
+- `staticSourceWidth` 仍会用调用文本在 CTE 作用域中查找宽度。一个未使用的、名为
+  `"generate_series(1, 3)"` 的 CTE 可能把两列宽度施加到 `UNION` 中的单列表函数上，
+  产生 `UNION column count mismatch: 2 vs 1`。
+
+该区域的其他表函数学习与 owner 解析场景均有回归测试覆盖。
 
 ### 血缘地图
 

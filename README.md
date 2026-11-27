@@ -104,8 +104,30 @@ The contract is intentionally bounded. Correlated `LATERAL` bodies, forward-refe
 recursive CTEs, repeated derived output names, and unions that mix unknown-width wildcards
 with explicit projections are analyzed on a best-effort basis: when a position cannot be
 derived unambiguously the analyzer keeps table-level edges instead of inventing a column.
+The contract is intentionally bounded. Correlated `LATERAL` bodies, forward-referenced
+recursive CTEs, repeated derived output names, and unions that mix unknown-width wildcards
+with explicit projections are analyzed on a best-effort basis: when a position cannot be
+derived unambiguously the analyzer keeps table-level edges instead of inventing a column.
 These combinations are covered by regression tests for the cases listed above, but are not
 guaranteed to resolve every further nesting of the same features to column level.
+
+#### Known limitations
+
+The following table-function edge cases remain open after the metadata-learning review
+batch exceeded 30 failed review rounds. They are recorded here instead of continuing an
+open-ended fuzz loop:
+
+- `resolveSource` still passes a table function's rendered call text to the catalog
+  lookup. With `OPTIONAL` mode and a catalog table literally named
+  `"generate_series(1, 3)"`, `SELECT generate_series.generate_series FROM
+  generate_series(1, 3)` reports `ColumnNotFoundException`; it should resolve to the
+  function output.
+- `staticSourceWidth` still looks a rendered call text up in the CTE scope. An unused CTE
+  named `"generate_series(1, 3)"` can impose its two-column width on a one-column table
+  function in a `UNION`, producing `UNION column count mismatch: 2 vs 1`.
+
+All other table-function learning and owner-resolution cases in this area are covered by
+regression tests.
 
 ### lineage graph
 

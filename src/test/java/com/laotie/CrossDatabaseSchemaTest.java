@@ -532,6 +532,59 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void quotedDatabaseQualifierIsExact() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE db1.public.a (k INT);");
+        ScanResult missing = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM \"DB1\".public.a;");
+        assertTrue(missing.getResults().get(0).getError()
+                instanceof com.laotie.exception.MetadataNotFoundException);
+
+        ScanResult found = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM db1.public.a;");
+        assertEquals(0, found.getFailures().size());
+    }
+
+    @Test
+    public void addTablePreservesQuotedTableIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.addTable("s1.\"A\"", Arrays.asList(new Column("k")));
+        catalog.addTable("s2.a", Arrays.asList(new Column("k")));
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO s1, s2; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s2.a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
+    public void ddlRoundTripPreservesEmbeddedQuote() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.\"a\"\"b\" (k INT);");
+        MetadataCatalog reloaded = new MetadataCatalog(DbType.postgresql);
+        reloaded.loadDdl(catalog.toDdl());
+
+        assertEquals(catalog.getChecksum(), reloaded.getChecksum());
+        for (MetadataCatalog target : Arrays.asList(catalog, reloaded)) {
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(target),
+                    LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                    "SELECT k FROM s.\"a\"\"b\";");
+            assertEquals(0, result.getFailures().size());
+            assertTrue(!result.getGraph().getSources(
+                    Column.temporary("stmt0.temp0.k")).isEmpty());
+        }
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

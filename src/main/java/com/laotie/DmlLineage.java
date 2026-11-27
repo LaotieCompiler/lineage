@@ -5977,6 +5977,37 @@ public class DmlLineage {
         List<TableLocation> filtered = catalog.findAllTables(lookupReference,
                 instanceDefault, databaseDefault, lookupSchemaDefault);
 
+        if (explicitInstance && preserved.length >= 4) {
+            List<TableLocation> exact = new ArrayList<>();
+            for (TableLocation candidate : filtered) {
+                if (schemaMatches(preserved[0], candidate.getInstance())) {
+                    exact.add(candidate);
+                }
+            }
+            filtered = exact;
+        }
+        if (explicitDatabase) {
+            String databaseRef = null;
+            if (preserved.length >= 4) {
+                databaseRef = preserved[preserved.length - 3];
+            } else if (preserved.length == 3) {
+                databaseRef = preserved[0];
+            } else if (preserved.length == 2
+                    && (dialect == DbType.mysql
+                            || dialect == DbType.mariadb)) {
+                databaseRef = preserved[0];
+            }
+            if (databaseRef != null) {
+                List<TableLocation> exact = new ArrayList<>();
+                for (TableLocation candidate : filtered) {
+                    if (schemaMatches(databaseRef, candidate.getDatabase())) {
+                        exact.add(candidate);
+                    }
+                }
+                filtered = exact;
+            }
+        }
+
         if (explicitSchema && schemaRef != null) {
             List<TableLocation> exact = new ArrayList<>();
             for (TableLocation candidate : filtered) {

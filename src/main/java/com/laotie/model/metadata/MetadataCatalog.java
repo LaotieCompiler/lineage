@@ -207,11 +207,12 @@ public class MetadataCatalog {
                 columns.add(catalogColumn(definition));
             }
         }
-        Table table = new Table(parts[3], columns);
-        String[] rawParts = splitQualifiedNamePreservingQuotes(qualifiedName);
-        if (rawParts.length > 0) {
-            table.setQuotedName(isQuotedIdentifier(
-                    rawParts[rawParts.length - 1]));
+        String rawTable = createTable.getTableSource().getTableName();
+        String tableName = rawTable == null ? parts[3]
+                : normalizeIdentifier(rawTable);
+        Table table = new Table(tableName, columns);
+        if (rawTable != null) {
+            table.setQuotedName(isQuotedIdentifier(rawTable));
         }
         return new TableMutation(parts[0], parts[1], parts[2], table);
     }
@@ -265,7 +266,14 @@ public class MetadataCatalog {
         if (parts.length == 0) {
             throw new MetadataPersistenceException("table name is empty");
         }
-        return addTable(parts, columns);
+        TableLocation location = addTable(parts, columns);
+        String[] rawParts = splitQualifiedNamePreservingQuotes(qualifiedName);
+        if (rawParts.length > 0) {
+            location.getTable().setQuotedName(isQuotedIdentifier(
+                    rawParts[rawParts.length - 1]));
+            cachedChecksum = null;
+        }
+        return location;
     }
 
     public TableLocation addTable(String[] parts, List<Column> columns) {
@@ -877,8 +885,15 @@ public class MetadataCatalog {
             char ch = qualifiedName.charAt(i);
             if (quote != 0) {
                 current.append(ch);
-                if (ch == quote) {
-                    quote = 0;
+                if (ch == '\\' && i + 1 < qualifiedName.length()) {
+                    current.append(qualifiedName.charAt(++i));
+                } else if (ch == quote) {
+                    if (i + 1 < qualifiedName.length()
+                            && qualifiedName.charAt(i + 1) == quote) {
+                        current.append(qualifiedName.charAt(++i));
+                    } else {
+                        quote = 0;
+                    }
                 }
             } else if (ch == '`' || ch == '"') {
                 quote = ch;
@@ -910,8 +925,16 @@ public class MetadataCatalog {
         for (int i = 0; i < qualifiedName.length(); i++) {
             char ch = qualifiedName.charAt(i);
             if (quote != 0) {
-                if (ch == quote) {
-                    quote = 0;
+                if (ch == '\\' && i + 1 < qualifiedName.length()) {
+                    current.append(qualifiedName.charAt(++i));
+                } else if (ch == quote) {
+                    if (i + 1 < qualifiedName.length()
+                            && qualifiedName.charAt(i + 1) == quote) {
+                        current.append(ch);
+                        i++;
+                    } else {
+                        quote = 0;
+                    }
                 } else {
                     current.append(ch);
                 }

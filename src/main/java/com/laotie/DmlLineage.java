@@ -5789,13 +5789,19 @@ public class DmlLineage {
                     }
                 }
             }
+            Set<String> usedNames = new HashSet<>();
+            collectFromNames(select.getQuery(), usedNames);
             for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
                 // A non-recursive body still sees a physical table of the same name.
                 learnSelectExplicitReferences(entry.getSubQuery(), locals, ctes);
                 if (!recursive && entry.getAlias() != null) {
                     String key = qualifiedKey(entry.getAlias());
-                    locals.put(key, null);
-                    ctes.add(key);
+                    if (usedNames.contains(key)) {
+                        // Only a CTE that the query actually reads shadows the outer
+                        // scope; an unused declaration must not hide an alias.
+                        locals.put(key, null);
+                        ctes.add(key);
+                    }
                 }
             }
         }
@@ -5807,6 +5813,45 @@ public class DmlLineage {
         learnQueryExplicitReferences(query, locals, ctes);
     }
 
+    private void collectFromNames(SQLSelectQuery query, Set<String> names) {
+        if (query instanceof SQLSelectQueryBlock) {
+            collectFromNames(((SQLSelectQueryBlock) query).getFrom(), names);
+        } else if (query instanceof SQLUnionQuery) {
+            SQLUnionQuery union = (SQLUnionQuery) query;
+            collectFromNames(union.getLeft(), names);
+            collectFromNames(union.getRight(), names);
+        }
+    }
+
+    private void collectFromNames(SQLTableSource from, Set<String> names) {
+        if (from == null) {
+            return;
+        }
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            collectFromNames(join.getLeft(), names);
+            collectFromNames(join.getRight(), names);
+        } else if (from instanceof SQLExprTableSource) {
+            SQLExprTableSource table = (SQLExprTableSource) from;
+            String name = extractTableName(table);
+            if (table.getAlias() != null) {
+                names.add(qualifiedKey(table.getAlias()));
+            } else if (name != null) {
+                names.add(qualifiedKey(name));
+            }
+        } else if (from instanceof SQLSubqueryTableSource) {
+            SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) from;
+            if (subquery.getAlias() != null) {
+                names.add(qualifiedKey(subquery.getAlias()));
+            }
+        } else if (from instanceof SQLUnionQueryTableSource) {
+            SQLUnionQueryTableSource union = (SQLUnionQueryTableSource) from;
+            if (union.getAlias() != null) {
+                names.add(qualifiedKey(union.getAlias()));
+            }
+        }
+    }
+
     private void learnQueryExplicitReferences(SQLSelectQuery query,
             Map<String, String> inheritedLocals, Set<String> ctes) {
         if (query instanceof SQLSelectQueryBlock) {
@@ -5816,6 +5861,7 @@ public class DmlLineage {
             collectLocalNames(block.getFrom(), frameLocals, ctes);
             // A local table shadows an inherited short name.
             locals.putAll(frameLocals);
+            learnJoinConditions(block.getFrom(), locals, ctes);
             for (SQLSelectItem item : block.getSelectList()) {
                 learnExplicitReferences(item.getExpr(), locals, ctes);
             }
@@ -5831,6 +5877,20 @@ public class DmlLineage {
         }
     }
 
+    private void learnJoinConditions(SQLTableSource from, Map<String, String> locals,
+            Set<String> ctes) {
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            learnJoinConditions(join.getLeft(), locals, ctes);
+            learnJoinConditions(join.getRight(), locals, ctes);
+            if (join.getCondition() != null) {
+                learnExplicitReferences(join.getCondition(), locals, ctes);
+            }
+        } else if (from instanceof SQLSubqueryTableSource) {
+            // The derived body is analyzed with its own scope.
+        }
+    }
+
     private void collectLocalNames(SQLTableSource from, Map<String, String> locals,
             Set<String> ctes) {
         if (from == null) {
@@ -5842,9 +5902,6 @@ public class DmlLineage {
                     ? new HashMap<String, String>() : locals;
             collectLocalNames(join.getLeft(), childLocals, ctes);
             collectLocalNames(join.getRight(), childLocals, ctes);
-            if (join.getCondition() != null) {
-                learnExplicitReferences(join.getCondition(), childLocals, ctes);
-            }
             if (join.getAlias() != null) {
                 // An alias hides every qualifier inside the joined subtree.
                 locals.put(qualifiedKey(join.getAlias()), null);
@@ -5862,6 +5919,12 @@ public class DmlLineage {
                     locals.put(referenceKey, null);
                 } else {
                     String learnedTable = name == null ? null : learnedTableKey(name);
+                    if (locals.containsKey(referenceKey)
+                            && !String.valueOf(learnedTable).equals(
+                                    String.valueOf(locals.get(referenceKey)))) {
+                        locals.put(referenceKey, LOCAL_AMBIGUOUS);
+                        return;
+                    }
                     locals.put(referenceKey, learnedTable);
                     if (name != null && !isSingleSegmentName(name)
                             && table.getAlias() == null) {

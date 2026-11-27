@@ -4434,4 +4434,45 @@ public class MetadataFreeAnalysisTest {
                 instanceof ColumnNotFoundException);
     }
 
+    @Test
+    public void shortNameConflictIsIndependentOfFromOrder() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT a.k FROM s1.a CROSS JOIN a) FROM Z;"
+                + " SELECT a.y, C.y FROM a,C;");
+        ScanResult result = scanner.scan("SELECT k FROM a,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void nestedJoinConditionSeesInheritedAliases() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT 1 IN"
+                + " (SELECT 1 FROM B JOIN D ON q.k=B.y) FROM A AS q) FROM Z;"
+                + " SELECT q.y, C.y FROM q,C;");
+        ScanResult result = scanner.scan("SELECT k FROM q,C;");
+
+        // q.k refers to the outer A AS q, never to a physical table q.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void unusedCteDoesNotHideAnOuterAlias() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,C;"
+                        + " SELECT 1 IN (SELECT 1 IN"
+                        + " (WITH q AS (SELECT 1) SELECT q.k) FROM A AS q) FROM Z;"
+                        + " SELECT A.y, C.y FROM A,C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

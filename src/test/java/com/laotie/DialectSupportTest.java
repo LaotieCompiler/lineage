@@ -708,6 +708,35 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void ansiDoubleQuotedLiteralNameSurvivesInsert() {
+        String prefix = "SET spark.sql.ansi.enabled = true;"
+                + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;";
+        for (String column : Arrays.asList("\"`K`\"", "\" K \"")) {
+            ScanResult result = LineageScanner.withoutMetadata(
+                    DbType.antspark, optional()).scan(
+                    prefix + " INSERT OVERWRITE TABLE t (" + column + ")"
+                            + " SELECT a.y FROM a;"
+                            + " SELECT t." + column + " AS copied FROM t;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt3.temp0.copied")));
+        }
+    }
+
+    @Test
+    public void singleQuotedInsertColumnIsRejected() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "INSERT OVERWRITE TABLE t ('K') SELECT a.y FROM a;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof com.laotie.exception.ColumnNotFoundException);
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

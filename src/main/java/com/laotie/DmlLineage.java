@@ -411,6 +411,7 @@ public class DmlLineage {
         this.sessionSchema = rawSchemas.isEmpty() ? null
                 : joinIdentifierKeys(rawSchemas);
         this.pendingLearned = new HashMap<>();
+        this.ansiDoubleQuotedIdentifiers = session.ansiDoubleQuotedIdentifiers;
         try {
             init(true);
             stackTargetTable.push(getTempTableName());
@@ -458,7 +459,10 @@ public class DmlLineage {
             if (value == null) {
                 continue;
             }
-            if (target.endsWith("search_path")) {
+            if (target.endsWith("doublequotedidentifiers")) {
+                session.ansiDoubleQuotedIdentifiers = "true".equalsIgnoreCase(
+                        value.toString().trim());
+            } else if (target.endsWith("search_path")) {
                 session.schemas = stringList(value);
                 session.rawSchemas = rawStringList(value);
             } else if (target.contains("schema")) {
@@ -5735,6 +5739,7 @@ public class DmlLineage {
     /** Join alias whose USING keys attribute to the listed sides. */
     private static final String LOCAL_BINDING_USING = "\u0000binding-using:";
     private int learningBindingSeq;
+    private boolean ansiDoubleQuotedIdentifiers;
 
     private static String encodeLocalPart(String value) {
         if (value == null) {
@@ -8238,12 +8243,18 @@ public class DmlLineage {
         DbType dialect = currentDialect();
         if ((dialect == DbType.hive || dialect == DbType.antspark)
                 && column instanceof SQLTextLiteralExpr) {
-            // Spark ANSI double-quoted identifiers arrive as text literals.
+            if (!ansiDoubleQuotedIdentifiers) {
+                throw new ColumnNotFoundException(raw,
+                        java.util.Collections.singletonList(tableName));
+            }
+            // Spark ANSI double-quoted identifiers arrive as text literals. The
+            // decoded text is the whole logical name: keep spaces and backticks.
             String name = ((SQLTextLiteralExpr) column).getText();
             if (metadata == null) {
-                return renderHiveIdentifier(hiveColumnIdentity(name));
+                return renderHiveIdentifier(foldCase(name));
             }
-            String resolved = MetadataCatalog.resolveColumnName(metadata, name,
+            String quoted = "\"" + name.replace("\"", "\"\"") + "\"";
+            String resolved = MetadataCatalog.resolveColumnName(metadata, quoted,
                     dialect);
             if (resolved == null) {
                 throw new ColumnNotFoundException(normalizeIdentifier(name),
@@ -9467,6 +9478,7 @@ public class DmlLineage {
         private String database;
         private List<String> schemas = new ArrayList<>();
         private List<String> rawSchemas = new ArrayList<>();
+        private boolean ansiDoubleQuotedIdentifiers;
 
         private SessionState(MetadataContext base) {
             if (base != null) {

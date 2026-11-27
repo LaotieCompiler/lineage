@@ -548,6 +548,44 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void sparkReorderedPartitionTargetsFollowTableOrder() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (x STRING, src_region STRING,"
+                + " src_day STRING) USING parquet;"
+                + " CREATE TABLE t (k STRING, region STRING, dt STRING)"
+                + " USING parquet PARTITIONED BY (region, dt);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t PARTITION (dt, region)"
+                        + " SELECT x, src_region, src_day FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.x"))),
+                result.getGraph().getSources(new Column("t.k")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_region"))),
+                result.getGraph().getSources(new Column("t.region")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_day"))),
+                result.getGraph().getSources(new Column("t.dt")));
+    }
+
+    @Test
+    public void sparkUncatalogedCaseVariantWriteReadAgree() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "INSERT OVERWRITE TABLE t (`K`) SELECT a.y FROM a;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.copied")));
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.K")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

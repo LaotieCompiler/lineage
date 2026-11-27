@@ -8207,9 +8207,15 @@ public class DmlLineage {
 
     private String renderInsertColumn(Table metadata, String tableName, SQLExpr column) {
         String raw = column.toString();
+        DbType dialect = currentDialect();
+        if ((dialect == DbType.hive || dialect == DbType.antspark)
+                && metadata == null) {
+            // Without a catalog, Hive/Spark column identity is case-insensitive,
+            // but literal quotes remain part of the name.
+            return renderHiveIdentifier(hiveColumnIdentity(raw));
+        }
         String resolved = insertColumnName(metadata, tableName, column);
         if (MetadataCatalog.isQuotedIdentifier(raw)) {
-            DbType dialect = currentDialect();
             if (dialect == DbType.hive || dialect == DbType.antspark) {
                 return renderHiveIdentifier(resolved);
             }
@@ -8265,8 +8271,8 @@ public class DmlLineage {
         if (source.metadataTable == null) {
             DbType dialect = currentDialect();
             if (dialect == DbType.hive || dialect == DbType.antspark) {
-                addResolvedColumnMapping(sourceName, hiveLogicalName(columnName),
-                        source.temporary);
+                addResolvedColumnMapping(sourceName,
+                        hiveColumnIdentity(columnName), source.temporary);
             } else {
                 addColumnMapping(sourceName, canonicalColumnName(columnName),
                         source.temporary, null);
@@ -8793,6 +8799,10 @@ public class DmlLineage {
     }
 
     /** Strip one Hive SQL identifier layer, keeping inner quote characters. */
+    private static String hiveColumnIdentity(String raw) {
+        return foldCase(hiveLogicalName(raw));
+    }
+
     private static String hiveLogicalName(String raw) {
         if (raw == null) {
             return null;
@@ -8844,15 +8854,22 @@ public class DmlLineage {
         if (partitionKeys.isEmpty()) {
             return null;
         }
+        Set<String> dynamicKeys = new HashSet<>();
+        for (String name : dynamic) {
+            dynamicKeys.add(partitionKey(name));
+        }
         List<String> targets = new ArrayList<>();
         if (insertColumns != null && !insertColumns.isEmpty()) {
             for (SQLExpr column : insertColumns) {
                 targets.add(renderInsertColumn(targetMetadata, tableName, column));
             }
         } else {
+            // Follow the table's own column order; a reordered PARTITION clause
+            // does not reorder the written data.
             for (Column column : targetMetadata.getFields()) {
-                if (!partitionKeys.contains(partitionColumnKey(
-                        column.getColumnName()))) {
+                String key = partitionColumnKey(column.getColumnName());
+                if (!partitionKeys.contains(key)
+                        || dynamicKeys.contains(key)) {
                     targets.add(renderHiveIdentifier(column.getColumnName()));
                 }
             }

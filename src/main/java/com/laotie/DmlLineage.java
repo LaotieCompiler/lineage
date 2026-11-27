@@ -2962,8 +2962,16 @@ public class DmlLineage {
 
     private void addOuterColumnMapping(SourceTable source, String column,
             String target, String targetName, int position, Boolean quoted) {
-        if (source.metadataTable == null && !source.temporary && quoted == null) {
-            column = uncatalogedColumnSpelling(column);
+        if (source.metadataTable == null && !source.temporary) {
+            DbType dialect = currentDialect();
+            if (dialect == DbType.hive || dialect == DbType.antspark) {
+                // Planned columns are already logical; strip only a backtick
+                // layer, fold case, and let rendering re-quote special names.
+                column = hivePlannedColumn(column);
+                quoted = null;
+            } else if (quoted == null) {
+                column = uncatalogedColumnSpelling(column);
+            }
         }
         String rendered = quoted == null
                 ? renderIdentifier(column)
@@ -7177,11 +7185,22 @@ public class DmlLineage {
             return;
         }
         for (StarColumn column : columns) {
-            String sourceColumn = column.quoted || column.source.temporary
-                    ? renderSourceColumn(column)
-                    : renderIdentifier(column.source.metadataTable == null
-                            ? uncatalogedColumnSpelling(column.column)
-                            : canonicalColumnName(column.column));
+            DbType dialect = currentDialect();
+            String sourceColumn;
+            if (column.source.temporary) {
+                sourceColumn = renderSourceColumn(column);
+            } else if (column.source.metadataTable == null
+                    && (dialect == DbType.hive || dialect == DbType.antspark)) {
+                sourceColumn = renderIdentifier(
+                        hivePlannedColumn(column.column));
+            } else if (column.quoted) {
+                sourceColumn = renderSourceColumn(column);
+            } else {
+                sourceColumn = renderIdentifier(
+                        column.source.metadataTable == null
+                                ? uncatalogedColumnSpelling(column.column)
+                                : canonicalColumnName(column.column));
+            }
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                     lineageTableName(column.source) + "." + sourceColumn,
                     targetTable + "." + targetColumn, currentOrdinal,
@@ -8807,6 +8826,18 @@ public class DmlLineage {
     }
 
     /** Strip one Hive SQL identifier layer, keeping inner quote characters. */
+    /** Fold an already-logical Hive/Spark planned column name. */
+    private static String hivePlannedColumn(String column) {
+        String value = column == null ? null : column.trim();
+        if (value != null && value.length() >= 2
+                && value.charAt(0) == '`'
+                && value.charAt(value.length() - 1) == '`') {
+            value = value.substring(1, value.length() - 1)
+                    .replace("``", "`");
+        }
+        return foldCase(value);
+    }
+
     private static String hiveColumnIdentity(String raw) {
         return foldCase(hiveLogicalName(raw));
     }

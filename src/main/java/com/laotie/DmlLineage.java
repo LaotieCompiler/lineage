@@ -5639,10 +5639,16 @@ public class DmlLineage {
     }
 
     private void learnExplicitReferences(SQLExpr expr) {
-        learnExplicitReferences(expr, new HashMap<String, String>());
+        learnExplicitReferences(expr, new HashMap<String, String>(),
+                new HashSet<String>());
     }
 
     private void learnExplicitReferences(SQLExpr expr, Map<String, String> locals) {
+        learnExplicitReferences(expr, locals, new HashSet<String>());
+    }
+
+    private void learnExplicitReferences(SQLExpr expr, Map<String, String> locals,
+            Set<String> cteKeys) {
         if (expr == null) {
             return;
         }
@@ -5666,53 +5672,58 @@ public class DmlLineage {
             return;
         }
         if (expr instanceof SQLQueryExpr) {
-            learnSelectExplicitReferences(((SQLQueryExpr) expr).getSubQuery(), locals);
+            learnSelectExplicitReferences(((SQLQueryExpr) expr).getSubQuery(),
+                    locals, cteKeys);
         } else if (expr instanceof SQLInSubQueryExpr) {
             SQLInSubQueryExpr in = (SQLInSubQueryExpr) expr;
-            learnExplicitReferences(in.getExpr(), locals);
-            learnSelectExplicitReferences(in.getSubQuery(), locals);
+            learnExplicitReferences(in.getExpr(), locals, cteKeys);
+            learnSelectExplicitReferences(in.getSubQuery(), locals, cteKeys);
         } else if (expr instanceof SQLBinaryOpExpr) {
-            learnExplicitReferences(((SQLBinaryOpExpr) expr).getLeft(), locals);
-            learnExplicitReferences(((SQLBinaryOpExpr) expr).getRight(), locals);
+            learnExplicitReferences(((SQLBinaryOpExpr) expr).getLeft(), locals,
+                    cteKeys);
+            learnExplicitReferences(((SQLBinaryOpExpr) expr).getRight(), locals,
+                    cteKeys);
         } else if (expr instanceof SQLMethodInvokeExpr) {
             for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                learnExplicitReferences(argument, locals);
+                learnExplicitReferences(argument, locals, cteKeys);
             }
         } else if (expr instanceof SQLCastExpr) {
-            learnExplicitReferences(((SQLCastExpr) expr).getExpr(), locals);
+            learnExplicitReferences(((SQLCastExpr) expr).getExpr(), locals, cteKeys);
         } else if (expr instanceof SQLNotExpr) {
-            learnExplicitReferences(((SQLNotExpr) expr).getExpr(), locals);
+            learnExplicitReferences(((SQLNotExpr) expr).getExpr(), locals, cteKeys);
         } else if (expr instanceof SQLUnaryExpr) {
-            learnExplicitReferences(((SQLUnaryExpr) expr).getExpr(), locals);
+            learnExplicitReferences(((SQLUnaryExpr) expr).getExpr(), locals, cteKeys);
         } else if (expr instanceof SQLBetweenExpr) {
             SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            learnExplicitReferences(between.getTestExpr(), locals);
-            learnExplicitReferences(between.getBeginExpr(), locals);
-            learnExplicitReferences(between.getEndExpr(), locals);
+            learnExplicitReferences(between.getTestExpr(), locals, cteKeys);
+            learnExplicitReferences(between.getBeginExpr(), locals, cteKeys);
+            learnExplicitReferences(between.getEndExpr(), locals, cteKeys);
         } else if (expr instanceof SQLCaseExpr) {
             SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            learnExplicitReferences(caseExpr.getValueExpr(), locals);
+            learnExplicitReferences(caseExpr.getValueExpr(), locals, cteKeys);
             if (caseExpr.getItems() != null) {
                 for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
-                    learnExplicitReferences(caseItem.getConditionExpr(), locals);
-                    learnExplicitReferences(caseItem.getValueExpr(), locals);
+                    learnExplicitReferences(caseItem.getConditionExpr(), locals,
+                            cteKeys);
+                    learnExplicitReferences(caseItem.getValueExpr(), locals, cteKeys);
                 }
             }
-            learnExplicitReferences(caseExpr.getElseExpr(), locals);
+            learnExplicitReferences(caseExpr.getElseExpr(), locals, cteKeys);
         } else if (expr instanceof SQLListExpr) {
             for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
-                learnExplicitReferences(element, locals);
+                learnExplicitReferences(element, locals, cteKeys);
             }
         } else if (expr instanceof SQLInListExpr) {
             SQLInListExpr in = (SQLInListExpr) expr;
-            learnExplicitReferences(in.getExpr(), locals);
+            learnExplicitReferences(in.getExpr(), locals, cteKeys);
             if (in.getTargetList() != null) {
                 for (SQLExpr element : in.getTargetList()) {
-                    learnExplicitReferences(element, locals);
+                    learnExplicitReferences(element, locals, cteKeys);
                 }
             }
         } else if (expr instanceof SQLExtractExpr) {
-            learnExplicitReferences(((SQLExtractExpr) expr).getValue(), locals);
+            learnExplicitReferences(((SQLExtractExpr) expr).getValue(), locals,
+                    cteKeys);
         }
     }
 
@@ -5741,56 +5752,66 @@ public class DmlLineage {
 
     private void learnSelectExplicitReferences(SQLSelect select,
             Map<String, String> inheritedLocals) {
+        learnSelectExplicitReferences(select, inheritedLocals, new HashSet<String>());
+    }
+
+    private void learnSelectExplicitReferences(SQLSelect select,
+            Map<String, String> inheritedLocals, Set<String> inheritedCtes) {
         if (select == null) {
             return;
         }
         Map<String, String> locals = new HashMap<>(inheritedLocals);
+        Set<String> ctes = new HashSet<>(inheritedCtes);
         SQLWithSubqueryClause with = select.getWithSubQuery();
         if (with != null) {
             for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
                 if (entry.getAlias() != null) {
-                    locals.put(qualifiedKey(entry.getAlias()),
-                            learnedTableKey(entry.getAlias()));
+                    String key = qualifiedKey(entry.getAlias());
+                    // A CTE name is not a physical table.
+                    locals.put(key, null);
+                    ctes.add(key);
                 }
-                learnSelectExplicitReferences(entry.getSubQuery(), locals);
+                learnSelectExplicitReferences(entry.getSubQuery(), locals, ctes);
             }
         }
-        collectLocalNames(select.getQuery(), locals);
-        learnQueryExplicitReferences(select.getQuery(), locals);
+        learnQueryExplicitReferences(select.getQuery(), locals, ctes);
+    }
+
+    private void learnSelectExplicitReferences(SQLSelectQuery query,
+            Map<String, String> locals, Set<String> ctes) {
+        learnQueryExplicitReferences(query, locals, ctes);
     }
 
     private void learnQueryExplicitReferences(SQLSelectQuery query,
-            Map<String, String> locals) {
+            Map<String, String> inheritedLocals, Set<String> ctes) {
         if (query instanceof SQLSelectQueryBlock) {
             SQLSelectQueryBlock block = (SQLSelectQueryBlock) query;
+            Map<String, String> locals = new HashMap<>(inheritedLocals);
+            collectLocalNames(block.getFrom(), locals, ctes);
             for (SQLSelectItem item : block.getSelectList()) {
-                learnExplicitReferences(item.getExpr(), locals);
+                learnExplicitReferences(item.getExpr(), locals, ctes);
             }
-            learnExplicitReferences(block.getWhere(), locals);
+            learnExplicitReferences(block.getWhere(), locals, ctes);
         } else if (query instanceof SQLUnionQuery) {
             SQLUnionQuery union = (SQLUnionQuery) query;
-            learnQueryExplicitReferences(union.getLeft(), locals);
-            learnQueryExplicitReferences(union.getRight(), locals);
+            // Each branch has its own FROM aliases; one branch must not shadow the
+            // aliases of another.
+            learnQueryExplicitReferences(union.getLeft(),
+                    new HashMap<>(inheritedLocals), ctes);
+            learnQueryExplicitReferences(union.getRight(),
+                    new HashMap<>(inheritedLocals), ctes);
         }
     }
 
-    private void collectLocalNames(SQLSelectQuery query, Map<String, String> locals) {
-        if (query instanceof SQLSelectQueryBlock) {
-            collectLocalNames(((SQLSelectQueryBlock) query).getFrom(), locals);
-        } else if (query instanceof SQLUnionQuery) {
-            collectLocalNames(((SQLUnionQuery) query).getLeft(), locals);
-            collectLocalNames(((SQLUnionQuery) query).getRight(), locals);
-        }
-    }
-
-    private void collectLocalNames(SQLTableSource from, Map<String, String> locals) {
+    private void collectLocalNames(SQLTableSource from, Map<String, String> locals,
+            Set<String> ctes) {
         if (from == null) {
             return;
         }
         if (from instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) from;
-            collectLocalNames(join.getLeft(), locals);
-            collectLocalNames(join.getRight(), locals);
+            collectLocalNames(join.getLeft(), locals, ctes);
+            collectLocalNames(join.getRight(), locals, ctes);
             if (join.getAlias() != null) {
                 locals.put(qualifiedKey(join.getAlias()), null);
             }
@@ -5800,19 +5821,27 @@ public class DmlLineage {
             String reference = table.getAlias() != null
                     ? table.getAlias() : name;
             if (reference != null) {
-                locals.put(qualifiedKey(reference),
-                        name == null ? null : learnedTableKey(name));
+                String referenceKey = qualifiedKey(reference);
+                String nameKey = name == null ? null : qualifiedKey(name);
+                if (ctes.contains(referenceKey) || ctes.contains(nameKey)) {
+                    locals.put(referenceKey, null);
+                } else {
+                    locals.put(referenceKey,
+                            name == null ? null : learnedTableKey(name));
+                }
             }
         } else if (from instanceof SQLSubqueryTableSource) {
             SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) from;
             if (subquery.getAlias() != null) {
                 locals.put(qualifiedKey(subquery.getAlias()), null);
             }
+            learnSelectExplicitReferences(subquery.getSelect(), locals, ctes);
         } else if (from instanceof SQLUnionQueryTableSource) {
             SQLUnionQueryTableSource union = (SQLUnionQueryTableSource) from;
             if (union.getAlias() != null) {
                 locals.put(qualifiedKey(union.getAlias()), null);
             }
+            learnSelectExplicitReferences(union.getUnion(), locals, ctes);
         }
     }
 
@@ -7889,7 +7918,6 @@ public class DmlLineage {
             }
         }
         stackTargetTable.push(tableName);
-        stackUsing.push(using);
         stackSourceTable.push(tableName);
         inTargetExpression = true;
         try {
@@ -7949,7 +7977,6 @@ public class DmlLineage {
         } finally {
             inTargetExpression = false;
             stackSourceTable.pop();
-            stackUsing.pop();
             stackTargetTable.pop();
         }
         collectTablesFromExpression(merge.getOn());

@@ -596,4 +596,20 @@ public class AdvancedDmlTest {
                 sources(alias, "t.c2"));
     }
 
+    @Test
+    public void mergeScalarUsesTheNearestUsingScope() {
+        MetadataContext context = catalog(
+                "CREATE TABLE t (v INT); CREATE TABLE s (k INT); CREATE TABLE b (k INT);"
+                        + " CREATE TABLE c (k INT); CREATE TABLE d (k INT);"
+                        + " CREATE TABLE o (u INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s JOIN b USING(k)) AS src ON true"
+                        + " WHEN MATCHED THEN UPDATE SET v=("
+                        + "SELECT (SELECT k FROM o) FROM (c JOIN d USING(k)) AS j);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("c.k"), new Column("d.k"))), sources(result, "t.v"));
+    }
+
 }

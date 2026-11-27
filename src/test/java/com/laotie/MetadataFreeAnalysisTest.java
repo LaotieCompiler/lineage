@@ -4259,4 +4259,45 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.k")));
     }
 
+    @Test
+    public void unionBranchesKeepTheirOwnAliasesWhenLearning() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (SELECT x.k FROM A AS x"
+                + " UNION ALL SELECT 0 FROM B AS x) FROM Z;"
+                + " SELECT B.y, C.y FROM B,C;");
+        ScanResult result = scanner.scan("SELECT k FROM B,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void cteNamesAreNotLearnedAsPhysicalTables() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT 1 IN (WITH x AS (SELECT 1 AS k)"
+                + " SELECT x.k FROM x) FROM Z;"
+                + " SELECT x.y, C.y FROM x,C;");
+        ScanResult result = scanner.scan("SELECT k FROM x,C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void metadataDiscoveryReadsDerivedTablesInSubqueries() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,B;"
+                        + " SELECT 1 IN (SELECT q.k FROM (SELECT A.k FROM A) AS q)"
+                        + " FROM B;"
+                        + " SELECT A.y, B.y FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

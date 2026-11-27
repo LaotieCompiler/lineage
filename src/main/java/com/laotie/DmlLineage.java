@@ -5651,6 +5651,42 @@ public class DmlLineage {
     private static final String LOCAL_BINDING_USING = "\u0000binding-using:";
     private int learningBindingSeq;
 
+    private static String encodeLocalPart(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder encoded = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '%' || ch == '=' || ch == ';'
+                    || ch == LOCAL_TABLE_SEPARATOR.charAt(0)) {
+                encoded.append('%').append(String.format("%02X", (int) ch));
+            } else {
+                encoded.append(ch);
+            }
+        }
+        return encoded.toString();
+    }
+
+    private static String decodeLocalPart(String value) {
+        StringBuilder decoded = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '%' && i + 2 < value.length()) {
+                try {
+                    decoded.append((char) Integer.parseInt(
+                            value.substring(i + 1, i + 3), 16));
+                    i += 2;
+                    continue;
+                } catch (NumberFormatException ignored) {
+                    // Keep the literal percent.
+                }
+            }
+            decoded.append(ch);
+        }
+        return decoded.toString();
+    }
+
     private static String joiningTables(Iterable<String> tables) {
         Set<String> unique = new LinkedHashSet<>();
         for (String table : tables) {
@@ -5774,10 +5810,11 @@ public class DmlLineage {
         String payload = marker.substring(LOCAL_BINDING_USING.length());
         for (String entry : payload.split(";")) {
             int eq = entry.indexOf('=');
-            if (eq <= 0 || !entry.substring(0, eq).equals(columnKey)) {
+            if (eq <= 0
+                    || !decodeLocalPart(entry.substring(0, eq)).equals(columnKey)) {
                 continue;
             }
-            String tables = entry.substring(eq + 1);
+            String tables = decodeLocalPart(entry.substring(eq + 1));
             if (tables.isEmpty()) {
                 return;
             }
@@ -6073,38 +6110,60 @@ public class DmlLineage {
         }
     }
 
+    private static void addSingleTable(Set<String> sides,
+            Iterable<String> localValues) {
+        Set<String> tables = new LinkedHashSet<>();
+        for (String value : localValues) {
+            if (value != null && !LOCAL_AMBIGUOUS.equals(value)) {
+                for (String table : value.split(LOCAL_TABLE_SEPARATOR)) {
+                    if (!table.isEmpty()) {
+                        tables.add(table);
+                    }
+                }
+            }
+        }
+        // Only a side that is exactly one table proves the key's ownership.
+        if (tables.size() == 1) {
+            sides.add(tables.iterator().next());
+        }
+    }
+
     private String usingBindingMark(SQLJoinTableSource join,
-            Map<String, String> childLocals) {
+            Map<String, String> childLocals, Set<String> ctes) {
         if (join.getUsing() == null || join.getUsing().isEmpty()) {
             return LOCAL_BINDING;
         }
         Map<String, String> leftLocals = new HashMap<>();
         Map<String, String> rightLocals = new HashMap<>();
-        collectLocalNames(join.getLeft(), leftLocals, new HashSet<String>());
-        collectLocalNames(join.getRight(), rightLocals, new HashSet<String>());
+        collectLocalNames(join.getLeft(), leftLocals, ctes);
+        collectLocalNames(join.getRight(), rightLocals, ctes);
         StringBuilder mark = new StringBuilder(LOCAL_BINDING_USING);
         for (SQLExpr expr : join.getUsing()) {
             String key = identifierKey(expr.toString());
-            List<String> sides = new ArrayList<>();
+            Set<String> sides = new LinkedHashSet<>();
             switch (join.getJoinType()) {
                 case LEFT_OUTER_JOIN:
                 case LEFT_SEMI_JOIN:
                 case LEFT_ANTI_JOIN:
-                    sides.addAll(leftLocals.values());
+                    addSingleTable(sides, leftLocals.values());
                     break;
                 case RIGHT_OUTER_JOIN:
-                    sides.addAll(rightLocals.values());
+                    addSingleTable(sides, rightLocals.values());
                     break;
                 default:
-                    sides.addAll(leftLocals.values());
-                    sides.addAll(rightLocals.values());
+                    addSingleTable(sides, leftLocals.values());
+                    addSingleTable(sides, rightLocals.values());
                     break;
+            }
+            if (sides.isEmpty()) {
+                continue;
             }
             if (mark.length() > LOCAL_BINDING_USING.length()) {
                 mark.append(';');
             }
-            mark.append(key).append('=').append(
-                    String.valueOf(joiningTables(sides)));
+            mark.append(encodeLocalPart(key)).append('=')
+                    .append(encodeLocalPart(String.join(LOCAL_TABLE_SEPARATOR,
+                            sides)));
         }
         return mark.toString();
     }
@@ -6114,17 +6173,7 @@ public class DmlLineage {
         Set<String> ctes = currentCteKeys();
         Map<String, String> frameLocals = new HashMap<>();
         collectLocalNames(block.getFrom(), frameLocals, ctes);
-        if (!stackJoinBindings.isEmpty()) {
-            Map<String, SourceNode> current = stackJoinBindings.peek();
-            for (Map.Entry<String, String> local : frameLocals.entrySet()) {
-                if (LOCAL_BINDING.equals(local.getValue())) {
-                    SourceNode binding = current.get(local.getKey());
-                    if (binding != null) {
-                        local.setValue(bindingToken(binding));
-                    }
-                }
-            }
-        }
+        upgradeBindings(frameLocals);
         Set<String> fromNames = new HashSet<>();
         collectFromNames(block.getFrom(), fromNames);
         learnDerivedBodies(block.getFrom(), inherited, ctes);
@@ -6137,6 +6186,23 @@ public class DmlLineage {
         learnExplicitReferences(block.getWhere(), locals, ctes);
     }
 
+    private void upgradeBindings(Map<String, String> locals) {
+        if (stackJoinBindings.isEmpty()) {
+            return;
+        }
+        Map<String, SourceNode> current = stackJoinBindings.peek();
+        for (Map.Entry<String, String> local : locals.entrySet()) {
+            String value = local.getValue();
+            if (value != null && (LOCAL_BINDING.equals(value)
+                    || value.startsWith(LOCAL_BINDING_USING))) {
+                SourceNode binding = current.get(local.getKey());
+                if (binding != null) {
+                    local.setValue(bindingToken(binding));
+                }
+            }
+        }
+    }
+
     private void learnJoinConditions(SQLTableSource from, Map<String, String> locals,
             Set<String> ctes, Set<String> fromNames) {
         if (from instanceof SQLJoinTableSource) {
@@ -6144,6 +6210,7 @@ public class DmlLineage {
             Map<String, String> subtree = new HashMap<>();
             collectLocalNames(join.getLeft(), subtree, ctes);
             collectLocalNames(join.getRight(), subtree, ctes);
+            upgradeBindings(subtree);
             Map<String, String> conditionLocals = new HashMap<>(locals);
             conditionLocals.putAll(subtree);
             for (String name : fromNames) {
@@ -6178,7 +6245,7 @@ public class DmlLineage {
                 // An alias hides every qualifier inside the joined subtree. A USING
                 // key is attributable to its sides; other columns need the plan.
                 locals.put(qualifiedKey(join.getAlias()),
-                        usingBindingMark(join, childLocals));
+                        usingBindingMark(join, childLocals, ctes));
             }
         } else if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;

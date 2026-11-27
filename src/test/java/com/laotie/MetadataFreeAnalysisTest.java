@@ -4861,4 +4861,79 @@ public class MetadataFreeAnalysisTest {
                 instanceof ColumnNotFoundException);
     }
 
+    @Test
+    public void usingAliasKeepsItsCteSide() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM x, C;"
+                        + " WITH x AS (SELECT 1 AS k)"
+                        + " SELECT 1 FROM (x JOIN B USING (k)) AS j WHERE j.k = 1;"
+                        + " SELECT x.y, C.y FROM x, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void compositeUsingSideDoesNotAttributeItsTables() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM X, C;"
+                        + " SELECT 1 FROM ((A CROSS JOIN X) JOIN B USING (k)) AS j"
+                        + " WHERE j.k = 1;"
+                        + " SELECT A.k, X.y, B.k, C.y FROM A, X, B, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void localJoinPlanSurvivesAliasComposition() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM ((A JOIN B USING (k))"
+                        + " JOIN (SELECT 1 AS v) AS d USING (v)) AS j"
+                        + " WHERE j.k = 1;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void localJoinPlanSurvivesAJoinCondition() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM ((A JOIN B USING (k))"
+                        + " CROSS JOIN (SELECT 1 AS v) AS d) AS j"
+                        + " JOIN Z ON j.k = 1;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void usingMarkerSurvivesSpecialCharacters() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT \"a=b\" FROM A, C;"
+                        + " SELECT 1 IN (SELECT 1 FROM"
+                        + " (A JOIN B USING (\"a=b\")) AS j"
+                        + " WHERE j.\"a=b\" = 1);"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("a.\"a=b\""))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.\"a=b\"")));
+    }
+
 }

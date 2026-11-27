@@ -196,6 +196,61 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void sqlServerQuotedInsertIsAccepted() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("INSERT INTO [t] ([c]) SELECT [c] FROM [s];")
+                .getFailures().size());
+        assertTrue(LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("INSERT INTO [t] (c) SELECT [c] FROM [s];")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+    }
+
+    @Test
+    public void oracleTableAliasMustBeQuoted() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.oracle, strict())
+                .scan("SELECT \"c\" FROM \"t\" a;")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.oracle, strict())
+                .scan("SELECT \"c\" FROM \"t\" \"a\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void postgresOnConflictColumnsMustBeQuoted() {
+        String bare = "INSERT INTO \"t\" (\"c\") SELECT \"c\" FROM \"s\""
+                + " ON CONFLICT (c) DO UPDATE SET c = 1;";
+        String quoted = "INSERT INTO \"t\" (\"c\") SELECT \"c\" FROM \"s\""
+                + " ON CONFLICT (\"c\") DO UPDATE SET \"c\" = 1;";
+        assertTrue(LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan(bare).getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan(quoted).getFailures().size());
+    }
+
+    @Test
+    public void schemaQualifiedExtractIsNotAUnit() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("SELECT \"s\".extract(c, \"x\") FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("SELECT \"s\".extract(\"c\", \"x\") FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void timestampdiffUnitIsNotAColumn() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.mysql, strict()).scan(
+                "SELECT TIMESTAMPDIFF(DAY, `x`, `y`) FROM `t`;");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

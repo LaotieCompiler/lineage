@@ -68,6 +68,10 @@ import com.alibaba.druid.sql.dialect.oracle.visitor.OracleASTVisitorAdapter;
 import com.alibaba.druid.sql.dialect.postgresql.ast.stmt.PGInsertStatement;
 import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlInsertStatement;
 import com.alibaba.druid.sql.visitor.SQLASTVisitor;
+import com.alibaba.druid.sql.dialect.sqlserver.visitor.SQLServerASTVisitorAdapter;
+import com.alibaba.druid.sql.dialect.oracle.ast.stmt.OracleSelectTableReference;
+import com.alibaba.druid.sql.dialect.oracle.ast.stmt.OracleSelectJoin;
+import com.alibaba.druid.sql.dialect.oracle.ast.stmt.OracleSelectSubqueryTableSource;
 import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
 import com.alibaba.druid.sql.ast.statement.SQLWithSubqueryClause;
 
@@ -341,9 +345,18 @@ public class DmlLineage {
      * CTE name, which act as qualifiers) must carry identifier quotes.
      */
     private void validateQuotedIdentifiers(SQLStatement statement) {
-        SQLASTVisitor visitor = currentDialect() == DbType.oracle
-                ? new OracleQuotedIdentifierVisitor()
-                : new QuotedIdentifierVisitor();
+        SQLASTVisitor visitor;
+        switch (currentDialect()) {
+            case oracle:
+                visitor = new OracleQuotedIdentifierVisitor();
+                break;
+            case sqlserver:
+                visitor = new SqlServerQuotedIdentifierVisitor();
+                break;
+            default:
+                visitor = new QuotedIdentifierVisitor();
+                break;
+        }
         statement.accept(visitor);
         // Clauses that dialect AST nodes do not expose as visited children.
         if (statement instanceof SQLUpdateStatement) {
@@ -354,9 +367,30 @@ public class DmlLineage {
             }
         }
         if (statement instanceof PGInsertStatement) {
-            SQLExpr returning = ((PGInsertStatement) statement).getReturning();
+            PGInsertStatement insert = (PGInsertStatement) statement;
+            SQLExpr returning = insert.getReturning();
             if (returning != null) {
                 returning.accept(visitor);
+            }
+            if (insert.getOnConflictConstraint() != null) {
+                requireQuotedIdentifier(
+                        insert.getOnConflictConstraint().toString());
+            }
+            for (SQLExpr target : insert.getOnConflictTarget()) {
+                if (target != null) {
+                    target.accept(visitor);
+                }
+            }
+            for (SQLUpdateSetItem item : insert.getOnConflictUpdateSetItems()) {
+                if (item != null) {
+                    item.accept(visitor);
+                }
+            }
+            if (insert.getOnConflictWhere() != null) {
+                insert.getOnConflictWhere().accept(visitor);
+            }
+            if (insert.getOnConflictUpdateWhere() != null) {
+                insert.getOnConflictUpdateWhere().accept(visitor);
             }
         }
         if (statement instanceof MySqlInsertStatement) {
@@ -366,6 +400,60 @@ public class DmlLineage {
                     expr.accept(visitor);
                 }
             }
+        }
+    }
+
+    private static final class SqlServerQuotedIdentifierVisitor
+            extends SQLServerASTVisitorAdapter {
+        @Override
+        public boolean visit(SQLIdentifierExpr x) {
+            checkIdentifier(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLPropertyExpr x) {
+            checkProperty(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLExprTableSource x) {
+            checkTableSource(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLJoinTableSource x) {
+            checkTableSource(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLSubqueryTableSource x) {
+            checkTableSource(x);
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLUnionQueryTableSource x) {
+            checkTableSource(x);
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLWithSubqueryClause.Entry x) {
+            requireQuotedIdentifier(x.getAlias());
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLColumnDefinition x) {
+            requireQuotedIdentifier(x.getColumnName());
+            return true;
         }
     }
 
@@ -463,6 +551,25 @@ public class DmlLineage {
         }
 
         @Override
+        public boolean visit(OracleSelectTableReference x) {
+            checkTableSource(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(OracleSelectJoin x) {
+            checkTableSource(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(OracleSelectSubqueryTableSource x) {
+            checkTableSource(x);
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
         public boolean visit(SQLWithSubqueryClause.Entry x) {
             requireQuotedIdentifier(x.getAlias());
             checkColumnNames(x.getColumns());
@@ -477,21 +584,28 @@ public class DmlLineage {
     }
 
     private static void checkIdentifier(SQLIdentifierExpr identifier) {
-        if (isExtractUnit(identifier)) {
+        if (isFunctionUnit(identifier)) {
             return;
         }
         requireQuotedIdentifier(identifier.getName());
     }
 
-    private static boolean isExtractUnit(SQLIdentifierExpr identifier) {
+    private static boolean isFunctionUnit(SQLIdentifierExpr identifier) {
         SQLObject parent = identifier.getParent();
         if (!(parent instanceof SQLMethodInvokeExpr)) {
             return false;
         }
         SQLMethodInvokeExpr call = (SQLMethodInvokeExpr) parent;
-        return "EXTRACT".equalsIgnoreCase(call.getMethodName())
-                && !call.getArguments().isEmpty()
-                && call.getArguments().get(0) == identifier;
+        if (call.getArguments().isEmpty()
+                || call.getArguments().get(0) != identifier) {
+            return false;
+        }
+        if ("EXTRACT".equalsIgnoreCase(call.getMethodName())) {
+            // A schema-qualified s.extract(c, x) is an ordinary function.
+            return call.getOwner() == null;
+        }
+        return "TIMESTAMPDIFF".equalsIgnoreCase(call.getMethodName())
+                || "TIMESTAMPADD".equalsIgnoreCase(call.getMethodName());
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

@@ -22,6 +22,7 @@ import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLName;
+import com.alibaba.druid.sql.ast.SQLObject;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
 import com.alibaba.druid.sql.ast.expr.SQLBetweenExpr;
@@ -63,6 +64,10 @@ import com.alibaba.druid.sql.ast.statement.SQLUnionQueryTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateSetItem;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.alibaba.druid.sql.ast.statement.SQLUseStatement;
+import com.alibaba.druid.sql.dialect.oracle.visitor.OracleASTVisitorAdapter;
+import com.alibaba.druid.sql.dialect.postgresql.ast.stmt.PGInsertStatement;
+import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlInsertStatement;
+import com.alibaba.druid.sql.visitor.SQLASTVisitor;
 import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
 import com.alibaba.druid.sql.ast.statement.SQLWithSubqueryClause;
 
@@ -336,57 +341,176 @@ public class DmlLineage {
      * CTE name, which act as qualifiers) must carry identifier quotes.
      */
     private void validateQuotedIdentifiers(SQLStatement statement) {
-        statement.accept(new SQLASTVisitorAdapter() {
-            @Override
-            public boolean visit(SQLIdentifierExpr x) {
-                requireQuotedIdentifier(x.getName());
-                return true;
-            }
-
-            @Override
-            public boolean visit(SQLPropertyExpr x) {
-                if (!isStarProperty(x)) {
-                    requireQuotedIdentifier(x.getName());
+        SQLASTVisitor visitor = currentDialect() == DbType.oracle
+                ? new OracleQuotedIdentifierVisitor()
+                : new QuotedIdentifierVisitor();
+        statement.accept(visitor);
+        // Clauses that dialect AST nodes do not expose as visited children.
+        if (statement instanceof SQLUpdateStatement) {
+            for (SQLExpr expr : ((SQLUpdateStatement) statement).getReturning()) {
+                if (expr != null) {
+                    expr.accept(visitor);
                 }
-                return true;
             }
+        }
+        if (statement instanceof PGInsertStatement) {
+            SQLExpr returning = ((PGInsertStatement) statement).getReturning();
+            if (returning != null) {
+                returning.accept(visitor);
+            }
+        }
+        if (statement instanceof MySqlInsertStatement) {
+            for (SQLExpr expr : ((MySqlInsertStatement) statement)
+                    .getDuplicateKeyUpdate()) {
+                if (expr != null) {
+                    expr.accept(visitor);
+                }
+            }
+        }
+    }
 
-            @Override
-            public boolean visit(SQLExprTableSource x) {
-                requireQuotedIdentifier(x.getAlias());
-                return true;
-            }
+    private static final class QuotedIdentifierVisitor extends SQLASTVisitorAdapter {
+        @Override
+        public boolean visit(SQLIdentifierExpr x) {
+            checkIdentifier(x);
+            return true;
+        }
 
-            @Override
-            public boolean visit(SQLJoinTableSource x) {
-                requireQuotedIdentifier(x.getAlias());
-                return true;
-            }
+        @Override
+        public boolean visit(SQLPropertyExpr x) {
+            checkProperty(x);
+            return true;
+        }
 
-            @Override
-            public boolean visit(SQLSubqueryTableSource x) {
-                requireQuotedIdentifier(x.getAlias());
-                return true;
-            }
+        @Override
+        public boolean visit(SQLExprTableSource x) {
+            checkTableSource(x);
+            return true;
+        }
 
-            @Override
-            public boolean visit(SQLUnionQueryTableSource x) {
-                requireQuotedIdentifier(x.getAlias());
-                return true;
-            }
+        @Override
+        public boolean visit(SQLJoinTableSource x) {
+            checkTableSource(x);
+            return true;
+        }
 
-            @Override
-            public boolean visit(SQLWithSubqueryClause.Entry x) {
-                requireQuotedIdentifier(x.getAlias());
-                return true;
-            }
+        @Override
+        public boolean visit(SQLSubqueryTableSource x) {
+            checkTableSource(x);
+            checkColumnNames(x.getColumns());
+            return true;
+        }
 
-            @Override
-            public boolean visit(SQLColumnDefinition x) {
-                requireQuotedIdentifier(x.getColumnName());
-                return true;
-            }
-        });
+        @Override
+        public boolean visit(SQLUnionQueryTableSource x) {
+            checkTableSource(x);
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLWithSubqueryClause.Entry x) {
+            requireQuotedIdentifier(x.getAlias());
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLColumnDefinition x) {
+            requireQuotedIdentifier(x.getColumnName());
+            return true;
+        }
+    }
+
+    private static final class OracleQuotedIdentifierVisitor
+            extends OracleASTVisitorAdapter {
+        @Override
+        public boolean visit(SQLIdentifierExpr x) {
+            checkIdentifier(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLPropertyExpr x) {
+            checkProperty(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLExprTableSource x) {
+            checkTableSource(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLJoinTableSource x) {
+            checkTableSource(x);
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLSubqueryTableSource x) {
+            checkTableSource(x);
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLUnionQueryTableSource x) {
+            checkTableSource(x);
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLWithSubqueryClause.Entry x) {
+            requireQuotedIdentifier(x.getAlias());
+            checkColumnNames(x.getColumns());
+            return true;
+        }
+
+        @Override
+        public boolean visit(SQLColumnDefinition x) {
+            requireQuotedIdentifier(x.getColumnName());
+            return true;
+        }
+    }
+
+    private static void checkIdentifier(SQLIdentifierExpr identifier) {
+        if (isExtractUnit(identifier)) {
+            return;
+        }
+        requireQuotedIdentifier(identifier.getName());
+    }
+
+    private static boolean isExtractUnit(SQLIdentifierExpr identifier) {
+        SQLObject parent = identifier.getParent();
+        if (!(parent instanceof SQLMethodInvokeExpr)) {
+            return false;
+        }
+        SQLMethodInvokeExpr call = (SQLMethodInvokeExpr) parent;
+        return "EXTRACT".equalsIgnoreCase(call.getMethodName())
+                && !call.getArguments().isEmpty()
+                && call.getArguments().get(0) == identifier;
+    }
+
+    private static void checkProperty(SQLPropertyExpr property) {
+        if (!isStarProperty(property)) {
+            requireQuotedIdentifier(property.getName());
+        }
+    }
+
+    private static void checkTableSource(SQLTableSource source) {
+        requireQuotedIdentifier(source.getAlias());
+    }
+
+    private static void checkColumnNames(java.util.List<SQLName> columns) {
+        if (columns == null) {
+            return;
+        }
+        for (SQLName column : columns) {
+            requireQuotedIdentifier(column == null ? null : column.toString());
+        }
     }
 
     private static void requireQuotedIdentifier(String name) {

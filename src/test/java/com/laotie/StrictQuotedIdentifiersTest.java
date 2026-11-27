@@ -141,6 +141,61 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void oracleQuotedInsertIsAccepted() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.oracle, strict()).scan(
+                "INSERT INTO \"t\" (\"c\") SELECT \"c\" FROM \"a\";");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
+    @Test
+    public void postgresReturningColumnMustBeQuoted() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("UPDATE \"t\" SET \"c\" = 1 RETURNING c;")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("UPDATE \"t\" SET \"c\" = 1 RETURNING \"c\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void mysqlDuplicateKeyColumnMustBeQuoted() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.mysql, strict())
+                .scan("INSERT INTO `t` (`c`) SELECT `c` FROM `s`"
+                        + " ON DUPLICATE KEY UPDATE c = 1;")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.mysql, strict())
+                .scan("INSERT INTO `t` (`c`) SELECT `c` FROM `s`"
+                        + " ON DUPLICATE KEY UPDATE `c` = 1;")
+                .getFailures().size());
+    }
+
+    @Test
+    public void derivedColumnDeclarationMustBeQuoted() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("SELECT \"q\".\"k\" FROM"
+                        + " (SELECT \"c\" FROM \"t\") AS \"q\"(k);")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("SELECT \"q\".\"k\" FROM"
+                        + " (SELECT \"c\" FROM \"t\") AS \"q\"(\"k\");")
+                .getFailures().size());
+    }
+
+    @Test
+    public void extractUnitIsNotAColumnReference() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, strict()).scan(
+                "SELECT EXTRACT(YEAR FROM \"c\") FROM \"t\";");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

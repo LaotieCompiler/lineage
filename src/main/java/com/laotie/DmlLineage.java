@@ -3773,7 +3773,8 @@ public class DmlLineage {
                 for (String alias : frame.keySet()) {
                     // The frame key is already the normalized identifier; folding it
                     // again would lose a quoted spelling (for example "X").
-                    seedLocals.put(alias, null);
+                    // Only the name set is seeded; a CTE shadows an outer alias
+                    // only where a FROM actually reads it.
                     seedCtes.add(alias);
                 }
             }
@@ -5851,7 +5852,10 @@ public class DmlLineage {
             collectLocalNames(block.getFrom(), frameLocals, ctes);
             // A local table shadows an inherited short name.
             locals.putAll(frameLocals);
-            learnJoinConditions(block.getFrom(), locals, ctes);
+            // A non-LATERAL derived body and a JOIN ON see the enclosing scope,
+            // not the other sibling sources of this FROM.
+            learnDerivedBodies(block.getFrom(), inheritedLocals, ctes);
+            learnJoinConditions(block.getFrom(), inheritedLocals, ctes);
             for (SQLSelectItem item : block.getSelectList()) {
                 learnExplicitReferences(item.getExpr(), locals, ctes);
             }
@@ -5867,6 +5871,24 @@ public class DmlLineage {
         }
     }
 
+    private void learnDerivedBodies(SQLTableSource from,
+            Map<String, String> inheritedLocals, Set<String> ctes) {
+        if (from == null) {
+            return;
+        }
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            learnDerivedBodies(join.getLeft(), inheritedLocals, ctes);
+            learnDerivedBodies(join.getRight(), inheritedLocals, ctes);
+        } else if (from instanceof SQLSubqueryTableSource) {
+            learnSelectExplicitReferences(((SQLSubqueryTableSource) from).getSelect(),
+                    inheritedLocals, ctes);
+        } else if (from instanceof SQLUnionQueryTableSource) {
+            learnSelectExplicitReferences(((SQLUnionQueryTableSource) from).getUnion(),
+                    inheritedLocals, ctes);
+        }
+    }
+
     private void learnJoinConditions(SQLTableSource from, Map<String, String> locals,
             Set<String> ctes) {
         if (from instanceof SQLJoinTableSource) {
@@ -5876,8 +5898,9 @@ public class DmlLineage {
             collectLocalNames(join.getRight(), subtree, ctes);
             Map<String, String> conditionLocals = new HashMap<>(locals);
             conditionLocals.putAll(subtree);
-            learnJoinConditions(join.getLeft(), conditionLocals, ctes);
-            learnJoinConditions(join.getRight(), conditionLocals, ctes);
+            // A child join's ON cannot see the parent join's other side.
+            learnJoinConditions(join.getLeft(), locals, ctes);
+            learnJoinConditions(join.getRight(), locals, ctes);
             if (join.getCondition() != null) {
                 // An ON condition sees the joined subtree's aliases even when the
                 // whole join is aliased for the outer query.
@@ -5941,13 +5964,11 @@ public class DmlLineage {
             if (subquery.getAlias() != null) {
                 locals.put(qualifiedKey(subquery.getAlias()), null);
             }
-            learnSelectExplicitReferences(subquery.getSelect(), locals, ctes);
         } else if (from instanceof SQLUnionQueryTableSource) {
             SQLUnionQueryTableSource union = (SQLUnionQueryTableSource) from;
             if (union.getAlias() != null) {
                 locals.put(qualifiedKey(union.getAlias()), null);
             }
-            learnSelectExplicitReferences(union.getUnion(), locals, ctes);
         }
     }
 

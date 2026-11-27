@@ -376,14 +376,19 @@ public class DmlLineage {
                 requireQuotedIdentifier(
                         insert.getOnConflictConstraint().toString());
             }
-            for (SQLExpr target : insert.getOnConflictTarget()) {
-                if (target != null) {
-                    target.accept(visitor);
+            if (insert.getOnConflictTarget() != null) {
+                for (SQLExpr target : insert.getOnConflictTarget()) {
+                    if (target != null) {
+                        target.accept(visitor);
+                    }
                 }
             }
-            for (SQLUpdateSetItem item : insert.getOnConflictUpdateSetItems()) {
-                if (item != null) {
-                    item.accept(visitor);
+            if (insert.getOnConflictUpdateSetItems() != null) {
+                for (SQLUpdateSetItem item
+                        : insert.getOnConflictUpdateSetItems()) {
+                    if (item != null) {
+                        item.accept(visitor);
+                    }
                 }
             }
             if (insert.getOnConflictWhere() != null) {
@@ -600,12 +605,21 @@ public class DmlLineage {
                 || call.getArguments().get(0) != identifier) {
             return false;
         }
-        if ("EXTRACT".equalsIgnoreCase(call.getMethodName())) {
-            // A schema-qualified s.extract(c, x) is an ordinary function.
-            return call.getOwner() == null;
+        if (call.getOwner() != null) {
+            // A schema-qualified s.extract(c, x) or s.timestampdiff(c, x, y)
+            // is an ordinary function.
+            return false;
         }
-        return "TIMESTAMPDIFF".equalsIgnoreCase(call.getMethodName())
-                || "TIMESTAMPADD".equalsIgnoreCase(call.getMethodName());
+        String method = call.getMethodName();
+        return "EXTRACT".equalsIgnoreCase(method)
+                || "TIMESTAMPDIFF".equalsIgnoreCase(method)
+                || "TIMESTAMPADD".equalsIgnoreCase(method)
+                || "DATEADD".equalsIgnoreCase(method)
+                || "DATEDIFF".equalsIgnoreCase(method)
+                || "DATEDIFF_BIG".equalsIgnoreCase(method)
+                || "DATEPART".equalsIgnoreCase(method)
+                || "DATENAME".equalsIgnoreCase(method)
+                || "DATETRUNC".equalsIgnoreCase(method);
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

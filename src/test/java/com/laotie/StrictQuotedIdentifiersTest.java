@@ -251,6 +251,35 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void postgresInsertWithoutConflictListsIsAccepted() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("INSERT INTO \"t\" (\"c\") SELECT \"c\" FROM \"s\";")
+                .getFailures().size());
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.postgresql, strict())
+                .scan("INSERT INTO \"t\" (\"c\") SELECT \"c\" FROM \"s\""
+                        + " ON CONFLICT (\"c\") DO NOTHING;")
+                .getFailures().size());
+    }
+
+    @Test
+    public void schemaQualifiedTimestampdiffIsNotAUnit() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.mysql, strict())
+                .scan("SELECT `s`.timestampdiff(c, `x`, `y`) FROM `t`;")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.mysql, strict())
+                .scan("SELECT `s`.timestampdiff(`c`, `x`, `y`) FROM `t`;")
+                .getFailures().size());
+    }
+
+    @Test
+    public void sqlServerDateaddUnitIsNotAColumn() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("SELECT DATEADD(DAY, 1, [c]) FROM [t];")
+                .getFailures().size());
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

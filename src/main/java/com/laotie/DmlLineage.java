@@ -2985,6 +2985,33 @@ public class DmlLineage {
     private void recordOuterIdentifier(String rawName, String target,
             String targetName, int position) {
         String key = identifierKey(rawName);
+        Map<String, List<SourceTable>> using = stackUsing.isEmpty()
+                ? null : stackUsing.peek();
+        if (using != null && using.containsKey(key)) {
+            List<SourceTable> participants = using.get(key);
+            List<SourceTable> sides = participantsForCurrentUsing(key);
+            List<SourceTable> extras = new ArrayList<>();
+            for (SourceTable source : currentSources()) {
+                if (participants.contains(source) || sides.contains(source)) {
+                    continue;
+                }
+                if (ownsOuterColumn(source, key)
+                        || !sourceColumnNamesKnown(source)) {
+                    extras.add(source);
+                }
+            }
+            if (!extras.isEmpty()) {
+                List<SourceTable> all = new ArrayList<>(participants);
+                all.addAll(extras);
+                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
+                        displayNames(all));
+            }
+            for (SourceTable source : participants) {
+                String column = resolveOuterColumn(source, rawName);
+                addOuterColumnMapping(source, column, target, targetName, position);
+            }
+            return;
+        }
         List<StarOutput> matchedOutputs = new ArrayList<>();
         List<StarOutput> planned = stackStarPlan.isEmpty()
                 ? java.util.Collections.<StarOutput>emptyList()
@@ -3224,7 +3251,7 @@ public class DmlLineage {
         }
         for (String table : tables) {
             if (targetColumn != null) {
-                String rendered = renderIdentifier(targetColumn);
+                String rendered = targetColumn;
                 Instruction edge = new Instruction(OperationType.COLUMNS_INJECT,
                         table, targetTable + "(" + rendered + ")", -1, false, false);
                 edge.setPositionalWildcard(true);
@@ -3399,7 +3426,11 @@ public class DmlLineage {
         }
         if (expr instanceof SQLQueryExpr) {
             ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) expr);
-            if (inner == null || inner.columns.isEmpty()) {
+            if (inner == null) {
+                return;
+            }
+            if (inner.columns.isEmpty()) {
+                recordScalarTableLevel(inner, targetTable, position, null);
                 return;
             }
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
@@ -3728,6 +3759,11 @@ public class DmlLineage {
         stackTargetColumn.push(targetColumn);
         int before = instructions.size();
         inTargetExpression = true;
+        if (metadataPass) {
+            // Discover every explicit reference even when an earlier part of the
+            // expression cannot be resolved.
+            learnExplicitReferences(item.getExpr());
+        }
         visitExpr(item.getExpr());
         inTargetExpression = false;
         boolean uncertain = uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal;
@@ -5595,6 +5631,74 @@ public class DmlLineage {
             validateUnboundQualified(((SQLUnaryExpr) expr).getExpr());
         } else if (expr instanceof SQLExtractExpr) {
             validateUnboundQualified(((SQLExtractExpr) expr).getValue());
+        }
+    }
+
+    private void learnExplicitReferences(SQLExpr expr) {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof SQLPropertyExpr) {
+            SQLPropertyExpr property = (SQLPropertyExpr) expr;
+            if (!isStarProperty(property)) {
+                String rawName = property.getName();
+                CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
+                SourceTable source = correlated == null ? null : correlated.source;
+                if (source != null) {
+                    learnColumn(source, rawName, true);
+                } else if (property.getOwner() != null) {
+                    String key = learnedTableKey(property.getOwner().toString());
+                    pendingLearned.computeIfAbsent(key,
+                            k -> new LinkedHashSet<String>())
+                            .add(identifierKey(rawName));
+                }
+            }
+            return;
+        }
+        if (expr instanceof SQLBinaryOpExpr) {
+            learnExplicitReferences(((SQLBinaryOpExpr) expr).getLeft());
+            learnExplicitReferences(((SQLBinaryOpExpr) expr).getRight());
+        } else if (expr instanceof SQLMethodInvokeExpr) {
+            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
+                learnExplicitReferences(argument);
+            }
+        } else if (expr instanceof SQLCastExpr) {
+            learnExplicitReferences(((SQLCastExpr) expr).getExpr());
+        } else if (expr instanceof SQLNotExpr) {
+            learnExplicitReferences(((SQLNotExpr) expr).getExpr());
+        } else if (expr instanceof SQLUnaryExpr) {
+            learnExplicitReferences(((SQLUnaryExpr) expr).getExpr());
+        } else if (expr instanceof SQLBetweenExpr) {
+            SQLBetweenExpr between = (SQLBetweenExpr) expr;
+            learnExplicitReferences(between.getTestExpr());
+            learnExplicitReferences(between.getBeginExpr());
+            learnExplicitReferences(between.getEndExpr());
+        } else if (expr instanceof SQLCaseExpr) {
+            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
+            learnExplicitReferences(caseExpr.getValueExpr());
+            if (caseExpr.getItems() != null) {
+                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
+                    learnExplicitReferences(caseItem.getConditionExpr());
+                    learnExplicitReferences(caseItem.getValueExpr());
+                }
+            }
+            learnExplicitReferences(caseExpr.getElseExpr());
+        } else if (expr instanceof SQLListExpr) {
+            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
+                learnExplicitReferences(element);
+            }
+        } else if (expr instanceof SQLInListExpr) {
+            SQLInListExpr in = (SQLInListExpr) expr;
+            learnExplicitReferences(in.getExpr());
+            if (in.getTargetList() != null) {
+                for (SQLExpr element : in.getTargetList()) {
+                    learnExplicitReferences(element);
+                }
+            }
+        } else if (expr instanceof SQLInSubQueryExpr) {
+            learnExplicitReferences(((SQLInSubQueryExpr) expr).getExpr());
+        } else if (expr instanceof SQLExtractExpr) {
+            learnExplicitReferences(((SQLExtractExpr) expr).getValue());
         }
     }
 

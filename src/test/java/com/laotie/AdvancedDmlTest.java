@@ -511,4 +511,42 @@ public class AdvancedDmlTest {
                 sources(result, "t.c1"));
         assertFalse(sources(result, "t.c1").contains(new Column("a.c1")));
     }
+    @Test
+    public void quotedScalarUpdateTargetKeepsItsIdentity() {
+        MetadataContext context = catalog("CREATE TABLE t (\"a.b\" INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("UPDATE t SET \"a.b\" = (SELECT * FROM sch.missing);"
+                        + " SELECT \"a.b\" FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("sch.missing.*"))),
+                sources(result, "t.\"a.b\""));
+    }
+
+    @Test
+    public void compositeScalarWithoutOuterFromKeepsTableLevel() {
+        MetadataContext context = catalog("CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT 1+(SELECT * FROM sch.missing);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("sch.missing.*"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void mergeScalarUsingKeyMergesItsSides() {
+        MetadataContext context = catalog(
+                "CREATE TABLE t (c2 INT); CREATE TABLE s (c1 INT);"
+                        + " CREATE TABLE b (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s JOIN b USING(c1)) AS src ON true"
+                        + " WHEN MATCHED THEN UPDATE SET c2 = (SELECT c1);");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = sources(result, "t.c2");
+        assertTrue(sources.contains(new Column("s.c1")));
+        assertTrue(sources.contains(new Column("b.c1")));
+    }
+
 }

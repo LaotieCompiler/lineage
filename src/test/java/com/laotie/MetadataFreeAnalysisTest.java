@@ -4162,4 +4162,24 @@ public class MetadataFreeAnalysisTest {
         assertEquals(1, sources.size());
         assertEquals(new Column("a.*"), sources.iterator().next());
     }
+    @Test
+    public void twoPassLearningKeepsOnlySupportedObservations() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT C.z, y FROM C; SELECT A.y, A.x, y FROM A,C;");
+
+        // C.z was only reachable through a failing statement; C stays unknown.
+        ScanResult rescan = scanner.scan("SELECT y FROM C;");
+        assertEquals(0, rescan.getFailures().size());
+    }
+
+    @Test
+    public void metadataDiscoveryWalksTheWholeExpression() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k + A.k + B.y AS z FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
 }

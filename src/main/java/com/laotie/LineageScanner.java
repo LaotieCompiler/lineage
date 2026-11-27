@@ -134,6 +134,21 @@ public class LineageScanner {
             candidate = rebuilt;
             scan = analyze(sqlLog, candidate, true);
         }
+        // Validate the final candidate against the statements that actually succeed;
+        // prefer the variant with fewer failures so no unsupported observation (for
+        // example a guess that makes its own statement fail) is persisted.
+        LearnedMetadata supported = new LearnedMetadata(base);
+        String accepted = successfulSql(scan.getResults());
+        if (!accepted.isEmpty()) {
+            learn(accepted, supported);
+        }
+        if (!supported.sameAs(candidate)) {
+            ScanResult supportedScan = analyze(sqlLog, supported, true);
+            if (supportedScan.getFailures().size() <= scan.getFailures().size()) {
+                candidate = supported;
+                scan = supportedScan;
+            }
+        }
         learnedMetadata.mergeFrom(candidate);
         return scan;
     }

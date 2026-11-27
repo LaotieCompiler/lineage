@@ -1829,7 +1829,7 @@ public class DmlLineage {
         SQLTableSource fromItem = queryBlock.getFrom();
         if (fromItem == null) {
             if (metadataPass) {
-                learnNoFromExplicitReferences(queryBlock, outerBlockLocals());
+                learnNoFromExplicitReferences(queryBlock, outerBlockLocals(true));
             }
             int position = 0;
             int minWidth = 0;
@@ -1923,7 +1923,7 @@ public class DmlLineage {
         stackSourceTable.push(sources.get(0).displayName);
         targetOutputs.computeIfAbsent(stackTargetTable.peek(), k -> new ArrayList<String>());
         if (metadataPass) {
-            learnBlockExplicitReferences(queryBlock, outerBlockLocals());
+            learnBlockExplicitReferences(queryBlock, outerBlockLocals(false));
         }
 
         List<SQLSelectItem> selectItems = queryBlock.getSelectList();
@@ -5641,6 +5641,22 @@ public class DmlLineage {
 
     /** A local short name that matches more than one table in the same frame. */
     private static final String LOCAL_AMBIGUOUS = "\u0000local-ambiguous";
+    /** Separates the tables an alias/join binding may come from. */
+    private static final String LOCAL_TABLE_SEPARATOR = "\u0002";
+
+    private static String joiningTables(Iterable<String> tables) {
+        Set<String> unique = new LinkedHashSet<>();
+        for (String table : tables) {
+            if (table != null && !LOCAL_AMBIGUOUS.equals(table)) {
+                for (String part : table.split(LOCAL_TABLE_SEPARATOR)) {
+                    if (!part.isEmpty()) {
+                        unique.add(part);
+                    }
+                }
+            }
+        }
+        return unique.isEmpty() ? null : String.join(LOCAL_TABLE_SEPARATOR, unique);
+    }
 
     private void learnExplicitReferences(SQLExpr expr) {
         learnExplicitReferences(expr, new HashMap<String, String>(),
@@ -5666,9 +5682,14 @@ public class DmlLineage {
                     String learnedTable = locals.get(ownerKey);
                     if (learnedTable != null
                             && !LOCAL_AMBIGUOUS.equals(learnedTable)) {
-                        pendingLearned.computeIfAbsent(learnedTable,
-                                k -> new LinkedHashSet<String>())
-                                .add(identifierKey(rawName));
+                        for (String table : learnedTable.split(
+                                LOCAL_TABLE_SEPARATOR)) {
+                            if (!table.isEmpty()) {
+                                pendingLearned.computeIfAbsent(table,
+                                        k -> new LinkedHashSet<String>())
+                                        .add(identifierKey(rawName));
+                            }
+                        }
                     }
                     return;
                 }
@@ -5873,9 +5894,13 @@ public class DmlLineage {
         return ctes;
     }
 
-    private Map<String, String> outerBlockLocals() {
+    private Map<String, String> outerBlockLocals(boolean includeCurrentFrame) {
         Map<String, String> locals = new HashMap<>();
-        for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
+        int top = includeCurrentFrame ? stackSources.size() - 1
+                : stackSources.size() - 2;
+        // Far frames first, so a nearer binding overrides an outer one.
+        for (int frame = 0; frame <= top; frame++) {
+            Map<String, String> frameLocals = new HashMap<>();
             Set<SourceTable> hidden = frame < stackHiddenSources.size()
                     ? stackHiddenSources.get(frame)
                     : java.util.Collections.<SourceTable>emptySet();
@@ -5885,19 +5910,51 @@ public class DmlLineage {
                 }
                 String learnedTable = source.temporary || source.rawName == null
                         ? null : learnedTableKey(source.rawName);
+                if (source.alias != null) {
+                    // An alias hides the original table name.
+                    putLocal(frameLocals, qualifiedKey(source.alias), learnedTable);
+                    continue;
+                }
                 for (String reference : new String[] {source.displayName,
-                        source.rawName, source.alias}) {
+                        source.rawName}) {
                     if (reference != null) {
-                        locals.put(qualifiedKey(reference), learnedTable);
+                        putLocal(frameLocals, qualifiedKey(reference), learnedTable);
                     }
                 }
-                if (source.alias == null && source.rawName != null
-                        && !isSingleSegmentName(source.rawName)) {
-                    locals.put(qualifiedKey(lastSegment(source.rawName)), learnedTable);
+                if (source.rawName != null && !isSingleSegmentName(source.rawName)) {
+                    putLocal(frameLocals, qualifiedKey(lastSegment(source.rawName)),
+                            learnedTable);
                 }
             }
+            if (frame < stackJoinBindings.size()) {
+                for (Map.Entry<String, SourceNode> binding
+                        : stackJoinBindings.get(frame).entrySet()) {
+                    List<String> tables = new ArrayList<>();
+                    for (SourceTable source : binding.getValue().sources) {
+                        if (!source.temporary && source.rawName != null) {
+                            tables.add(learnedTableKey(source.rawName));
+                        }
+                    }
+                    putLocal(frameLocals, binding.getKey(), joiningTables(tables));
+                }
+            }
+            locals.putAll(frameLocals);
         }
         return locals;
+    }
+
+    private static void putLocal(Map<String, String> locals, String key,
+            String learnedTable) {
+        if (key == null) {
+            return;
+        }
+        if (locals.containsKey(key)
+                && !String.valueOf(learnedTable).equals(
+                        String.valueOf(locals.get(key)))) {
+            locals.put(key, LOCAL_AMBIGUOUS);
+            return;
+        }
+        locals.put(key, learnedTable);
     }
 
     private void learnNoFromExplicitReferences(SQLSelectQueryBlock block,
@@ -5918,7 +5975,8 @@ public class DmlLineage {
         collectFromNames(block.getFrom(), fromNames);
         learnDerivedBodies(block.getFrom(), inherited, ctes);
         learnJoinConditions(block.getFrom(), inherited, ctes, fromNames);
-        Map<String, String> locals = new HashMap<>(frameLocals);
+        Map<String, String> locals = new HashMap<>(inherited);
+        locals.putAll(frameLocals);
         for (SQLSelectItem item : block.getSelectList()) {
             learnExplicitReferences(item.getExpr(), locals, ctes);
         }
@@ -5963,8 +6021,10 @@ public class DmlLineage {
             collectLocalNames(join.getLeft(), childLocals, ctes);
             collectLocalNames(join.getRight(), childLocals, ctes);
             if (join.getAlias() != null) {
-                // An alias hides every qualifier inside the joined subtree.
-                locals.put(qualifiedKey(join.getAlias()), null);
+                // An alias hides every qualifier inside the joined subtree, but it
+                // stands for all of the subtree's tables.
+                locals.put(qualifiedKey(join.getAlias()),
+                        joiningTables(childLocals.values()));
             }
         } else if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;

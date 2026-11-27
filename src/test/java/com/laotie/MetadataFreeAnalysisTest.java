@@ -4653,4 +4653,74 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.k")));
     }
 
+    @Test
+    public void noFromBlockSeesItsEnclosingFrame() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " UPDATE t SET v = (SELECT 1 WHERE q.k = 1) FROM A AS q;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void blockProjectionSeesAnInheritedAlias() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " UPDATE t SET v = (SELECT 1 FROM Z"
+                        + " WHERE q.k = 1 LIMIT 1) FROM A AS q;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void nearestOuterBindingWins() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " UPDATE t SET v = (SELECT (SELECT 1 FROM Z JOIN W"
+                        + " ON q.k = 1 LIMIT 1) FROM B AS q LIMIT 1)"
+                        + " FROM A AS q;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        // q.k belongs to the nearest B AS q, never to the farther A AS q.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void outerAliasesHideTheirTableNames() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " UPDATE t SET v = (SELECT 1 FROM Z JOIN W"
+                        + " ON A.k = 1 LIMIT 1) FROM A AS q;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void outerDuplicateShortNamesLearnNothing() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM s2.a, C;"
+                        + " UPDATE t SET v = (SELECT 1 FROM Z JOIN W"
+                        + " ON a.k = 1 LIMIT 1) FROM s1.a CROSS JOIN s2.a;"
+                        + " SELECT s2.a.y, C.y FROM s2.a, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
 }

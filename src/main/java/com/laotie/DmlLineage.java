@@ -5946,50 +5946,40 @@ public class DmlLineage {
             schemaDefault = catalog.getDefaultSchema();
         }
 
-        List<TableLocation> filtered = catalog.findAllTables(written,
-                instanceDefault, databaseDefault, schemaDefault);
-
-        if (explicitSchema) {
-            String[] preserved = MetadataCatalog
-                    .splitQualifiedNamePreservingQuotes(written);
-            String schemaRef = null;
-            if (preserved.length >= 3) {
-                schemaRef = preserved[preserved.length - 2];
-            } else if (preserved.length == 2 && !(dialect == DbType.mysql
-                    || dialect == DbType.mariadb)) {
-                schemaRef = preserved[0];
-            }
-            if (schemaRef != null) {
-                List<TableLocation> exact = new ArrayList<>();
-                for (TableLocation candidate : filtered) {
-                    if (schemaMatches(schemaRef, candidate.getSchema())) {
-                        exact.add(candidate);
-                    }
-                }
-                filtered = exact;
-            }
+        String[] preserved = MetadataCatalog
+                .splitQualifiedNamePreservingQuotes(written);
+        String schemaRef = null;
+        if (preserved.length >= 3) {
+            schemaRef = preserved[preserved.length - 2];
+        } else if (preserved.length == 2 && !(dialect == DbType.mysql
+                || dialect == DbType.mariadb)) {
+            schemaRef = preserved[0];
         }
-        if (dialect == DbType.postgresql) {
-            String[] preserved = MetadataCatalog
-                    .splitQualifiedNamePreservingQuotes(written);
-            String tableRef = preserved[preserved.length - 1];
-            String tableName = MetadataCatalog.normalizeIdentifier(tableRef);
+        String tableRef = preserved[preserved.length - 1];
+        boolean pgPublic = dialect == DbType.postgresql && explicitSchema
+                && isPostgresPublic(schemaRef);
+        String lookupReference = written;
+        String lookupSchemaDefault = schemaDefault;
+        if (pgPublic) {
+            lookupReference = tableRef;
+            lookupSchemaDefault = null;
+        }
+
+        List<TableLocation> filtered = catalog.findAllTables(lookupReference,
+                instanceDefault, databaseDefault, lookupSchemaDefault);
+
+        if (explicitSchema && schemaRef != null) {
             List<TableLocation> exact = new ArrayList<>();
-            if (MetadataCatalog.isQuotedIdentifier(tableRef)) {
-                for (TableLocation candidate : filtered) {
-                    if (tableName.equals(candidate.getTable().getName())) {
-                        exact.add(candidate);
-                    }
-                }
-            } else {
-                String folded = tableName.toLowerCase(Locale.ROOT);
-                for (TableLocation candidate : filtered) {
-                    if (folded.equals(candidate.getTable().getName())) {
-                        exact.add(candidate);
-                    }
+            for (TableLocation candidate : filtered) {
+                if (schemaMatches(schemaRef, candidate.getSchema())) {
+                    exact.add(candidate);
                 }
             }
-            if (!exact.isEmpty()) {
+            filtered = exact;
+        }
+        if (dialect == DbType.postgresql && explicitSchema) {
+            List<TableLocation> exact = postgresTableMatches(filtered, tableRef);
+            if (!exact.isEmpty() || MetadataCatalog.isQuotedIdentifier(tableRef)) {
                 filtered = exact;
             }
         }
@@ -5999,8 +5989,20 @@ public class DmlLineage {
                     ? sessionRawSchemas : context.getSchemas();
             if (!searchPath.isEmpty()) {
                 for (String schema : searchPath) {
+                    List<TableLocation> inSchema = new ArrayList<>();
                     for (TableLocation candidate : filtered) {
                         if (schemaMatches(schema, candidate.getSchema())) {
+                            inSchema.add(candidate);
+                        }
+                    }
+                    if (dialect == DbType.postgresql) {
+                        List<TableLocation> chosen = postgresTableMatches(
+                                inSchema, tableRef);
+                        if (!chosen.isEmpty()) {
+                            return chosen.get(0);
+                        }
+                    } else {
+                        for (TableLocation candidate : inSchema) {
                             return candidate;
                         }
                     }
@@ -6020,6 +6022,12 @@ public class DmlLineage {
             }
         }
 
+        if (dialect == DbType.postgresql && !explicitSchema) {
+            List<TableLocation> exact = postgresTableMatches(filtered, tableRef);
+            if (!exact.isEmpty() || MetadataCatalog.isQuotedIdentifier(tableRef)) {
+                filtered = exact;
+            }
+        }
         if (filtered.isEmpty()) {
             return missingTable(written);
         }
@@ -6031,6 +6039,40 @@ public class DmlLineage {
             throw new AmbiguousTableException(written, names);
         }
         return filtered.get(0);
+    }
+
+    private static boolean isPostgresPublic(String schemaRef) {
+        if (schemaRef == null) {
+            return false;
+        }
+        String name = MetadataCatalog.normalizeIdentifier(schemaRef);
+        return MetadataCatalog.isQuotedIdentifier(schemaRef)
+                ? "public".equals(name)
+                : "public".equals(name.toLowerCase(Locale.ROOT));
+    }
+
+    private static List<TableLocation> postgresTableMatches(
+            List<TableLocation> candidates, String tableRef) {
+        String tableName = MetadataCatalog.normalizeIdentifier(tableRef);
+        boolean quoted = MetadataCatalog.isQuotedIdentifier(tableRef);
+        List<TableLocation> folded = new ArrayList<>();
+        for (TableLocation candidate : candidates) {
+            String actual = candidate.getTable().getName();
+            if (quoted ? tableName.equals(actual)
+                    : tableName.toLowerCase(Locale.ROOT).equals(actual)) {
+                folded.add(candidate);
+            }
+        }
+        if (!folded.isEmpty() || quoted) {
+            return folded;
+        }
+        List<TableLocation> lenient = new ArrayList<>();
+        for (TableLocation candidate : candidates) {
+            if (tableName.equalsIgnoreCase(candidate.getTable().getName())) {
+                lenient.add(candidate);
+            }
+        }
+        return lenient;
     }
 
     private boolean schemaMatches(String reference, String actual) {

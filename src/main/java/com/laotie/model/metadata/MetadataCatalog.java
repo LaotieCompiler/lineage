@@ -417,6 +417,20 @@ public class MetadataCatalog {
             throw new MetadataNotFoundException(display);
         }
         if (exact.size() > 1) {
+            List<TableLocation> sameCase = new ArrayList<>();
+            for (TableLocation candidate : exact) {
+                if (candidate.getDisplayName().equals(display)) {
+                    sameCase.add(candidate);
+                }
+            }
+            if (sameCase.size() == 1) {
+                return sameCase.get(0);
+            }
+            if (!sameCase.isEmpty()) {
+                exact = sameCase;
+            }
+        }
+        if (exact.size() > 1) {
             List<String> candidates = new ArrayList<>();
             for (TableLocation match : exact) {
                 candidates.add(match.getQualifiedName());

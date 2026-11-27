@@ -1,6 +1,7 @@
 package com.laotie;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -363,6 +364,76 @@ public class CrossDatabaseSchemaTest {
         assertEquals(new HashSet<>(Arrays.asList(new Column("s2.a.k"))),
                 result.getGraph().getSources(
                         Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
+    public void quotedTableAbsentFromExactCaseIsMissing() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM s.\"A\";");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof com.laotie.exception.MetadataNotFoundException);
+    }
+
+    @Test
+    public void searchPathOrderBeatsLowercasePreference() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.A (k INT);"
+                + " CREATE TABLE s2.a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO s1, s2; SELECT k FROM a;"
+                        + " SET search_path TO s1; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s1.A.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s1.A.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt3.temp0.k")));
+    }
+
+    @Test
+    public void caseDistinctInsertTargetKeepsCatalogOrder() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.t (a INT, b INT);"
+                + " CREATE TABLE s.\"T\" (b INT, a INT);"
+                + " CREATE TABLE s.src (x INT, y INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "INSERT INTO s.\"T\" SELECT x, y FROM s.src;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.src.x"))),
+                result.getGraph().getSources(new Column("s.T.b")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.src.y"))),
+                result.getGraph().getSources(new Column("s.T.a")));
+    }
+
+    @Test
+    public void explicitPublicMatchesImplicitSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO public; SELECT k FROM a;"
+                        + " SELECT k FROM public.a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt2.temp0.k")));
     }
 
     @Test

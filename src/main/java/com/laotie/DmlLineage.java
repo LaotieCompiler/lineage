@@ -236,7 +236,8 @@ public class DmlLineage {
 
     private void learnColumn(SourceTable source, String columnName, boolean explicit) {
         if (learningDisabled || learnedMetadata == null || source == null
-                || source.temporary || source.rawName == null || columnName == null
+                || source.temporary || !source.learnable
+                || source.rawName == null || columnName == null
                 || metadataPass && !explicit) {
             return;
         }
@@ -5020,7 +5021,8 @@ public class DmlLineage {
                 minOutputColumns,
                 metadataTable != null ? java.util.Collections.<SourceTable>emptyList()
                         : copyUnknownGroups(cteTarget, outputColumns.size()),
-                false, hasWildcardContribution(cteTarget));
+                false, hasWildcardContribution(cteTarget),
+                isPhysicalTableExpression(table));
     }
 
     private int targetMinimumColumns(String target, boolean widthKnown, int outputCount) {
@@ -5697,20 +5699,6 @@ public class DmlLineage {
         return decoded.toString();
     }
 
-    private static String joiningTables(Iterable<String> tables) {
-        Set<String> unique = new LinkedHashSet<>();
-        for (String table : tables) {
-            if (table != null && !LOCAL_AMBIGUOUS.equals(table)) {
-                for (String part : table.split(LOCAL_TABLE_SEPARATOR)) {
-                    if (!part.isEmpty()) {
-                        unique.add(part);
-                    }
-                }
-            }
-        }
-        return unique.isEmpty() ? null : String.join(LOCAL_TABLE_SEPARATOR, unique);
-    }
-
     private void learnExplicitReferences(SQLExpr expr) {
         learnExplicitReferences(expr, new HashMap<String, String>(),
                 new HashSet<String>());
@@ -5744,14 +5732,9 @@ public class DmlLineage {
                         // nothing can be attributed safely.
                     } else if (learnedTable != null
                             && !LOCAL_AMBIGUOUS.equals(learnedTable)) {
-                        for (String table : learnedTable.split(
-                                LOCAL_TABLE_SEPARATOR)) {
-                            if (!table.isEmpty()) {
-                                pendingLearned.computeIfAbsent(table,
-                                        k -> new LinkedHashSet<String>())
-                                        .add(identifierKey(rawName));
-                            }
-                        }
+                        pendingLearned.computeIfAbsent(learnedTable,
+                                k -> new LinkedHashSet<String>())
+                                .add(identifierKey(rawName));
                     }
                     return;
                 }
@@ -8980,6 +8963,7 @@ public class DmlLineage {
         private final int minOutputColumns;
         private final boolean wildcardOnly;
         private final boolean wildcardContribution;
+        private final boolean learnable;
 
         private SourceTable(String displayName, String writtenName, String rawName, String alias,
                 Table metadataTable, boolean temporary, boolean outputWidthKnown,
@@ -8997,6 +8981,18 @@ public class DmlLineage {
                 List<Boolean> outputNameKnown, int minOutputColumns,
                 List<SourceTable> outputUnknownGroups, boolean wildcardOnly,
                 boolean wildcardContribution) {
+            this(displayName, writtenName, rawName, alias, metadataTable, temporary,
+                    outputWidthKnown, outputNamesKnown, outputColumns, outputKeys,
+                    outputNameKnown, minOutputColumns, outputUnknownGroups, wildcardOnly,
+                    wildcardContribution, true);
+        }
+
+        private SourceTable(String displayName, String writtenName, String rawName, String alias,
+                Table metadataTable, boolean temporary, boolean outputWidthKnown,
+                boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
+                List<Boolean> outputNameKnown, int minOutputColumns,
+                List<SourceTable> outputUnknownGroups, boolean wildcardOnly,
+                boolean wildcardContribution, boolean learnable) {
             this.displayName = displayName;
             this.writtenName = writtenName;
             this.rawName = rawName;
@@ -9016,6 +9012,7 @@ public class DmlLineage {
                     ? java.util.Collections.<SourceTable>emptyList() : outputUnknownGroups;
             this.wildcardOnly = wildcardOnly;
             this.wildcardContribution = wildcardContribution;
+            this.learnable = learnable;
         }
     }
 

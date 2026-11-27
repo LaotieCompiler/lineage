@@ -202,6 +202,103 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void explicitQuotedSchemaIsNotAmbiguous() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.a (k INT);"
+                + " CREATE TABLE \"S\".a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM \"S\".a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("S.a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void hiveUseOverridesCatalogDefaultSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+        catalog.loadDdl("CREATE TABLE db1.a (c INT);"
+                + " CREATE TABLE db2.a (c INT);");
+        catalog.setDefaultSchema("db1");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "USE db2; SELECT c FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.a.c"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.c")));
+    }
+
+    @Test
+    public void hiveCatalogDefaultDatabaseResolvesAsSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+        catalog.loadDdl("CREATE TABLE db1.a (c INT);"
+                + " CREATE TABLE db2.a (c INT);");
+        catalog.setDefaultDatabase("db2");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT c FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.a.c"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.c")));
+    }
+
+    @Test
+    public void mysqlUseKeepsQuotedDatabaseIdentity() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.mysql, optional()).scan(
+                "USE `db.one`;"
+                        + " INSERT INTO t (k) SELECT a.x FROM a;"
+                        + " SELECT k AS copied FROM `db.one`.t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("`db.one`.a.x"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt2.temp0.copied")));
+    }
+
+    @Test
+    public void mysqlReplaceValuesUsesSessionDatabase() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE db1.a (x INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "USE db1;"
+                        + " REPLACE INTO t(k) VALUES ((SELECT x FROM a));"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db1.a.x"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt2.temp0.copied")));
+    }
+
+    @Test
+    public void searchPathSeparatesUncatalogedTargets() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, optional()).scan(
+                "SET search_path TO s1;"
+                        + " INSERT INTO t(k) SELECT a.x FROM a;"
+                        + " SET search_path TO s2;"
+                        + " INSERT INTO t(k) SELECT b.y FROM b;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s2.b.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt4.temp0.copied")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

@@ -172,6 +172,7 @@ public class DmlLineage {
     private final LineageOptions options;
     private LearnedMetadata learnedMetadata;
     private String sessionDatabase;
+    private String sessionRawDatabase;
     private String sessionSchema;
     private List<String> sessionRawSchemas = new ArrayList<>();
     private Map<String, Set<String>> pendingLearned = new HashMap<>();
@@ -316,6 +317,7 @@ public class DmlLineage {
         this.context = effectiveContext();
         this.statementSql = null;
         this.sessionRawSchemas = new ArrayList<>();
+        this.sessionRawDatabase = null;
         try {
             if (options.isStrictQuotedIdentifiers()) {
                 validateQuotedIdentifiers(statement);
@@ -1007,6 +1009,7 @@ public class DmlLineage {
         this.context = working;
         this.tempTableNum = 0;
         this.sessionDatabase = session.database;
+        this.sessionRawDatabase = session.rawDatabase;
         this.sessionRawSchemas = new ArrayList<>(session.rawSchemas);
         List<String> rawSchemas = session.rawSchemas.isEmpty()
                 ? session.schemas : session.rawSchemas;
@@ -1055,6 +1058,7 @@ public class DmlLineage {
     private void applyUse(SQLUseStatement use, SessionState session) {
         if (use.getDatabase() != null) {
             session.database = normalizeIdentifier(use.getDatabase().toString());
+            session.rawDatabase = use.getDatabase().toString().trim();
         }
     }
 
@@ -5926,12 +5930,41 @@ public class DmlLineage {
         String schemaDefault;
         if (explicitSchema || !context.getSchemas().isEmpty()) {
             schemaDefault = null;
+        } else if (hiveFamily) {
+            if (context.getDatabase() != null) {
+                schemaDefault = null;
+            } else if (catalog.getDefaultSchema() != null) {
+                schemaDefault = catalog.getDefaultSchema();
+            } else {
+                schemaDefault = catalog.getDefaultDatabase();
+            }
         } else {
             schemaDefault = catalog.getDefaultSchema();
         }
 
         List<TableLocation> filtered = catalog.findAllTables(written,
                 instanceDefault, databaseDefault, schemaDefault);
+
+        if (explicitSchema) {
+            String[] preserved = MetadataCatalog
+                    .splitQualifiedNamePreservingQuotes(written);
+            String schemaRef = null;
+            if (preserved.length >= 3) {
+                schemaRef = preserved[preserved.length - 2];
+            } else if (preserved.length == 2 && !(dialect == DbType.mysql
+                    || dialect == DbType.mariadb)) {
+                schemaRef = preserved[0];
+            }
+            if (schemaRef != null) {
+                List<TableLocation> exact = new ArrayList<>();
+                for (TableLocation candidate : filtered) {
+                    if (schemaMatches(schemaRef, candidate.getSchema())) {
+                        exact.add(candidate);
+                    }
+                }
+                filtered = exact;
+            }
+        }
 
         if (!explicitSchema) {
             List<String> searchPath = !sessionRawSchemas.isEmpty()
@@ -5973,12 +6006,18 @@ public class DmlLineage {
     }
 
     private boolean schemaMatches(String reference, String actual) {
-        if (reference == null || actual == null) {
+        if (reference == null) {
             return false;
+        }
+        DbType dialect = currentDialect();
+        if (actual == null) {
+            // An unqualified catalog table lives in the default schema.
+            return dialect == DbType.postgresql
+                    && "public".equalsIgnoreCase(
+                            MetadataCatalog.normalizeIdentifier(reference));
         }
         boolean quoted = MetadataCatalog.isQuotedIdentifier(reference);
         String name = MetadataCatalog.normalizeIdentifier(reference);
-        DbType dialect = currentDialect();
         if (dialect == DbType.postgresql) {
             return quoted ? name.equals(actual)
                     : name.toLowerCase(Locale.ROOT).equals(actual);
@@ -8339,11 +8378,27 @@ public class DmlLineage {
 
     private String sessionPhysicalReference(String rawName) {
         String reference = rawName;
-        if (sessionDatabase != null && rawName != null
+        String prefix = sessionReferencePrefix();
+        if (prefix != null && rawName != null
                 && isSingleSegmentName(rawName)) {
-            reference = sessionDatabase + "." + rawName;
+            reference = prefix + "." + rawName;
         }
         return canonicalPhysicalReference(reference);
+    }
+
+    private String sessionReferencePrefix() {
+        DbType dialect = currentDialect();
+        if (dialect == DbType.postgresql && !sessionRawSchemas.isEmpty()) {
+            return sessionRawSchemas.get(0);
+        }
+        if (sessionDatabase != null) {
+            return sessionRawDatabase != null ? sessionRawDatabase
+                    : sessionDatabase;
+        }
+        if (!sessionRawSchemas.isEmpty()) {
+            return sessionRawSchemas.get(0);
+        }
+        return null;
     }
 
     private String foldName(String name) {
@@ -9424,6 +9479,8 @@ public class DmlLineage {
             if (location != null) {
                 tableName = location.getDisplayName();
                 targetMetadata = location.getTable();
+            } else if (detachedMetadata() && rawName != null) {
+                tableName = sessionPhysicalReference(rawName);
             }
         }
         registerTable(written, tableName, tableName, tableSource.getAlias() == null
@@ -10466,6 +10523,7 @@ public class DmlLineage {
         private String database;
         private List<String> schemas = new ArrayList<>();
         private List<String> rawSchemas = new ArrayList<>();
+        private String rawDatabase;
         private boolean ansiEnabled;
         private boolean ansiDoubleQuotedIdentifiers;
 

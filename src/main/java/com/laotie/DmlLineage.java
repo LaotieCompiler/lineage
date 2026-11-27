@@ -311,8 +311,13 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     public List<Instruction> getLineage(SQLStatement statement) {
+        return getLineage(statement, null);
+    }
+
+    private List<Instruction> getLineage(SQLStatement statement, String sourceSql) {
         MetadataContext previous = this.context;
         this.context = effectiveContext();
+        this.statementSql = sourceSql;
         try {
             if (options.isStrictQuotedIdentifiers()) {
                 validateQuotedIdentifiers(statement);
@@ -328,7 +333,7 @@ public class DmlLineage {
     }
 
     public List<Instruction> getLineage(String sqlStr) {
-        return getLineage(parseStatement(sqlStr));
+        return getLineage(parseStatement(sqlStr), sqlStr);
     }
 
     public SQLStatement parseStatement(String sqlStr) {
@@ -341,13 +346,118 @@ public class DmlLineage {
      * only when the dialect's own parser rejects the statement.
      */
     /**
+     * Mark JDBC escape function names so the validation AST can distinguish the
+     * escape form from an ordinary call of the same name.
+     */
+    private static String markJdbcEscapes(String sql) {
+        StringBuilder out = new StringBuilder(sql.length());
+        int i = 0;
+        while (i < sql.length()) {
+            char ch = sql.charAt(i);
+            if (ch == '\'' || ch == '"' || ch == '`') {
+                char quote = ch;
+                out.append(ch);
+                i++;
+                while (i < sql.length()) {
+                    char c = sql.charAt(i);
+                    out.append(c);
+                    if (c == '\\' && quote == '\'' && i + 1 < sql.length()) {
+                        out.append(sql.charAt(++i));
+                    } else if (c == quote) {
+                        if (i + 1 < sql.length() && sql.charAt(i + 1) == quote) {
+                            out.append(sql.charAt(++i));
+                        } else {
+                            break;
+                        }
+                    }
+                    i++;
+                }
+                i++;
+                continue;
+            }
+            if (ch == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
+                int end = sql.indexOf('\n', i);
+                if (end < 0) {
+                    out.append(sql, i, sql.length());
+                    break;
+                }
+                out.append(sql, i, end + 1);
+                i = end + 1;
+                continue;
+            }
+            if (ch == '/' && i + 1 < sql.length() && sql.charAt(i + 1) == '*') {
+                int end = sql.indexOf("*/", i + 2);
+                if (end < 0) {
+                    out.append(sql, i, sql.length());
+                    break;
+                }
+                out.append(sql, i, end + 2);
+                i = end + 2;
+                continue;
+            }
+            if (ch == '{') {
+                int[] span = jdbcEscapeMethod(sql, i);
+                if (span != null) {
+                    out.append(sql, i, span[0]);
+                    out.append("LO_JDBC_");
+                    out.append(sql, span[0], span[1]);
+                    i = span[1];
+                    continue;
+                }
+            }
+            out.append(ch);
+            i++;
+        }
+        return out.toString();
+    }
+
+    private static int[] jdbcEscapeMethod(String sql, int brace) {
+        int i = brace + 1;
+        while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
+            i++;
+        }
+        if (i + 2 > sql.length()
+                || !sql.regionMatches(true, i, "fn", 0, 2)) {
+            return null;
+        }
+        i += 2;
+        if (i >= sql.length() || !Character.isWhitespace(sql.charAt(i))) {
+            return null;
+        }
+        while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
+            i++;
+        }
+        int start = i;
+        if (i >= sql.length()
+                || !(Character.isLetter(sql.charAt(i)) || sql.charAt(i) == '_'
+                        || sql.charAt(i) == '$')) {
+            return null;
+        }
+        i++;
+        while (i < sql.length() && isIdentifierChar(sql.charAt(i))) {
+            i++;
+        }
+        return new int[] {start, i};
+    }
+
+    /**
      * Strict quoted syntax: every table and column reference (and table alias /
      * CTE name, which act as qualifiers) must carry identifier quotes.
      */
     private void validateQuotedIdentifiers(SQLStatement statement) {
         DbType dialect = currentDialect();
-        boolean jdbcEscape = statementSql != null
-                && statementSql.toLowerCase(Locale.ROOT).contains("{fn");
+        boolean unknownSource = statementSql == null;
+        if (dialect == DbType.derby && statementSql != null) {
+            String marked = markJdbcEscapes(statementSql);
+            if (!marked.equals(statementSql)) {
+                try {
+                    statement = parseWithDialectFallback(marked, dialect);
+                } catch (RuntimeException ignored) {
+                    // Validate the original AST if the marker form is rejected.
+                }
+            }
+        }
+        boolean jdbcEscape = unknownSource;
         SQLASTVisitor visitor;
         switch (dialect) {
             case oracle:
@@ -666,6 +776,11 @@ public class DmlLineage {
             return false;
         }
         String method = call.getMethodName();
+        boolean jdbcMarked = false;
+        if (method.startsWith("LO_JDBC_")) {
+            jdbcMarked = true;
+            method = method.substring("LO_JDBC_".length());
+        }
         boolean mysqlFamily = dialect == DbType.mysql
                 || dialect == DbType.mariadb;
         boolean hiveFamily = dialect == DbType.hive
@@ -713,7 +828,7 @@ public class DmlLineage {
                 || "TIMESTAMPDIFF".equalsIgnoreCase(method);
         if (dialect == DbType.derby && timestampCall) {
             // Derby only treats the JDBC escape form's unit as a keyword.
-            return jdbcEscape && SQL_TSI_UNITS.contains(upper);
+            return (jdbcMarked || jdbcEscape) && SQL_TSI_UNITS.contains(upper);
         }
         return SQL_TSI_UNITS.contains(upper)
                 || UNIT_KEYWORDS.contains(upper);

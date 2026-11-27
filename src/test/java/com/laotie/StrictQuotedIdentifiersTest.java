@@ -447,6 +447,36 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void jdbcEscapeExemptionIsPerCall() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")},"
+                        + " TIMESTAMPADD(sql_tsi_day, 1) FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+    }
+
+    @Test
+    public void jdbcEscapeAllowsWhitespace() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT { fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                        + " FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void publicLineageApisAcceptJdbcEscape() {
+        String sql = "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                + " FROM \"t\";";
+        LineageOptions options = LineageOptions.of(
+                MetadataMode.OPTIONAL, false, true);
+        DmlLineage byString = new DmlLineage(DbType.derby, options);
+        byString.getLineage(sql);
+
+        DmlLineage byStatement = new DmlLineage(DbType.derby, options);
+        byStatement.getLineage(byStatement.parseStatement(sql));
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

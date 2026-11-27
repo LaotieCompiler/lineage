@@ -14,6 +14,7 @@ import org.junit.Test;
 import com.alibaba.druid.DbType;
 import com.laotie.model.ScanResult;
 import com.laotie.exception.ColumnNotFoundException;
+import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
@@ -367,6 +368,78 @@ public class AdvancedDmlTest {
                 .containsVertex(new Column("t.c1")));
         assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
                 sources(result, "t.c2"));
+    }
+
+    @Test
+    public void mergeUsingAliasHidesUnderlyingTables() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE b (c1 INT, c2 INT);"
+                        + " CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult hidden = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s JOIN b USING(c1)) AS src"
+                        + " ON t.c1 = src.c1"
+                        + " WHEN MATCHED THEN UPDATE SET c2 = s.c2;");
+        assertTrue(hidden.getResults().get(0).getError()
+                instanceof MetadataNotFoundException);
+
+        ScanResult alias = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s JOIN b USING(c1)) AS src"
+                        + " ON t.c1 = src.c1"
+                        + " WHEN MATCHED THEN UPDATE SET c2 = src.c1;");
+        assertEquals(0, alias.getFailures().size());
+        Set<Column> sources = sources(alias, "t.c2");
+        assertTrue(sources.contains(new Column("s.c1")));
+        assertTrue(sources.contains(new Column("b.c1")));
+    }
+
+    @Test
+    public void replaceWithoutColumnListUsesCatalogOrder() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE b (c1 INT); CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("REPLACE INTO t VALUES (0, (SELECT c1 FROM b));");
+
+        assertEquals(0, result.getFailures().size());
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.c1")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c2"));
+    }
+
+    @Test
+    public void replaceQuotedDottedColumnKeepsItsIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl("CREATE TABLE b (c1 INT); CREATE TABLE t (`a.b` INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("REPLACE INTO t(`a.b`) VALUES ((SELECT c1 FROM b));");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.`a.b`"));
+    }
+
+    @Test
+    public void scalarSubqueryMustReturnOneColumn() {
+        MetadataContext context = catalog(
+                "CREATE TABLE b (c1 INT, c2 INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT (SELECT c1,c2 FROM b);");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof IllegalStateException);
+    }
+
+    @Test
+    public void unnamedScalarSubqueryKeepsTableLevelLineage() {
+        MetadataContext context = catalog("CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT (SELECT * FROM missing);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("missing.*"))),
+                sources(result, "t.c1"));
     }
 
     @Test

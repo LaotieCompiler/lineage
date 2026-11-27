@@ -105,6 +105,16 @@ public class DmlLineage {
      * instructions, used for the metadata-discovery pass of a two-pass scan.
      */
     private boolean learningOnly;
+    /**
+     * Metadata-discovery mode: only explicit references are learned, and a statement
+     * that fails elsewhere still publishes what it named explicitly.
+     */
+    private boolean metadataPass;
+    /**
+     * Lineage mode: read the learned metadata but do not change it, so every
+     * statement sees the same picture.
+     */
+    private boolean learningDisabled;
     private Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
 
     private Set<String> tempTables;
@@ -197,6 +207,14 @@ public class DmlLineage {
         this.learningOnly = learningOnly;
     }
 
+    public void setMetadataPass(boolean metadataPass) {
+        this.metadataPass = metadataPass;
+    }
+
+    public void setLearningDisabled(boolean learningDisabled) {
+        this.learningDisabled = learningDisabled;
+    }
+
     public void setLearnedMetadata(LearnedMetadata learnedMetadata) {
         this.learnedMetadata = learnedMetadata;
     }
@@ -206,8 +224,13 @@ public class DmlLineage {
      * resolve an unqualified column against it.
      */
     private void learnColumn(SourceTable source, String columnName) {
-        if (learnedMetadata == null || source == null || source.temporary
-                || source.rawName == null || columnName == null) {
+        learnColumn(source, columnName, false);
+    }
+
+    private void learnColumn(SourceTable source, String columnName, boolean explicit) {
+        if (learningDisabled || learnedMetadata == null || source == null
+                || source.temporary || source.rawName == null || columnName == null
+                || metadataPass && !explicit) {
             return;
         }
         String key = learnedTableKey(source.rawName);
@@ -247,6 +270,10 @@ public class DmlLineage {
      * teach anything.
      */
     private void publishLearned() {
+        if (learningDisabled) {
+            pendingLearned = new HashMap<>();
+            return;
+        }
         if (learnedMetadata != null) {
             for (Map.Entry<String, Set<String>> entry : pendingLearned.entrySet()) {
                 for (String column : entry.getValue()) {
@@ -365,6 +392,10 @@ public class DmlLineage {
             publishLearned();
             return result;
         } catch (Throwable t) {
+            if (metadataPass) {
+                // Discovery keeps the explicit references it already saw.
+                publishLearned();
+            }
             pendingLearned = new HashMap<>();
             return failed(sql, base, session, t);
         } finally {
@@ -3131,6 +3162,42 @@ public class DmlLineage {
         return normalizeIdentifier(rawName);
     }
 
+    /**
+     * Record the tables an unnamed scalar subquery reads as a table-level claim on
+     * the target, so the write keeps its lineage even without a column name.
+     */
+    private void recordScalarTableLevel(ScalarSubquery inner, String targetTable,
+            int position) {
+        String prefix = inner.temp + ".";
+        Set<String> tables = new LinkedHashSet<>();
+        for (Instruction instruction : instructions) {
+            String to = instruction.getTo();
+            if (to == null) {
+                continue;
+            }
+            String base = to.split("\\(")[0];
+            if (!inner.temp.equals(base) && !to.startsWith(prefix)) {
+                continue;
+            }
+            String from = instruction.getFrom();
+            if (from == null) {
+                continue;
+            }
+            int dot = from.lastIndexOf('.');
+            String table = dot >= 0 ? from.substring(0, dot) : from;
+            if (!table.isEmpty()) {
+                tables.add(table);
+            }
+        }
+        for (String table : tables) {
+            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT, table,
+                    targetTable, position, false, tempTables.contains(targetTable));
+            wildcard.setPositionalWildcard(true);
+            instructions.add(wildcard);
+            targetWildcardContribution.put(targetTable, Boolean.TRUE);
+        }
+    }
+
     private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr,
             int position) {
         String targetTable = stackTargetTable.peek();
@@ -3146,7 +3213,11 @@ public class DmlLineage {
     private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr) {
         String targetTable = stackTargetTable.peek();
         ScalarSubquery inner = analyzeScalarSubquery(expr);
-        if (inner == null || inner.columns.isEmpty()) {
+        if (inner == null) {
+            return 1;
+        }
+        if (inner.columns.isEmpty()) {
+            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal);
             return 1;
         }
         List<String> declaredColumns = currentTargetColumnAliases(targetTable);
@@ -3450,6 +3521,10 @@ public class DmlLineage {
         }
         recordTargetShape(target);
         List<String> outputs = copyOutputs(targetOutputs.get(target));
+        if (outputs.size() > 1) {
+            throw new IllegalStateException(
+                    "Scalar subquery must return one column: " + outputs.size());
+        }
         List<String> columns = new ArrayList<>();
         for (String output : outputs) {
             columns.add(output);
@@ -5536,7 +5611,11 @@ public class DmlLineage {
 
     private void visitScalarSubquery(SQLQueryExpr expr) {
         ScalarSubquery inner = analyzeScalarSubquery(expr);
-        if (inner == null || inner.columns.isEmpty()) {
+        if (inner == null) {
+            return;
+        }
+        if (inner.columns.isEmpty()) {
+            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal);
             return;
         }
         String targetTable = stackTargetTable.peek();
@@ -6069,7 +6148,7 @@ public class DmlLineage {
                 && !source.outputKeys.contains(identifierKey(rawName))) {
             throw new ColumnNotFoundException(name, displayNames(currentSources()));
         }
-        learnColumn(source, rawName);
+        learnColumn(source, rawName, true);
         addColumnMapping(source, rawName);
     }
 
@@ -7336,9 +7415,13 @@ public class DmlLineage {
             return;
         }
         List<String> columnNames = new ArrayList<>();
-        if (insertColumns != null) {
+        if (insertColumns != null && !insertColumns.isEmpty()) {
             for (SQLExpr column : insertColumns) {
                 columnNames.add(renderInsertColumn(targetMetadata, tableName, column));
+            }
+        } else if (targetMetadata != null) {
+            for (Column column : targetMetadata.getFields()) {
+                columnNames.add(renderMetadataColumn(column));
             }
         }
         for (SQLInsertStatement.ValuesClause clause : valueClauses) {
@@ -7368,12 +7451,16 @@ public class DmlLineage {
         }
         if (value instanceof SQLQueryExpr) {
             ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) value);
-            if (inner == null || inner.columns.isEmpty()) {
+            if (inner == null) {
+                return;
+            }
+            if (inner.columns.isEmpty()) {
+                recordScalarTableLevel(inner, tableName, -1);
                 return;
             }
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                     inner.references.get(0),
-                    tableName + "." + renderIdentifier(column), -1, true, false));
+                    tableName + "." + column, -1, true, false));
             return;
         }
         if (value instanceof SQLBinaryOpExpr) {
@@ -7471,6 +7558,7 @@ public class DmlLineage {
         // The join bindings of the USING clause (for example its alias) stay visible
         // to both clauses.
         stackJoinBindings.push(new HashMap<String, SourceNode>());
+        stackHiddenSources.push(new HashSet<SourceTable>());
         if (merge.getUsing() instanceof SQLTableSource) {
             sourceSources.addAll(buildSourceNode((SQLTableSource) merge.getUsing(),
                     using).sources);
@@ -7544,9 +7632,21 @@ public class DmlLineage {
             stackSourceTable.pop();
             stackUsing.pop();
             stackTargetTable.pop();
+            stackHiddenSources.pop();
             stackJoinBindings.pop();
         }
         collectTablesFromExpression(merge.getOn());
+    }
+
+    private String renderMetadataColumn(Column column) {
+        if (!column.isQuoted()) {
+            return renderIdentifier(column.getColumnName());
+        }
+        DbType dialect = currentDialect();
+        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
+            return "`" + column.getColumnName().replace("`", "``") + "`";
+        }
+        return "\"" + column.getColumnName().replace("\"", "\"\"") + "\"";
     }
 
     private String mergeTargetColumn(Table metadata, String tableName, SQLExpr column) {

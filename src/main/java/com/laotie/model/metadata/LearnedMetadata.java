@@ -32,6 +32,49 @@ public class LearnedMetadata {
     }
 
     /**
+     * A deep copy, used to build a metadata candidate without touching the scanner's
+     * published state.
+     */
+    public LearnedMetadata(LearnedMetadata other) {
+        this.dialect = other == null ? DbType.mysql : other.dialect;
+        if (other != null) {
+            synchronized (other) {
+                for (Map.Entry<String, Set<String>> entry : other.columns.entrySet()) {
+                    this.columns.put(entry.getKey(),
+                            new LinkedHashSet<>(entry.getValue()));
+                }
+            }
+        }
+    }
+
+    /**
+     * Add every observation of {@code other} to this instance.
+     */
+    public synchronized void mergeFrom(LearnedMetadata other) {
+        if (other == null) {
+            return;
+        }
+        synchronized (other) {
+            for (Map.Entry<String, Set<String>> entry : other.columns.entrySet()) {
+                columns.computeIfAbsent(entry.getKey(),
+                        key -> new LinkedHashSet<String>()).addAll(entry.getValue());
+            }
+        }
+    }
+
+    /**
+     * Whether both instances hold exactly the same observations.
+     */
+    public synchronized boolean sameAs(LearnedMetadata other) {
+        if (other == null) {
+            return false;
+        }
+        synchronized (other) {
+            return columns.equals(other.columns);
+        }
+    }
+
+    /**
      * Record that {@code column} was referenced on {@code table}.
      */
     public synchronized void learn(String table, String column) {

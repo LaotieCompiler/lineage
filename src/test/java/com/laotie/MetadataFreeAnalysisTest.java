@@ -204,6 +204,36 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void twoPassLearningDropsContradictedInferences() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        ScanResult result = scanner.scan("SELECT X.y FROM X;"
+                + " SELECT A.p, k FROM A,X;"
+                + " SELECT A.y, X.k, B.y FROM A,X,B;"
+                + " SELECT p FROM A,B;");
+
+        // The whole log is learned first; no statement fails on stale guesses.
+        assertEquals(0, result.getFailures().size());
+        // A rescan sees the same consistent picture.
+        ScanResult rescan = scanner.scan("SELECT p FROM A,B;");
+        assertEquals(0, rescan.getFailures().size());
+    }
+
+    @Test
+    public void twoPassLearningCompletesBeforeLineage() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A,B;"
+                        + " SELECT B.k, x FROM B,C,D;"
+                        + " SELECT A.y, B.z, C.x, D.y FROM A,B,C,D;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("b.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
     public void metadataLearningIsWhatResolvesTheEarlierStatement() {
         // The same log without inference keeps the first statement ambiguous, which
         // proves the two-pass scan is what resolves it.

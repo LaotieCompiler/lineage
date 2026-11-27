@@ -82,20 +82,78 @@ public class LineageScanner {
     }
 
     public ScanResult scan(String sqlLog) {
-        if (learnedMetadata != null && sqlLog != null && !sqlLog.isEmpty()) {
-            // First pass: discover metadata from the whole log without producing
-            // lineage, so the second pass resolves every statement against the
-            // complete picture (including tables referenced later in the log).
-            DmlLineage learner = newLineage();
-            learner.setLearningOnly(true);
-            learner.parseScript(sqlLog);
+        if (learnedMetadata == null || sqlLog == null || sqlLog.isEmpty()) {
+            return analyze(sqlLog, null, false);
         }
+        // Pass 1: discover metadata from the whole log, without lineage. Explicit
+        // references from the whole log are collected first, so a statement can be
+        // resolved by knowledge that only appears later in the same log.
+        LearnedMetadata base = new LearnedMetadata(learnedMetadata);
+        LearnedMetadata candidate = new LearnedMetadata(base);
+        for (int round = 0; round < MAX_METADATA_ROUNDS; round++) {
+            LearnedMetadata next = new LearnedMetadata(candidate);
+            learn(sqlLog, next);
+            if (next.sameAs(candidate)) {
+                break;
+            }
+            candidate = next;
+        }
+        // Pass 2: analyze with the discovered metadata. A statement that still fails
+        // must not contribute its observations, so rebuild the candidate from the
+        // statements that succeed and repeat until it stops changing.
+        ScanResult scan = analyze(sqlLog, candidate, true);
+        for (int round = 0; round < MAX_METADATA_ROUNDS; round++) {
+            LearnedMetadata rebuilt = new LearnedMetadata(base);
+            String accepted = successfulSql(scan.getResults());
+            if (!accepted.isEmpty()) {
+                learn(accepted, rebuilt);
+            }
+            if (rebuilt.sameAs(candidate)) {
+                break;
+            }
+            candidate = rebuilt;
+            scan = analyze(sqlLog, candidate, true);
+        }
+        learnedMetadata.mergeFrom(candidate);
+        return scan;
+    }
 
+    private static final int MAX_METADATA_ROUNDS = 8;
+
+    private ScanResult analyze(String sqlLog, LearnedMetadata learned, boolean stable) {
         DmlLineage lineage = newLineage();
+        if (learned != null) {
+            lineage.setLearnedMetadata(learned);
+        }
+        if (stable) {
+            lineage.setLearningDisabled(true);
+        }
         List<LineageResult> results = lineage.parseScript(sqlLog);
         LineageGraph graph = new LineageGraph();
         graph.buildByResults(results);
         return new ScanResult(results, graph);
+    }
+
+    private void learn(String sqlLog, LearnedMetadata learned) {
+        DmlLineage learner = newLineage();
+        learner.setLearnedMetadata(learned);
+        learner.setLearningOnly(true);
+        learner.setMetadataPass(true);
+        learner.parseScript(sqlLog);
+    }
+
+    private static String successfulSql(List<LineageResult> results) {
+        StringBuilder sql = new StringBuilder();
+        for (LineageResult result : results) {
+            if (result.getError() != null || result.getSql() == null) {
+                continue;
+            }
+            if (sql.length() > 0) {
+                sql.append(";\n");
+            }
+            sql.append(result.getSql());
+        }
+        return sql.toString();
     }
 
     private DmlLineage newLineage() {

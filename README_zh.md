@@ -82,6 +82,14 @@ LineageScanner.withoutMetadata(
         LineageOptions.of(MetadataMode.OPTIONAL, false, true))
         .scan(sqlLog);
 ```
+强制引用模式还会校验表别名与 CTE 名，并覆盖 PostgreSQL 的 `RETURNING`/`ON CONFLICT`、
+MySQL 的 `ON DUPLICATE KEY UPDATE` 以及 SQL Server 的日期部分。
+
+已知限制：Druid 的 AST 不保留 Derby JDBC 转义语法（`{fn TIMESTAMPADD(...)}`）。严格模式
+在解析后的调用节点上记录转义来源。未修改的 AST 或其克隆可以正确处理，但如果手工编辑
+AST，把转义调用的参数替换为等价普通调用的参数，二者无法区分，可能继承单位关键字豁免。
+严格语法的审核批次在该对抗性 AST 编辑场景失败 22 轮后关闭；普通 SQL 不受影响。
+
 
 
 开启推断后，`select A.c1, B.c2 from A,B` 会记录 `c1` 属于 `A`、`c2` 属于 `B`；之后

@@ -91,6 +91,16 @@ LineageScanner.withoutMetadata(
         LineageOptions.of(MetadataMode.OPTIONAL, false, true))
         .scan(sqlLog);
 ```
+Strict quoting also validates table aliases and CTE names, and covers PostgreSQL
+`RETURNING`/`ON CONFLICT`, MySQL `ON DUPLICATE KEY UPDATE`, and SQL Server date parts.
+
+Known limitation: Derby JDBC escape syntax (`{fn TIMESTAMPADD(...)}`) is not represented in
+Druid's AST. Strict mode records escape provenance on the parsed call node. An untouched
+AST or a clone is handled correctly, but a hand-edited AST that replaces an escape call's
+arguments with those of an equivalent ordinary call can be indistinguishable from the
+escape and may inherit the unit exemption. The review batch for strict syntax was closed
+after 22 failed rounds on this adversarial AST-editing case; ordinary SQL is unaffected.
+
 
 
 With inference enabled, a statement such as `select A.c1, B.c2 from A,B` records that `c1`

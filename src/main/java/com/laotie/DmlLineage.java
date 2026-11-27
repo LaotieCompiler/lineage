@@ -42,6 +42,9 @@ import com.alibaba.druid.sql.ast.statement.SQLCreateTableStatement;
 import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
+import com.alibaba.druid.sql.ast.statement.SQLMergeStatement;
+import com.alibaba.druid.sql.ast.statement.SQLReplaceStatement;
+import com.alibaba.druid.sql.ast.statement.SQLTruncateStatement;
 import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelect;
 import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
@@ -663,6 +666,12 @@ public class DmlLineage {
             processDelete((SQLDeleteStatement) statement);
         } else if (statement instanceof SQLCreateTableStatement) {
             processCreateTable((SQLCreateTableStatement) statement);
+        } else if (statement instanceof SQLReplaceStatement) {
+            processReplace((SQLReplaceStatement) statement);
+        } else if (statement instanceof SQLTruncateStatement) {
+            processTruncate((SQLTruncateStatement) statement);
+        } else if (statement instanceof SQLMergeStatement) {
+            processMerge((SQLMergeStatement) statement);
         } else {
             throw new UnsupportedOperationException(
                     String.format("Finding tables from %s is not supported",
@@ -3100,6 +3109,43 @@ public class DmlLineage {
         return normalizeIdentifier(rawName);
     }
 
+    private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr) {
+        String targetTable = stackTargetTable.peek();
+        ScalarSubquery inner = analyzeScalarSubquery(expr);
+        if (inner == null || inner.columns.isEmpty()) {
+            return 1;
+        }
+        List<String> declaredColumns = currentTargetColumnAliases(targetTable);
+        String lockedName = lockedOutputName(targetTable, currentOrdinal);
+        String lockedKey = lockedOutputKey(targetTable, currentOrdinal);
+        String targetColumn;
+        String targetKey;
+        if (lockedName != null) {
+            targetColumn = lockedName;
+            targetKey = lockedKey != null ? lockedKey : identifierKey(lockedName);
+        } else if (declaredColumns != null && currentOrdinal >= 0
+                && currentOrdinal < declaredColumns.size()) {
+            targetColumn = declaredColumns.get(currentOrdinal);
+            targetKey = identifierKey(targetColumn);
+        } else if (item.getAlias() != null) {
+            targetColumn = normalizeIdentifier(item.getAlias());
+            targetKey = identifierKey(item.getAlias());
+        } else {
+            targetColumn = inner.columns.get(0);
+            targetKey = identifierKey(targetColumn);
+        }
+        setTargetOutput(targetTable, currentOrdinal, targetColumn, targetKey);
+        markOutputNameKnown(targetTable, currentOrdinal, true);
+        for (int i = 0; i < inner.columns.size(); i++) {
+            String source = inner.temp + "."
+                    + renderIdentifier(inner.columns.get(i));
+            instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
+                    targetTable + "." + renderIdentifier(targetColumn), currentOrdinal,
+                    true, tempTables.contains(targetTable)));
+        }
+        return 1;
+    }
+
     private int recordUnboundSelectItem(SQLSelectItem item, int position) {
         if (item.getExpr() == null) {
             return 0;
@@ -3146,6 +3192,50 @@ public class DmlLineage {
         return 1;
     }
 
+    /**
+     * The output of an analyzed scalar subquery: the temporary that holds it and the
+     * names of its columns.
+     */
+    private static final class ScalarSubquery {
+        private final String temp;
+        private final List<String> columns;
+
+        private ScalarSubquery(String temp, List<String> columns) {
+            this.temp = temp;
+            this.columns = columns;
+        }
+    }
+
+    /**
+     * Analyze a scalar subquery as a one-column derived table so its own lineage is
+     * kept instead of being folded into the enclosing expression.
+     */
+    private ScalarSubquery analyzeScalarSubquery(SQLQueryExpr expr) {
+        SQLSelect select = expr.getSubQuery();
+        if (select == null) {
+            return null;
+        }
+        String target = getTempTableName();
+        tempTables.add(target);
+        int savedOrdinal = currentOrdinal;
+        int savedUncertain = uncertainOrdinal;
+        try {
+            stackTargetTable.push(target);
+            processSelect(select);
+            stackTargetTable.pop();
+        } finally {
+            currentOrdinal = savedOrdinal;
+            uncertainOrdinal = savedUncertain;
+        }
+        recordTargetShape(target);
+        List<String> outputs = copyOutputs(targetOutputs.get(target));
+        List<String> columns = new ArrayList<>();
+        for (String output : outputs) {
+            columns.add(output);
+        }
+        return new ScalarSubquery(target, columns);
+    }
+
     private int processSelectItem(SQLSelectItem item) {
         if (item.getExpr() == null) {
             return 0;
@@ -3153,6 +3243,9 @@ public class DmlLineage {
         SQLExpr baseExpr = item.getExpr();
         while (baseExpr instanceof SQLCastExpr) {
             baseExpr = ((SQLCastExpr) baseExpr).getExpr();
+        }
+        if (baseExpr instanceof SQLQueryExpr) {
+            return processScalarSubqueryProjection(item, (SQLQueryExpr) baseExpr);
         }
 
         String targetTable = stackTargetTable.peek();
@@ -5186,6 +5279,8 @@ public class DmlLineage {
             }
         } else if (expr instanceof SQLInSubQueryExpr) {
             visitExpr(((SQLInSubQueryExpr) expr).getExpr());
+        } else if (expr instanceof SQLQueryExpr) {
+            visitScalarSubquery((SQLQueryExpr) expr);
         } else if (expr instanceof SQLBetweenExpr) {
             SQLBetweenExpr between = (SQLBetweenExpr) expr;
             visitExpr(between.getTestExpr());
@@ -5197,6 +5292,22 @@ public class DmlLineage {
             visitExpr(((SQLUnaryExpr) expr).getExpr());
         } else if (expr instanceof SQLExtractExpr) {
             visitExpr(((SQLExtractExpr) expr).getValue());
+        }
+    }
+
+    private void visitScalarSubquery(SQLQueryExpr expr) {
+        ScalarSubquery inner = analyzeScalarSubquery(expr);
+        if (inner == null || inner.columns.isEmpty()) {
+            return;
+        }
+        String targetTable = stackTargetTable.peek();
+        String targetColumn = stackTargetColumn.peek();
+        for (int i = 0; i < inner.columns.size(); i++) {
+            String source = inner.temp + "."
+                    + renderIdentifier(inner.columns.get(i));
+            instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
+                    targetTable + "." + targetColumn, currentOrdinal, true,
+                    tempTables.contains(targetTable)));
         }
     }
 
@@ -6942,7 +7053,99 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     private void processInsert(SQLInsertStatement insert) {
-        SQLExprTableSource tableSource = insert.getTableSource();
+        processInsertInto(insert.getTableSource(), insert.getColumns(),
+                insert.getQuery(), insert.getWith());
+    }
+
+    private void processReplace(SQLReplaceStatement replace) {
+        SQLQueryExpr query = replace.getQuery();
+        processInsertInto(replace.getTableSource(), replace.getColumns(),
+                query == null ? null : query.getSubQuery(), null);
+    }
+
+    private void processTruncate(SQLTruncateStatement truncate) {
+        // A truncate removes every row, so it carries no column lineage.
+        if (truncate.getTableSources() == null) {
+            return;
+        }
+        for (SQLExprTableSource tableSource : truncate.getTableSources()) {
+            String rawName = extractTableName(tableSource);
+            if (rawName == null) {
+                continue;
+            }
+            registerTable(normalizeQualifiedName(rawName),
+                    normalizeQualifiedName(rawName),
+                    normalizeQualifiedName(rawName), null, false);
+        }
+    }
+
+    private void processMerge(SQLMergeStatement merge) {
+        SQLTableSource into = merge.getInto();
+        if (!(into instanceof SQLExprTableSource)) {
+            return;
+        }
+        SQLExprTableSource target = (SQLExprTableSource) into;
+        String rawName = extractTableName(target);
+        String written = normalizeQualifiedName(rawName);
+        String tableName = written;
+        if (context != null && findCteTarget(identifierKey(rawName)) == null) {
+            TableLocation location = resolveMetadataTable(rawName);
+            if (location != null) {
+                tableName = location.getDisplayName();
+            }
+        }
+        registerTable(written, tableName, tableName, null, false);
+
+        Map<String, List<SourceTable>> using = new LinkedHashMap<>();
+        List<SourceTable> sources = new ArrayList<>();
+        if (merge.getUsing() instanceof SQLTableSource) {
+            sources.addAll(buildSourceNode((SQLTableSource) merge.getUsing(), using)
+                    .sources);
+        }
+        stackTargetTable.push(tableName);
+        stackSources.push(sources);
+        stackUsing.push(using);
+        stackSourceTable.push(tableName);
+        inTargetExpression = true;
+        try {
+            SQLMergeStatement.MergeUpdateClause update = merge.getUpdateClause();
+            if (update != null) {
+                for (SQLUpdateSetItem item : update.getItems()) {
+                    stackTargetColumn.push(renderIdentifier(
+                            lastIdentifier(rawColumnName(item.getColumn()))));
+                    currentOrdinal = -1;
+                    visitExpr(item.getValue());
+                    stackTargetColumn.pop();
+                }
+                collectTablesFromExpression(update.getWhere());
+            }
+            SQLMergeStatement.MergeInsertClause insert = merge.getInsertClause();
+            if (insert != null && insert.getColumns() != null
+                    && insert.getValues() != null) {
+                List<SQLExpr> columns = insert.getColumns();
+                List<SQLExpr> values = insert.getValues();
+                for (int i = 0; i < columns.size() && i < values.size(); i++) {
+                    stackTargetColumn.push(renderIdentifier(
+                            lastIdentifier(rawColumnName(columns.get(i)))));
+                    currentOrdinal = -1;
+                    visitExpr(values.get(i));
+                    stackTargetColumn.pop();
+                }
+                collectTablesFromExpression(insert.getWhere());
+            }
+        } finally {
+            inTargetExpression = false;
+            stackSourceTable.pop();
+            stackUsing.pop();
+            stackSources.pop();
+            stackTargetTable.pop();
+        }
+        collectTablesFromExpression(merge.getOn());
+    }
+
+    private void processInsertInto(SQLExprTableSource tableSource,
+            List<SQLExpr> insertColumns, SQLSelect select,
+            SQLWithSubqueryClause with) {
         String rawName = extractTableName(tableSource);
         String written = normalizeQualifiedName(rawName);
         // The graph identity of an unaliased target keeps its written reference when
@@ -6965,7 +7168,6 @@ public class DmlLineage {
                 ? null : normalizeIdentifier(tableSource.getAlias()),
                 findCteTarget(identifierKey(rawName)) != null);
 
-        SQLWithSubqueryClause with = insert.getWith();
         boolean scoped = with != null;
         if (scoped) {
             cteScopes.push(new HashMap<String, String>());
@@ -6979,14 +7181,13 @@ public class DmlLineage {
             stackTargetTable.push(insertTemp);
             intermediateTargets.add(insertTemp);
 
-            SQLSelect select = insert.getQuery();
             if (select != null) {
                 processSelect(select);
             }
 
             String fromTable = stackTargetTable.peek();
             boolean fromTemporary = tempTables.contains(fromTable);
-            List<SQLExpr> columns = insert.getColumns();
+            List<SQLExpr> columns = insertColumns;
             if (columns != null && !columns.isEmpty()) {
                 final Table insertMetadata = targetMetadata;
                 final String insertTable = tableName;

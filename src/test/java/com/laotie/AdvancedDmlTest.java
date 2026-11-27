@@ -1,0 +1,145 @@
+package com.laotie;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+
+import org.junit.Test;
+
+import com.alibaba.druid.DbType;
+import com.laotie.model.ScanResult;
+import com.laotie.model.metadata.Column;
+import com.laotie.model.metadata.MetadataCatalog;
+import com.laotie.model.metadata.MetadataContext;
+import com.laotie.model.metadata.MetadataMode;
+
+/**
+ * DML forms that appear in production SQL logs.
+ *
+ * <p>
+ * {@code REPLACE INTO}, {@code MERGE INTO}, {@code TRUNCATE} and scalar subqueries are
+ * common in real logs; each must be analyzed without failing the statement and must keep
+ * the column lineage it actually expresses.
+ */
+public class AdvancedDmlTest {
+
+    private static LineageOptions optional() {
+        return LineageOptions.of(MetadataMode.OPTIONAL, false);
+    }
+
+    private static MetadataContext catalog(String ddl) {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl(ddl);
+        return MetadataContext.of(catalog);
+    }
+
+    private static Set<Column> sources(ScanResult result, String column) {
+        return result.getGraph().getSources(new Column(column));
+    }
+
+    @Test
+    public void replaceIntoWritesLikeAnInsert() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
+        catalog.loadDdl(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("REPLACE INTO t (c1, c2) SELECT c1, c2 FROM s;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.c1"))),
+                sources(result, "t.c1"));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.c2"))),
+                sources(result, "t.c2"));
+    }
+
+    @Test
+    public void truncateIsAcceptedWithoutColumnLineage() {
+        MetadataContext context = catalog("CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("TRUNCATE TABLE t;");
+
+        assertEquals(1, result.getResults().size());
+        assertNull(result.getResults().get(0).getError());
+        assertTrue(result.getResults().get(0).getInstructions().isEmpty());
+    }
+
+    @Test
+    public void mergeUpdateAndInsertClausesAreTraced() {
+        MetadataContext context = catalog(
+                "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional()).scan(
+                "MERGE INTO t USING s ON (t.c1 = s.c1)"
+                        + " WHEN MATCHED THEN UPDATE SET t.c2 = s.c1"
+                        + " WHEN NOT MATCHED THEN INSERT (c1, c2) VALUES (s.c1, s.c2);");
+
+        assertEquals(0, result.getFailures().size());
+        // The insert clause writes s.c1 and s.c2 into the target columns.
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.c1"))),
+                sources(result, "t.c1"));
+        // t.c2 receives either the updated s.c1 or the inserted s.c2.
+        Set<Column> second = sources(result, "t.c2");
+        assertTrue(second.contains(new Column("s.c1")));
+        assertTrue(second.contains(new Column("s.c2")));
+    }
+
+    @Test
+    public void scalarSubqueryProjectionKeepsItsInnerSource() {
+        MetadataContext context = catalog(
+                "CREATE TABLE a (c1 INT); CREATE TABLE b (c1 INT);"
+                        + " CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT (SELECT max(c1) FROM b) FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        // The projected value comes from the scalar subquery, not from the outer table.
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void scalarSubqueryInUpdateSetIsTraced() {
+        MetadataContext context = catalog(
+                "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE b (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("UPDATE a SET c2 = (SELECT max(c1) FROM b);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "a.c2"));
+    }
+
+    @Test
+    public void scalarSubqueryWithAliasKeepsItsName() {
+        MetadataContext context = catalog(
+                "CREATE TABLE a (c1 INT); CREATE TABLE b (c1 INT);"
+                        + " CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT v FROM a,"
+                        + " LATERAL (SELECT max(b.c1) AS v FROM b) l;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("b.c1"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void scalarSubqueryKeepsItsOwnSource() {
+        MetadataContext context = catalog(
+                "CREATE TABLE a (c1 INT); CREATE TABLE t (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT (SELECT max(c1) FROM missing) FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        // The subquery reads an explicitly named column of an unknown table, which
+        // keeps its own identity; the outer table contributes nothing to it.
+        assertEquals(new HashSet<>(Arrays.asList(new Column("missing.c1"))),
+                sources(result, "t.c1"));
+        assertFalse(sources(result, "t.c1").contains(new Column("a.c1")));
+    }
+}

@@ -334,9 +334,11 @@ public class DmlLineage {
 
     public SQLStatement parseStatement(String sqlStr) {
         DbType dialect = resolveDialect();
-        String parseSql = dialect == DbType.derby
-                ? markJdbcEscapes(sqlStr) : sqlStr;
-        return parseWithDialectFallback(parseSql, dialect);
+        SQLStatement statement = parseWithDialectFallback(sqlStr, dialect);
+        if (dialect == DbType.derby && options.isStrictQuotedIdentifiers()) {
+            annotateJdbcEscapes(statement, sqlStr);
+        }
+        return statement;
     }
 
     /**
@@ -348,7 +350,70 @@ public class DmlLineage {
      * Mark JDBC escape function names so the validation AST can distinguish the
      * escape form from an ordinary call of the same name.
      */
-    private String markJdbcEscapes(String sql) {
+    private static final class EscapeUnit {
+        private final String method;
+        private final String unit;
+
+        private EscapeUnit(String method, String unit) {
+            this.method = method;
+            this.unit = unit;
+        }
+    }
+
+    private void annotateJdbcEscapes(SQLStatement statement, String source) {
+        String marked = markJdbcEscapes(source);
+        if (marked.equals(source)) {
+            return;
+        }
+        List<EscapeUnit> units = new ArrayList<>();
+        try {
+            SQLStatement markedStatement =
+                    parseWithDialectFallback(marked, currentDialect());
+            markedStatement.accept(new SQLASTVisitorAdapter() {
+                @Override
+                public boolean visit(SQLMethodInvokeExpr x) {
+                    String method = x.getMethodName();
+                    if (method != null && method.startsWith(JDBC_MARKER)
+                            && !x.getArguments().isEmpty()
+                            && x.getArguments().get(0)
+                                    instanceof SQLIdentifierExpr) {
+                        units.add(new EscapeUnit(
+                                method.substring(JDBC_MARKER.length()),
+                                ((SQLIdentifierExpr) x.getArguments().get(0))
+                                        .getName()));
+                    }
+                    return true;
+                }
+            });
+        } catch (RuntimeException e) {
+            return;
+        }
+        statement.accept(new SQLASTVisitorAdapter() {
+            @Override
+            public boolean visit(SQLMethodInvokeExpr x) {
+                if (x.getArguments().isEmpty()
+                        || !(x.getArguments().get(0)
+                                instanceof SQLIdentifierExpr)) {
+                    return true;
+                }
+                SQLIdentifierExpr unitExpr =
+                        (SQLIdentifierExpr) x.getArguments().get(0);
+                for (int i = 0; i < units.size(); i++) {
+                    EscapeUnit candidate = units.get(i);
+                    if (candidate.method.equalsIgnoreCase(x.getMethodName())
+                            && candidate.unit.equalsIgnoreCase(
+                                    unitExpr.getName())) {
+                        x.putAttribute(JDBC_ESCAPE_ATTRIBUTE, Boolean.TRUE);
+                        units.remove(i);
+                        break;
+                    }
+                }
+                return true;
+            }
+        });
+    }
+
+    private static String markJdbcEscapes(String sql) {
         StringBuilder out = new StringBuilder(sql.length());
         int i = 0;
         while (i < sql.length()) {
@@ -392,7 +457,7 @@ public class DmlLineage {
                 int[] span = jdbcEscapeMethod(sql, i);
                 if (span != null) {
                     out.append(sql, i, span[0]);
-                    out.append(jdbcPrefix);
+                    out.append(JDBC_MARKER);
                     out.append(sql, span[0], span[1]);
                     i = span[1];
                     continue;
@@ -467,15 +532,13 @@ public class DmlLineage {
         SQLASTVisitor visitor;
         switch (dialect) {
             case oracle:
-                visitor = new OracleQuotedIdentifierVisitor(dialect,
-                        jdbcPrefix);
+                visitor = new OracleQuotedIdentifierVisitor(dialect);
                 break;
             case sqlserver:
-                visitor = new SqlServerQuotedIdentifierVisitor(dialect,
-                        jdbcPrefix);
+                visitor = new SqlServerQuotedIdentifierVisitor(dialect);
                 break;
             default:
-                visitor = new QuotedIdentifierVisitor(dialect, jdbcPrefix);
+                visitor = new QuotedIdentifierVisitor(dialect);
                 break;
         }
         statement.accept(visitor);
@@ -532,16 +595,14 @@ public class DmlLineage {
     private static final class SqlServerQuotedIdentifierVisitor
             extends SQLServerASTVisitorAdapter {
         private final DbType dialect;
-        private final String jdbcPrefix;
 
-        private SqlServerQuotedIdentifierVisitor(DbType dialect, String jdbcPrefix) {
+        private SqlServerQuotedIdentifierVisitor(DbType dialect) {
             this.dialect = dialect;
-            this.jdbcPrefix = jdbcPrefix;
         }
 
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x, dialect, jdbcPrefix);
+            checkIdentifier(x, dialect);
             return true;
         }
 
@@ -593,16 +654,14 @@ public class DmlLineage {
 
     private static final class QuotedIdentifierVisitor extends SQLASTVisitorAdapter {
         private final DbType dialect;
-        private final String jdbcPrefix;
 
-        private QuotedIdentifierVisitor(DbType dialect, String jdbcPrefix) {
+        private QuotedIdentifierVisitor(DbType dialect) {
             this.dialect = dialect;
-            this.jdbcPrefix = jdbcPrefix;
         }
 
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x, dialect, jdbcPrefix);
+            checkIdentifier(x, dialect);
             return true;
         }
 
@@ -655,16 +714,14 @@ public class DmlLineage {
     private static final class OracleQuotedIdentifierVisitor
             extends OracleASTVisitorAdapter {
         private final DbType dialect;
-        private final String jdbcPrefix;
 
-        private OracleQuotedIdentifierVisitor(DbType dialect, String jdbcPrefix) {
+        private OracleQuotedIdentifierVisitor(DbType dialect) {
             this.dialect = dialect;
-            this.jdbcPrefix = jdbcPrefix;
         }
 
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x, dialect, jdbcPrefix);
+            checkIdentifier(x, dialect);
             return true;
         }
 
@@ -734,8 +791,8 @@ public class DmlLineage {
     }
 
     private static void checkIdentifier(SQLIdentifierExpr identifier,
-            DbType dialect, String jdbcPrefix) {
-        if (isFunctionUnit(identifier, dialect, jdbcPrefix)) {
+            DbType dialect) {
+        if (isFunctionUnit(identifier, dialect)) {
             return;
         }
         requireQuotedIdentifier(identifier.getName());
@@ -771,7 +828,7 @@ public class DmlLineage {
     }
 
     private static boolean isFunctionUnit(SQLIdentifierExpr identifier,
-            DbType dialect, String jdbcPrefix) {
+            DbType dialect) {
         SQLObject parent = identifier.getParent();
         if (!(parent instanceof SQLMethodInvokeExpr)) {
             return false;
@@ -783,11 +840,8 @@ public class DmlLineage {
             return false;
         }
         String method = call.getMethodName();
-        boolean jdbcMarked = method != null
-                && method.startsWith(jdbcPrefix);
-        if (jdbcMarked) {
-            method = method.substring(jdbcPrefix.length());
-        }
+        boolean jdbcMarked = Boolean.TRUE.equals(
+                call.getAttribute(JDBC_ESCAPE_ATTRIBUTE));
         boolean mysqlFamily = dialect == DbType.mysql
                 || dialect == DbType.mariadb;
         boolean hiveFamily = dialect == DbType.hive
@@ -930,9 +984,11 @@ public class DmlLineage {
             SessionState session) {
         SQLStatement statement;
         try {
-            String parseSql = dialect == DbType.derby
-                    ? markJdbcEscapes(sql) : sql;
-            statement = parseWithDialectFallback(parseSql, dialect);
+            statement = parseWithDialectFallback(sql, dialect);
+            if (dialect == DbType.derby
+                    && options.isStrictQuotedIdentifiers()) {
+                annotateJdbcEscapes(statement, sql);
+            }
         } catch (Throwable t) {
             return failed(sql, base, session, t);
         }
@@ -6295,8 +6351,9 @@ public class DmlLineage {
     private boolean ansiEnabled;
     private boolean ansiDoubleQuotedIdentifiers;
     private String statementSql;
-    private final String jdbcPrefix = "LO_JDBC_"
-            + java.util.UUID.randomUUID().toString().replace("-", "") + "_";
+    private static final String JDBC_ESCAPE_ATTRIBUTE =
+            "com.laotie.jdbcEscape";
+    private static final String JDBC_MARKER = "LO_JDBC_";
     private static final String ANSI_IDENTIFIER_ATTRIBUTE =
             "com.laotie.ansiQuotedIdentifier";
 

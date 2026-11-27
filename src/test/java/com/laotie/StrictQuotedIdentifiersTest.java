@@ -602,6 +602,33 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void escapeDoesNotChangeOutputNames() {
+        for (int i = 0; i < 2; i++) {
+            ScanResult result = LineageScanner.withoutMetadata(
+                    DbType.derby, optional()).scan(
+                    "SELECT {fn ABS(\"c\")} FROM \"t\";");
+
+            assertEquals(0, result.getFailures().size());
+            for (Column vertex : result.getGraph().getReverseGraph()
+                    .vertexSet()) {
+                assertTrue(!vertex.toString().contains("LO_JDBC_"));
+            }
+        }
+    }
+
+    @Test
+    public void parsedEscapeAstWorksAcrossInstances() {
+        LineageOptions options = LineageOptions.of(
+                MetadataMode.OPTIONAL, false, true);
+        DmlLineage first = new DmlLineage(DbType.derby, options);
+        com.alibaba.druid.sql.ast.SQLStatement statement =
+                first.parseStatement("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1,"
+                        + " \"c\")} FROM \"t\";");
+        first.getLineage(statement);
+        new DmlLineage(DbType.derby, options).getLineage(statement);
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

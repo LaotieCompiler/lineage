@@ -639,29 +639,34 @@ public class DmlLineage {
                 || dialect == DbType.mariadb;
         boolean hiveFamily = dialect == DbType.hive
                 || dialect == DbType.antspark;
-        if (mysqlFamily || hiveFamily) {
-            if ("TIMESTAMPDIFF".equalsIgnoreCase(method)
-                    || "TIMESTAMPADD".equalsIgnoreCase(method)) {
-                return true;
-            }
-            if (mysqlFamily && "GET_FORMAT".equalsIgnoreCase(method)) {
-                return true;
-            }
-        }
         boolean sqlServerFamily = dialect == DbType.sqlserver
                 || dialect == DbType.sybase || dialect == DbType.h2;
+        boolean timestampUnit = mysqlFamily || hiveFamily
+                || sqlServerFamily;
+        if (timestampUnit
+                && ("TIMESTAMPDIFF".equalsIgnoreCase(method)
+                        || "TIMESTAMPADD".equalsIgnoreCase(method))) {
+            return true;
+        }
+        if (mysqlFamily && "GET_FORMAT".equalsIgnoreCase(method)) {
+            return true;
+        }
         if (!sqlServerFamily) {
             // In MySQL/MariaDB/Hive/Spark DATEDIFF takes two date expressions,
             // not a leading date-part keyword.
             return false;
+        }
+        if ("DATE_BUCKET".equalsIgnoreCase(method)) {
+            // SQL Server's DATE_BUCKET takes a date part; H2 users can define
+            // an ordinary function of the same name.
+            return dialect == DbType.sqlserver;
         }
         return "DATEADD".equalsIgnoreCase(method)
                 || "DATEDIFF".equalsIgnoreCase(method)
                 || "DATEDIFF_BIG".equalsIgnoreCase(method)
                 || "DATEPART".equalsIgnoreCase(method)
                 || "DATENAME".equalsIgnoreCase(method)
-                || "DATETRUNC".equalsIgnoreCase(method)
-                || "DATE_BUCKET".equalsIgnoreCase(method);
+                || "DATETRUNC".equalsIgnoreCase(method);
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

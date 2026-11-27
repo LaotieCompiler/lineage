@@ -333,6 +333,25 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void h2AndOdbsTimestampaddUnitIsNotAColumn() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.h2, strict())
+                .scan("SELECT TIMESTAMPADD(DAY, 1, \"c\") FROM \"t\";")
+                .getFailures().size());
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, [c])}"
+                        + " FROM [t];")
+                .getFailures().size());
+    }
+
+    @Test
+    public void h2DateBucketIsAnOrdinaryFunction() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.h2, strict())
+                .scan("SELECT DATE_BUCKET(c, 1) FROM \"numbers\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

@@ -98,6 +98,13 @@ In that case the analyzer keeps table-level edges and never guesses a column:
   projection is mapped column by column again, including `JOIN ... USING` merges and
   `UNION` output names.
 
+The contract is intentionally bounded. Correlated `LATERAL` bodies, forward-referenced
+recursive CTEs, repeated derived output names, and unions that mix unknown-width wildcards
+with explicit projections are analyzed on a best-effort basis: when a position cannot be
+derived unambiguously the analyzer keeps table-level edges instead of inventing a column.
+These combinations are covered by regression tests for the cases listed above, but are not
+guaranteed to resolve every further nesting of the same features to column level.
+
 ### lineage graph
 
 1. build lineage graph by direct relations

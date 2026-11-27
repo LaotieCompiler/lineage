@@ -323,6 +323,43 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void sparkJoinUsingQuotedUppercaseColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (`DAY` STRING) USING parquet;"
+                + " CREATE TABLE b (`DAY` STRING) USING parquet;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT * FROM a JOIN b USING (`DAY`);");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.DAY"), new Column("b.DAY"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.DAY")));
+    }
+
+    @Test
+    public void supplementaryUnicodePartitionKeyMatches() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (x INT, src_day STRING)"
+                + " USING parquet;"
+                + " CREATE TABLE t (x INT, `\uD801\uDC28` STRING, dt STRING)"
+                + " USING parquet PARTITIONED BY (`\uD801\uDC28`, dt);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t"
+                        + " PARTITION (`\uD801\uDC00` = '1', dt)"
+                        + " SELECT x, src_day FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_day"))),
+                result.getGraph().getSources(new Column("t.dt")));
+        assertFalse(result.getGraph().getReverseGraph().containsVertex(
+                new Column("t.\uD801\uDC28")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

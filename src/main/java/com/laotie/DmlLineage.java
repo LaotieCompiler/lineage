@@ -4484,10 +4484,12 @@ public class DmlLineage {
     private List<String> sourceColumnKeys(SourceTable source) {
         if (source.metadataTable != null) {
             List<String> keys = new ArrayList<>();
-            boolean mysql = currentDialect() == DbType.mysql
-                    || currentDialect() == DbType.mariadb;
+            DbType dialect = currentDialect();
+            boolean caseInsensitive = dialect == DbType.mysql
+                    || dialect == DbType.mariadb
+                    || dialect == DbType.hive || dialect == DbType.antspark;
             for (Column column : source.metadataTable.getFields()) {
-                keys.add(!mysql && column.isQuoted()
+                keys.add(!caseInsensitive && column.isQuoted()
                         ? column.getColumnName() : identifierKey(column.getColumnName()));
             }
             return keys;
@@ -8748,9 +8750,11 @@ public class DmlLineage {
             return null;
         }
         StringBuilder folded = new StringBuilder(value.length());
-        for (int i = 0; i < value.length(); i++) {
-            folded.append(Character.toLowerCase(
-                    Character.toUpperCase(value.charAt(i))));
+        for (int i = 0; i < value.length(); ) {
+            int codePoint = value.codePointAt(i);
+            folded.appendCodePoint(Character.toLowerCase(
+                    Character.toUpperCase(codePoint)));
+            i += Character.charCount(codePoint);
         }
         return folded.toString();
     }

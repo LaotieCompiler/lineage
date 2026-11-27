@@ -31,6 +31,7 @@ import com.alibaba.druid.sql.ast.expr.SQLCastExpr;
 import com.alibaba.druid.sql.ast.expr.SQLExtractExpr;
 import com.alibaba.druid.sql.ast.expr.SQLExistsExpr;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLTextLiteralExpr;
 import com.alibaba.druid.sql.ast.expr.SQLInListExpr;
 import com.alibaba.druid.sql.ast.expr.SQLInSubQueryExpr;
 import com.alibaba.druid.sql.ast.expr.SQLListExpr;
@@ -8235,6 +8236,21 @@ public class DmlLineage {
     private String renderInsertColumn(Table metadata, String tableName, SQLExpr column) {
         String raw = column.toString();
         DbType dialect = currentDialect();
+        if ((dialect == DbType.hive || dialect == DbType.antspark)
+                && column instanceof SQLTextLiteralExpr) {
+            // Spark ANSI double-quoted identifiers arrive as text literals.
+            String name = ((SQLTextLiteralExpr) column).getText();
+            if (metadata == null) {
+                return renderHiveIdentifier(hiveColumnIdentity(name));
+            }
+            String resolved = MetadataCatalog.resolveColumnName(metadata, name,
+                    dialect);
+            if (resolved == null) {
+                throw new ColumnNotFoundException(normalizeIdentifier(name),
+                        java.util.Collections.singletonList(tableName));
+            }
+            return renderHiveIdentifier(resolved);
+        }
         if ((dialect == DbType.hive || dialect == DbType.antspark)
                 && metadata == null) {
             // Without a catalog, Hive/Spark column identity is case-insensitive,

@@ -690,6 +690,24 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void ansiDoubleQuotedInsertColumnIsAnIdentifier() {
+        for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
+            ScanResult result = LineageScanner.withoutMetadata(
+                    dialect, optional()).scan(
+                    "SET spark.sql.ansi.enabled = true;"
+                            + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                            + " INSERT OVERWRITE TABLE t (\"K\")"
+                            + " SELECT a.y FROM a;"
+                            + " SELECT t.\"K\" AS copied FROM t;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt3.temp0.copied")));
+        }
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

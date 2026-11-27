@@ -373,6 +373,25 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void h2DateTruncUnitIsNotAColumn() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.h2, strict())
+                .scan("SELECT DATE_TRUNC(DAY, \"c\") FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void timestampaddExemptionRequiresAUnitKeyword() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT TIMESTAMPADD(c, 1) FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                        + " FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

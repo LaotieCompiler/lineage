@@ -615,6 +615,19 @@ public class DmlLineage {
         requireQuotedIdentifier(identifier.getName());
     }
 
+    private static final Set<String> UNIT_KEYWORDS = new HashSet<>();
+
+    static {
+        java.util.Collections.addAll(UNIT_KEYWORDS,
+                "YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE",
+                "SECOND", "MILLISECOND", "MICROSECOND", "NANOSECOND",
+                "DATE", "TIME", "DATETIME", "TIMESTAMP",
+                "YEAR_MONTH", "DAY_HOUR", "DAY_MINUTE", "DAY_SECOND",
+                "DAY_MICROSECOND", "HOUR_MINUTE", "HOUR_SECOND",
+                "HOUR_MICROSECOND", "MINUTE_SECOND", "MINUTE_MICROSECOND",
+                "SECOND_MICROSECOND");
+    }
+
     private static boolean isFunctionUnit(SQLIdentifierExpr identifier,
             DbType dialect) {
         SQLObject parent = identifier.getParent();
@@ -623,58 +636,57 @@ public class DmlLineage {
         }
         SQLMethodInvokeExpr call = (SQLMethodInvokeExpr) parent;
         if (call.getArguments().isEmpty()
-                || call.getArguments().get(0) != identifier) {
-            return false;
-        }
-        if (call.getOwner() != null) {
-            // A schema-qualified s.extract(c, x) or s.timestampdiff(c, x, y)
-            // is an ordinary function.
+                || call.getArguments().get(0) != identifier
+                || call.getOwner() != null) {
             return false;
         }
         String method = call.getMethodName();
-        if ("EXTRACT".equalsIgnoreCase(method)) {
-            return true;
-        }
         boolean mysqlFamily = dialect == DbType.mysql
                 || dialect == DbType.mariadb;
         boolean hiveFamily = dialect == DbType.hive
                 || dialect == DbType.antspark;
         boolean sqlServerFamily = dialect == DbType.sqlserver
                 || dialect == DbType.sybase || dialect == DbType.h2;
-        boolean timestampUnit = mysqlFamily || hiveFamily
-                || sqlServerFamily || dialect == DbType.derby
-                || dialect == DbType.hsql;
-        if (timestampUnit
-                && ("TIMESTAMPDIFF".equalsIgnoreCase(method)
-                        || "TIMESTAMPADD".equalsIgnoreCase(method))) {
-            return true;
-        }
-        if (mysqlFamily && "GET_FORMAT".equalsIgnoreCase(method)) {
-            return true;
-        }
-        if (!sqlServerFamily) {
-            // In MySQL/MariaDB/Hive/Spark DATEDIFF takes two date expressions,
-            // not a leading date-part keyword.
-            return false;
-        }
-        if (dialect == DbType.h2) {
-            // H2 has DATEADD/DATEDIFF; other same-named functions may be aliases.
-            return "DATEADD".equalsIgnoreCase(method)
-                    || "DATEDIFF".equalsIgnoreCase(method);
-        }
-        if (dialect == DbType.sybase) {
-            return "DATEADD".equalsIgnoreCase(method)
+        boolean allowed;
+        if ("EXTRACT".equalsIgnoreCase(method)) {
+            allowed = true;
+        } else if ("TIMESTAMPDIFF".equalsIgnoreCase(method)
+                || "TIMESTAMPADD".equalsIgnoreCase(method)) {
+            allowed = mysqlFamily || hiveFamily || sqlServerFamily
+                    || dialect == DbType.derby || dialect == DbType.hsql;
+        } else if ("GET_FORMAT".equalsIgnoreCase(method)) {
+            allowed = mysqlFamily;
+        } else if (dialect == DbType.h2) {
+            allowed = "DATEADD".equalsIgnoreCase(method)
+                    || "DATEDIFF".equalsIgnoreCase(method)
+                    || "DATE_TRUNC".equalsIgnoreCase(method);
+        } else if (dialect == DbType.sybase) {
+            allowed = "DATEADD".equalsIgnoreCase(method)
                     || "DATEDIFF".equalsIgnoreCase(method)
                     || "DATEPART".equalsIgnoreCase(method)
                     || "DATENAME".equalsIgnoreCase(method);
+        } else if (dialect == DbType.sqlserver) {
+            allowed = "DATEADD".equalsIgnoreCase(method)
+                    || "DATEDIFF".equalsIgnoreCase(method)
+                    || "DATEDIFF_BIG".equalsIgnoreCase(method)
+                    || "DATEPART".equalsIgnoreCase(method)
+                    || "DATENAME".equalsIgnoreCase(method)
+                    || "DATETRUNC".equalsIgnoreCase(method)
+                    || "DATE_BUCKET".equalsIgnoreCase(method);
+        } else {
+            allowed = false;
         }
-        return "DATEADD".equalsIgnoreCase(method)
-                || "DATEDIFF".equalsIgnoreCase(method)
-                || "DATEDIFF_BIG".equalsIgnoreCase(method)
-                || "DATEPART".equalsIgnoreCase(method)
-                || "DATENAME".equalsIgnoreCase(method)
-                || "DATETRUNC".equalsIgnoreCase(method)
-                || "DATE_BUCKET".equalsIgnoreCase(method);
+        if (!allowed) {
+            return false;
+        }
+        String unit = normalizeIdentifier(identifier.getName());
+        if (unit == null) {
+            return false;
+        }
+        if (unit.regionMatches(true, 0, "SQL_TSI_", 0, 8)) {
+            return true;
+        }
+        return UNIT_KEYWORDS.contains(unit.toUpperCase(Locale.ROOT));
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

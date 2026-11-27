@@ -5126,6 +5126,45 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void schemaQualifiedFunctionHidesOnlyItsShortName() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM s.f, C;"
+                        + " SELECT (SELECT 1 FROM s.f(1)"
+                        + " WHERE s.f.k = 1 LIMIT 1) FROM s.f;"
+                        + " SELECT s.f.y, C.y FROM s.f, C;");
+
+        assertNull(result.getResults().get(0).getError());
+        assertNull(result.getResults().get(1).getError());
+        assertNull(result.getResults().get(2).getError());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("s.f.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void nestedScalarSubqueryKeepsFunctionImplicitName() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        ScanResult result = scanner.scan(
+                "SELECT generate_series FROM A, C;"
+                        + " SELECT (SELECT (SELECT 1"
+                        + " WHERE generate_series.generate_series = 1)"
+                        + " FROM generate_series(1, 3) LIMIT 1)"
+                        + " FROM A AS generate_series;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+        assertNull(result.getResults().get(1).getError());
+        assertNull(result.getResults().get(2).getError());
+        assertTrue(scanner.scan("SELECT generate_series FROM A, C;")
+                .getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
     public void standaloneJoinPlanDoesNotLearnTableFunctions() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.postgresql, inferring()).scan(

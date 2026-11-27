@@ -5022,7 +5022,8 @@ public class DmlLineage {
                 metadataTable != null ? java.util.Collections.<SourceTable>emptyList()
                         : copyUnknownGroups(cteTarget, outputColumns.size()),
                 false, hasWildcardContribution(cteTarget),
-                isPhysicalTableExpression(table));
+                isPhysicalTableExpression(table),
+                isPhysicalTableExpression(table) ? null : implicitRelationName(table));
     }
 
     private int targetMinimumColumns(String target, boolean widthKnown, int outputCount) {
@@ -5611,9 +5612,7 @@ public class DmlLineage {
     private static String implicitRelationName(SQLExprTableSource table) {
         SQLExpr expr = table.getExpr();
         if (expr instanceof SQLMethodInvokeExpr) {
-            SQLMethodInvokeExpr call = (SQLMethodInvokeExpr) expr;
-            return call.getOwner() == null ? call.getMethodName()
-                    : call.getOwner() + "." + call.getMethodName();
+            return ((SQLMethodInvokeExpr) expr).getMethodName();
         }
         return null;
     }
@@ -6045,7 +6044,7 @@ public class DmlLineage {
                     continue;
                 }
                 for (String reference : new String[] {source.displayName,
-                        source.rawName}) {
+                        source.rawName, source.implicitName}) {
                     if (reference != null) {
                         putLocal(frameLocals, qualifiedKey(reference), learnedTable);
                     }
@@ -8984,6 +8983,7 @@ public class DmlLineage {
         private final boolean wildcardOnly;
         private final boolean wildcardContribution;
         private final boolean learnable;
+        private final String implicitName;
 
         private SourceTable(String displayName, String writtenName, String rawName, String alias,
                 Table metadataTable, boolean temporary, boolean outputWidthKnown,
@@ -9004,7 +9004,7 @@ public class DmlLineage {
             this(displayName, writtenName, rawName, alias, metadataTable, temporary,
                     outputWidthKnown, outputNamesKnown, outputColumns, outputKeys,
                     outputNameKnown, minOutputColumns, outputUnknownGroups, wildcardOnly,
-                    wildcardContribution, true);
+                    wildcardContribution, true, null);
         }
 
         private SourceTable(String displayName, String writtenName, String rawName, String alias,
@@ -9012,7 +9012,7 @@ public class DmlLineage {
                 boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
                 List<Boolean> outputNameKnown, int minOutputColumns,
                 List<SourceTable> outputUnknownGroups, boolean wildcardOnly,
-                boolean wildcardContribution, boolean learnable) {
+                boolean wildcardContribution, boolean learnable, String implicitName) {
             this.displayName = displayName;
             this.writtenName = writtenName;
             this.rawName = rawName;
@@ -9033,6 +9033,7 @@ public class DmlLineage {
             this.wildcardOnly = wildcardOnly;
             this.wildcardContribution = wildcardContribution;
             this.learnable = learnable;
+            this.implicitName = implicitName;
         }
     }
 

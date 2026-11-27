@@ -299,6 +299,73 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void sqlServerBracketSchemaIsCaseInsensitive() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a] ([c] INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT [c] FROM [DBO].[a];");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("dbo.a.c"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.c")));
+    }
+
+    @Test
+    public void postgresCaseDistinctTableWithinSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.a (k INT);"
+                + " CREATE TABLE s.\"A\" (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO s; SELECT k FROM \"A\";"
+                        + " SELECT k FROM s.\"A\";");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.A.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s.A.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt2.temp0.k")));
+    }
+
+    @Test
+    public void quotedPublicDoesNotMatchDefaultSchema() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (k INT);"
+                + " CREATE TABLE \"PUBLIC\".a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO \"PUBLIC\"; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("PUBLIC.a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
+    public void stringLiteralSearchPathEntryIsUsed() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.a (k INT);"
+                + " CREATE TABLE s2.a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO 's2', s1; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s2.a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

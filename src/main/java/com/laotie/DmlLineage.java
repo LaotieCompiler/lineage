@@ -1092,24 +1092,28 @@ public class DmlLineage {
         List<String> values = new ArrayList<>();
         if (value instanceof SQLListExpr) {
             for (SQLExpr item : ((SQLListExpr) value).getItems()) {
-                values.add(item.toString().trim());
+                values.add(rawSchemaToken(item));
             }
         } else {
-            values.add(value.toString().trim());
+            values.add(rawSchemaToken(value));
         }
         return values;
     }
 
     private static List<String> stringList(SQLExpr value) {
         List<String> values = new ArrayList<>();
-        if (value instanceof SQLListExpr) {
-            for (SQLExpr item : ((SQLListExpr) value).getItems()) {
-                values.add(normalizeIdentifier(item.toString()));
-            }
-        } else {
-            values.add(normalizeIdentifier(value.toString()));
+        for (String raw : rawStringList(value)) {
+            values.add(normalizeIdentifier(raw));
         }
         return values;
+    }
+
+    private static String rawSchemaToken(SQLExpr value) {
+        if (value instanceof SQLTextLiteralExpr) {
+            String text = ((SQLTextLiteralExpr) value).getText();
+            return "\"" + text.replace("\"", "\"\"") + "\"";
+        }
+        return value.toString().trim();
     }
 
     static List<String> splitStatements(String sql, DbType dialect) {
@@ -5965,6 +5969,30 @@ public class DmlLineage {
                 filtered = exact;
             }
         }
+        if (dialect == DbType.postgresql) {
+            String[] preserved = MetadataCatalog
+                    .splitQualifiedNamePreservingQuotes(written);
+            String tableRef = preserved[preserved.length - 1];
+            String tableName = MetadataCatalog.normalizeIdentifier(tableRef);
+            List<TableLocation> exact = new ArrayList<>();
+            if (MetadataCatalog.isQuotedIdentifier(tableRef)) {
+                for (TableLocation candidate : filtered) {
+                    if (tableName.equals(candidate.getTable().getName())) {
+                        exact.add(candidate);
+                    }
+                }
+            } else {
+                String folded = tableName.toLowerCase(Locale.ROOT);
+                for (TableLocation candidate : filtered) {
+                    if (folded.equals(candidate.getTable().getName())) {
+                        exact.add(candidate);
+                    }
+                }
+            }
+            if (!exact.isEmpty()) {
+                filtered = exact;
+            }
+        }
 
         if (!explicitSchema) {
             List<String> searchPath = !sessionRawSchemas.isEmpty()
@@ -6012,9 +6040,14 @@ public class DmlLineage {
         DbType dialect = currentDialect();
         if (actual == null) {
             // An unqualified catalog table lives in the default schema.
-            return dialect == DbType.postgresql
-                    && "public".equalsIgnoreCase(
-                            MetadataCatalog.normalizeIdentifier(reference));
+            if (dialect != DbType.postgresql) {
+                return false;
+            }
+            boolean quotedDefault = MetadataCatalog.isQuotedIdentifier(reference);
+            String defaultName = MetadataCatalog.normalizeIdentifier(reference);
+            return quotedDefault ? "public".equals(defaultName)
+                    : "public".equals(
+                            defaultName.toLowerCase(Locale.ROOT));
         }
         boolean quoted = MetadataCatalog.isQuotedIdentifier(reference);
         String name = MetadataCatalog.normalizeIdentifier(reference);
@@ -6023,7 +6056,8 @@ public class DmlLineage {
                     : name.toLowerCase(Locale.ROOT).equals(actual);
         }
         if (dialect == DbType.mysql || dialect == DbType.mariadb
-                || dialect == DbType.hive || dialect == DbType.antspark) {
+                || dialect == DbType.hive || dialect == DbType.antspark
+                || dialect == DbType.sqlserver) {
             return foldCase(name).equals(foldCase(actual));
         }
         return quoted ? name.equals(actual) : name.equalsIgnoreCase(actual);

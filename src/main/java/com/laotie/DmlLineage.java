@@ -391,8 +391,10 @@ public class DmlLineage {
                 String markedMethod = markedMethods.get(i);
                 if (markedMethod != null
                         && markedMethod.startsWith(JDBC_MARKER)
-                        && !markedMethod.equals(x.getMethodName())) {
-                    x.putAttribute(JDBC_ESCAPE_ATTRIBUTE, Boolean.TRUE);
+                        && !markedMethod.equals(x.getMethodName())
+                        && !x.getArguments().isEmpty()) {
+                    x.putAttribute(JDBC_ESCAPE_ATTRIBUTE,
+                            x.getArguments().get(0));
                 }
                 return true;
             }
@@ -832,8 +834,10 @@ public class DmlLineage {
             return false;
         }
         String method = call.getMethodName();
-        boolean jdbcMarked = Boolean.TRUE.equals(
-                call.getAttribute(JDBC_ESCAPE_ATTRIBUTE));
+        Object escapeArg = call.getAttribute(JDBC_ESCAPE_ATTRIBUTE);
+        boolean jdbcMarked = escapeArg != null
+                && !call.getArguments().isEmpty()
+                && escapeArg == call.getArguments().get(0);
         boolean mysqlFamily = dialect == DbType.mysql
                 || dialect == DbType.mariadb;
         boolean hiveFamily = dialect == DbType.hive

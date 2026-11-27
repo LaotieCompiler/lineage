@@ -5775,10 +5775,20 @@ public class DmlLineage {
         for (StarOutput output : binding.plan) {
             for (StarColumn column : output.sources) {
                 if (columnKey != null && columnKey.equals(column.key)) {
-                    learnColumn(column.source, column.column, true);
+                    learnColumn(column.source,
+                            column.quoted ? quoteForLearning(column.column)
+                                    : column.column, true);
                 }
             }
         }
+    }
+
+    private String quoteForLearning(String name) {
+        DbType dialect = currentDialect();
+        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
+            return "`" + name.replace("`", "``") + "`";
+        }
+        return "\"" + name.replace("\"", "\"\"") + "\"";
     }
 
     private void learnExplicitReference(SQLPropertyExpr property) {
@@ -5875,16 +5885,27 @@ public class DmlLineage {
             collectLocalNames(block.getFrom(), frameLocals, ctes);
             // A local table shadows an inherited short name.
             locals.putAll(frameLocals);
-            // A non-LATERAL derived body and a JOIN ON see the enclosing scope,
-            // not the other sibling sources of this FROM.
-            learnDerivedBodies(block.getFrom(), inheritedLocals, ctes);
-            Set<String> fromNames = new HashSet<>();
-            collectFromNames(block.getFrom(), fromNames);
-            learnJoinConditions(block.getFrom(), inheritedLocals, ctes, fromNames);
-            for (SQLSelectItem item : block.getSelectList()) {
-                learnExplicitReferences(item.getExpr(), locals, ctes);
+            Map<String, SourceNode> savedBindings = new HashMap<>(learningBindings);
+            for (Map.Entry<String, String> local : frameLocals.entrySet()) {
+                if (LOCAL_BINDING.equals(local.getValue())) {
+                    // A same-named local join alias has its own plan.
+                    learningBindings.put(local.getKey(), null);
+                }
             }
-            learnExplicitReferences(block.getWhere(), locals, ctes);
+            try {
+                // A non-LATERAL derived body and a JOIN ON see the enclosing scope,
+                // not the other sibling sources of this FROM.
+                learnDerivedBodies(block.getFrom(), inheritedLocals, ctes);
+                Set<String> fromNames = new HashSet<>();
+                collectFromNames(block.getFrom(), fromNames);
+                learnJoinConditions(block.getFrom(), inheritedLocals, ctes, fromNames);
+                for (SQLSelectItem item : block.getSelectList()) {
+                    learnExplicitReferences(item.getExpr(), locals, ctes);
+                }
+                learnExplicitReferences(block.getWhere(), locals, ctes);
+            } finally {
+                learningBindings = savedBindings;
+            }
         } else if (query instanceof SQLUnionQuery) {
             SQLUnionQuery union = (SQLUnionQuery) query;
             // Each branch has its own FROM aliases; one branch must not shadow the
@@ -5982,23 +6003,36 @@ public class DmlLineage {
 
     private void learnNoFromExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
-        learningBindings.clear();
+        Map<String, SourceNode> savedBindings = new HashMap<>(learningBindings);
         if (!stackJoinBindings.isEmpty()) {
             learningBindings.putAll(stackJoinBindings.peek());
         }
-        Set<String> ctes = currentCteKeys();
-        for (SQLSelectItem item : block.getSelectList()) {
-            learnExplicitReferences(item.getExpr(), inherited, ctes);
+        try {
+            Set<String> ctes = currentCteKeys();
+            for (SQLSelectItem item : block.getSelectList()) {
+                learnExplicitReferences(item.getExpr(), inherited, ctes);
+            }
+            learnExplicitReferences(block.getWhere(), inherited, ctes);
+        } finally {
+            learningBindings = savedBindings;
         }
-        learnExplicitReferences(block.getWhere(), inherited, ctes);
     }
 
     private void learnBlockExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
-        learningBindings.clear();
+        Map<String, SourceNode> savedBindings = new HashMap<>(learningBindings);
         if (!stackJoinBindings.isEmpty()) {
             learningBindings.putAll(stackJoinBindings.peek());
         }
+        try {
+            learnBlockExplicitReferencesInScope(block, inherited);
+        } finally {
+            learningBindings = savedBindings;
+        }
+    }
+
+    private void learnBlockExplicitReferencesInScope(SQLSelectQueryBlock block,
+            Map<String, String> inherited) {
         Set<String> ctes = currentCteKeys();
         Map<String, String> frameLocals = new HashMap<>();
         collectLocalNames(block.getFrom(), frameLocals, ctes);

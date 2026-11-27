@@ -4751,4 +4751,53 @@ public class MetadataFreeAnalysisTest {
                 instanceof ColumnNotFoundException);
     }
 
+    @Test
+    public void nestedBlockKeepsInheritedJoinPlan() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " UPDATE t SET v = (SELECT 1 FROM Z"
+                        + " WHERE j.k = 1 LIMIT 1) FROM (A JOIN B USING (k)) AS j;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void localJoinAliasShadowsAnInheritedPlan() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM (A JOIN B USING (k)) AS j"
+                        + " WHERE 1 IN (SELECT 1 FROM"
+                        + " ((SELECT 1 AS k) AS d CROSS JOIN D) AS j"
+                        + " WHERE j.k = 1);"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void quotedUsingKeyIsLearnedWithItsQuotes() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT \"K\" FROM A, C;"
+                        + " SELECT 1 FROM (A JOIN B USING (\"K\")) AS j"
+                        + " WHERE j.\"K\" = 1;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        // Quoted K and unquoted k are distinct columns.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+        assertEquals(0, result.getResults().get(1).getError() == null ? 0 : 1);
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.K"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.K")));
+    }
+
 }

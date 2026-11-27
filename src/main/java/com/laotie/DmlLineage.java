@@ -395,10 +395,8 @@ public class DmlLineage {
                         && !x.getArguments().isEmpty()
                         && x.getArguments().get(0)
                                 instanceof SQLIdentifierExpr) {
-                    x.putAttribute(JDBC_ESCAPE_ATTRIBUTE, new JdbcEscape(
-                            ((SQLIdentifierExpr) x.getArguments().get(0))
-                                    .getName(),
-                            x.getArguments().size()));
+                    x.putAttribute(JDBC_ESCAPE_ATTRIBUTE,
+                            new JdbcEscape(jdbcSignature(x)));
                 }
                 return true;
             }
@@ -839,14 +837,9 @@ public class DmlLineage {
         }
         String method = call.getMethodName();
         Object escape = call.getAttribute(JDBC_ESCAPE_ATTRIBUTE);
-        boolean jdbcMarked = false;
-        if (escape instanceof JdbcEscape
-                && call.getArguments().size() == ((JdbcEscape) escape).argumentCount
-                && !call.getArguments().isEmpty()
-                && call.getArguments().get(0) instanceof SQLIdentifierExpr) {
-            jdbcMarked = ((JdbcEscape) escape).unit.equalsIgnoreCase(
-                    ((SQLIdentifierExpr) call.getArguments().get(0)).getName());
-        }
+        boolean jdbcMarked = escape instanceof JdbcEscape
+                && ((JdbcEscape) escape).signature.equals(
+                        jdbcSignature(call));
         boolean mysqlFamily = dialect == DbType.mysql
                 || dialect == DbType.mariadb;
         boolean hiveFamily = dialect == DbType.hive
@@ -6360,13 +6353,22 @@ public class DmlLineage {
             "com.laotie.jdbcEscape";
 
     private static final class JdbcEscape {
-        private final String unit;
-        private final int argumentCount;
+        private final String signature;
 
-        private JdbcEscape(String unit, int argumentCount) {
-            this.unit = unit;
-            this.argumentCount = argumentCount;
+        private JdbcEscape(String signature) {
+            this.signature = signature;
         }
+    }
+
+    private static String jdbcSignature(SQLMethodInvokeExpr call) {
+        StringBuilder signature = new StringBuilder(call.getMethodName());
+        signature.append('|').append(call.getArguments().size());
+        for (SQLExpr argument : call.getArguments()) {
+            signature.append('|')
+                    .append(argument.getClass().getSimpleName())
+                    .append(':').append(argument);
+        }
+        return signature.toString();
     }
     private static final String JDBC_MARKER = "LO_JDBC_";
     private static final String ANSI_IDENTIFIER_ATTRIBUTE =

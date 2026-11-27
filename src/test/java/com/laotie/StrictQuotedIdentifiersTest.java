@@ -742,6 +742,40 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void sameArityReplacementLosesTheExemption() {
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement escaped = lineage.parseStatement(
+                "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                        + " FROM \"t\";");
+        com.alibaba.druid.sql.ast.SQLStatement plain = lineage.parseStatement(
+                "SELECT TIMESTAMPADD(sql_tsi_day, 2, \"c\") FROM \"t\";");
+        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr escapedCall =
+                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                        escaped).getSelect().getQuery())
+                                .getSelectList().get(0).getExpr();
+        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr plainCall =
+                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                        plain).getSelect().getQuery())
+                                .getSelectList().get(0).getExpr();
+        escapedCall.getArguments().clear();
+        for (com.alibaba.druid.sql.ast.SQLExpr argument
+                : plainCall.getArguments()) {
+            escapedCall.addArgument(argument);
+        }
+        try {
+            lineage.getLineage(escaped);
+            org.junit.Assert.fail("same-arity replacement must reject");
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

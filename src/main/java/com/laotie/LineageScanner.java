@@ -59,6 +59,14 @@ public class LineageScanner {
     }
 
     /**
+     * A scanner that analyzes with the given dialect and options and no metadata.
+     */
+    public static LineageScanner withoutMetadata(DbType dbType,
+            LineageOptions options) {
+        return new LineageScanner(null, dbType, options);
+    }
+
+    /**
      * A scanner that analyzes with the given options and a metadata context.
      */
     public static LineageScanner withMetadata(MetadataContext context,

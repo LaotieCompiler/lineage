@@ -4980,7 +4980,8 @@ public class DmlLineage {
                 : detachedMetadata() && rawName != null
                         ? canonicalPhysicalReference(rawName)
                         : lastIdentifier(written);
-        String cteTarget = isSingleSegmentName(rawName)
+        String cteTarget = isPhysicalTableExpression(table)
+                && isSingleSegmentName(rawName)
                 ? findCteTarget(identifierKey(rawName)) : null;
         boolean temporary = cteTarget != null;
         String sourceAlias = alias;
@@ -6764,6 +6765,11 @@ public class DmlLineage {
             if (source.alias != null) {
                 // An alias hides the original table name.
                 matched = qualifiedKey(source.alias).equals(ownerKey);
+            } else if (!source.learnable) {
+                // A table function is visible only through its implicit FROM name;
+                // its call text is not a qualifier.
+                matched = source.implicitName != null
+                        && qualifiedKey(source.implicitName).equals(ownerKey);
             } else {
                 String reference = source.rawName != null
                         ? source.rawName : source.displayName;
@@ -6817,14 +6823,15 @@ public class DmlLineage {
             if (source.alias != null) {
                 // An alias hides the original table name.
                 matched = qualifiedKey(source.alias).equals(ownerKey);
+            } else if (!source.learnable) {
+                matched = source.implicitName != null
+                        && qualifiedKey(source.implicitName).equals(ownerKey);
             } else {
                 matched = qualifiedKey(source.displayName).equals(ownerKey)
                         || source.rawName != null
                                 && qualifiedKey(source.rawName).equals(ownerKey)
                         || source.writtenName != null
-                                && qualifiedKey(source.writtenName).equals(ownerKey)
-                        || source.implicitName != null
-                                && qualifiedKey(source.implicitName).equals(ownerKey);
+                                && qualifiedKey(source.writtenName).equals(ownerKey);
             }
             if (matched) {
                 return source;
@@ -6846,6 +6853,10 @@ public class DmlLineage {
             String[] ownerParts) {
         if (source.alias != null) {
             return qualifiedKey(source.alias).equals(ownerKey);
+        }
+        if (!source.learnable) {
+            return source.implicitName != null
+                    && qualifiedKey(source.implicitName).equals(ownerKey);
         }
         String reference = source.rawName != null
                 ? source.rawName : source.displayName;

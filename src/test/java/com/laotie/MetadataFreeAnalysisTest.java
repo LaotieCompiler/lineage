@@ -5181,6 +5181,37 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void functionCallTextIsNotAVisibleOwner() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT (SELECT \"generate_series(1, 3)\".k"
+                        + " FROM generate_series(1, 3) LIMIT 1)"
+                        + " FROM A AS \"generate_series(1, 3)\";");
+
+        assertNull(result.getResults().get(0).getError());
+        Set<Column> sources = result.getGraph().getSources(
+                Column.temporary("stmt0.temp1.k"));
+        assertTrue(sources.contains(new Column("a.k")));
+        assertFalse(sources.contains(
+                new Column("generate_series(1, 3).k")));
+    }
+
+    @Test
+    public void functionCallTextIsNotACteReference() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "WITH \"generate_series(1, 3)\" AS (SELECT A.y AS g FROM A)"
+                        + " SELECT g.g FROM generate_series(1, 3) AS g;");
+
+        assertNull(result.getResults().get(0).getError());
+        Set<Column> sources = result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.g"));
+        assertTrue(sources.contains(
+                new Column("generate_series(1, 3).g")));
+        assertFalse(sources.contains(new Column("a.y")));
+    }
+
+    @Test
     public void standaloneJoinPlanDoesNotLearnTableFunctions() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.postgresql, inferring()).scan(

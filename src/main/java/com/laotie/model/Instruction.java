@@ -504,7 +504,12 @@ public class Instruction {
             if (quote != 0) {
                 current.append(ch);
                 if (ch == quote) {
-                    quote = 0;
+                    if (i + 1 < columns.length()
+                            && columns.charAt(i + 1) == quote) {
+                        current.append(columns.charAt(++i));
+                    } else {
+                        quote = 0;
+                    }
                 }
             } else if (ch == '\'' || ch == '"' || ch == '`') {
                 quote = ch;

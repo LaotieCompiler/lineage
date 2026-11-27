@@ -195,6 +195,49 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void quotedPartitionNameStaysDistinctFromADataColumn() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (x INT, src_region STRING,"
+                + " src_day STRING) USING parquet;"
+                + " CREATE TABLE t (x INT, region STRING, `\"REGION\"` STRING,"
+                + " dt STRING) USING parquet"
+                + " PARTITIONED BY (`\"REGION\"`, dt);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t"
+                        + " PARTITION (`\"REGION\"` = 'US', dt)"
+                        + " SELECT x, src_region, src_day FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_region"))),
+                result.getGraph().getSources(new Column("t.region")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_day"))),
+                result.getGraph().getSources(new Column("t.dt")));
+    }
+
+    @Test
+    public void hivePartitionColumnsAreReadableFields() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+        catalog.loadDdl("CREATE TABLE a (x INT, src_day STRING);"
+                + " CREATE TABLE t (x INT) PARTITIONED BY (dt STRING)"
+                + " STORED AS PARQUET;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t PARTITION (dt)"
+                        + " SELECT x, src_day FROM a;"
+                        + " SELECT dt FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_day"))),
+                result.getGraph().getSources(new Column("t.dt")));
+        assertTrue(result.getGraph().getReverseGraph().containsEdge(
+                Column.temporary("stmt1.temp0.dt"), new Column("t.dt")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

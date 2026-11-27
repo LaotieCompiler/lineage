@@ -8721,6 +8721,40 @@ public class DmlLineage {
         }
     }
 
+    /**
+     * Compare partition names with catalog fields by name, not by SQL quotation.
+     * Hive/Spark partition matching is case-insensitive and only the outer
+     * backtick/double-quote layer is syntactic.
+     */
+    private static String partitionKey(String raw) {
+        String name = hiveLogicalName(raw);
+        return name == null ? null : name.toLowerCase();
+    }
+
+    private static String partitionColumnKey(String columnName) {
+        return columnName == null ? null : columnName.toLowerCase();
+    }
+
+    /** Strip one Hive SQL identifier layer, keeping inner quote characters. */
+    private static String hiveLogicalName(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String value = raw.trim();
+        if (value.length() >= 2 && value.charAt(0) == '`'
+                && value.charAt(value.length() - 1) == '`') {
+            return value.substring(1, value.length() - 1).replace("``", "`");
+        }
+        return MetadataCatalog.normalizeIdentifier(value);
+    }
+
+    private static String renderHiveIdentifier(String name) {
+        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return name;
+        }
+        return "`" + name.replace("`", "``") + "`";
+    }
+
     private String partitionTargetList(List<SQLExpr> insertColumns,
             List<SQLAssignItem> partitions, Table targetMetadata, String tableName) {
         if (targetMetadata == null || partitions == null || partitions.isEmpty()) {
@@ -8734,7 +8768,7 @@ public class DmlLineage {
             if (name == null) {
                 continue;
             }
-            partitionKeys.add(identifierKey(normalizeIdentifier(name)));
+            partitionKeys.add(partitionKey(name));
             if (partition.getValue() == null) {
                 dynamic.add(name);
             }
@@ -8749,19 +8783,20 @@ public class DmlLineage {
             }
         } else {
             for (Column column : targetMetadata.getFields()) {
-                if (!partitionKeys.contains(identifierKey(column.getColumnName()))) {
-                    targets.add(renderIdentifier(column.getColumnName()));
+                if (!partitionKeys.contains(partitionColumnKey(
+                        column.getColumnName()))) {
+                    targets.add(renderHiveIdentifier(column.getColumnName()));
                 }
             }
         }
         Set<String> present = new HashSet<>();
         for (String target : targets) {
-            present.add(identifierKey(normalizeIdentifier(target)));
+            present.add(partitionKey(target));
         }
         for (String name : dynamic) {
-            String key = identifierKey(normalizeIdentifier(name));
+            String key = partitionKey(name);
             if (present.add(key)) {
-                targets.add(renderIdentifier(normalizeIdentifier(name)));
+                targets.add(renderHiveIdentifier(normalizeIdentifier(name)));
             }
         }
         return targets.isEmpty() ? null : String.join(",", targets);

@@ -188,19 +188,48 @@ public class MetadataCatalog {
         List<Column> columns = new ArrayList<>();
         for (SQLTableElement element : createTable.getTableElementList()) {
             if (element instanceof SQLColumnDefinition) {
-                SQLColumnDefinition definition = (SQLColumnDefinition) element;
-                // A column definition name is already the bare field name; do not split dots.
-                String rawColumnName = definition.getColumnName();
-                Column column = new Column(null, normalizeIdentifier(rawColumnName));
-                column.setQuoted(isQuotedIdentifier(rawColumnName));
-                if (definition.getDataType() != null) {
-                    column.setDataType(definition.getDataType().toString());
+                columns.add(catalogColumn((SQLColumnDefinition) element));
+            }
+        }
+        for (SQLColumnDefinition definition : createTable.getPartitionColumns()) {
+            // Hive-style PARTITIONED BY columns are readable/writable fields too;
+            // some dialects also repeat them in the main element list.
+            String name = normalizeIdentifier(definition.getColumnName());
+            boolean present = false;
+            for (Column column : columns) {
+                if (sameCatalogName(column.getColumnName(), name)) {
+                    present = true;
+                    break;
                 }
-                columns.add(column);
+            }
+            if (!present) {
+                columns.add(catalogColumn(definition));
             }
         }
         Table table = new Table(parts[3], columns);
         return new TableMutation(parts[0], parts[1], parts[2], table);
+    }
+
+    private Column catalogColumn(SQLColumnDefinition definition) {
+        // A column definition name is already the bare field name; do not split dots.
+        String rawColumnName = definition.getColumnName();
+        Column column = new Column(null, normalizeIdentifier(rawColumnName));
+        column.setQuoted(isQuotedIdentifier(rawColumnName));
+        if (definition.getDataType() != null) {
+            column.setDataType(definition.getDataType().toString());
+        }
+        return column;
+    }
+
+    private boolean sameCatalogName(String left, String right) {
+        if (left == null || right == null) {
+            return left == right;
+        }
+        if (dialect == DbType.mysql || dialect == DbType.mariadb
+                || dialect == DbType.hive || dialect == DbType.antspark) {
+            return left.equalsIgnoreCase(right);
+        }
+        return left.equals(right);
     }
 
     private String[] parseCreateDatabase(SQLCreateDatabaseStatement createDatabase) {

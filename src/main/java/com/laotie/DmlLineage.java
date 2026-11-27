@@ -5963,6 +5963,12 @@ public class DmlLineage {
         if (pgPublic) {
             lookupReference = tableRef;
             lookupSchemaDefault = null;
+            if (preserved.length >= 4) {
+                instanceDefault = preserved[preserved.length - 4];
+                databaseDefault = preserved[preserved.length - 3];
+            } else if (preserved.length == 3) {
+                databaseDefault = preserved[0];
+            }
         }
 
         List<TableLocation> filtered = catalog.findAllTables(lookupReference,
@@ -6068,7 +6074,9 @@ public class DmlLineage {
         }
         List<TableLocation> lenient = new ArrayList<>();
         for (TableLocation candidate : candidates) {
-            if (tableName.equalsIgnoreCase(candidate.getTable().getName())) {
+            if (!candidate.getTable().isQuotedName()
+                    && tableName.equalsIgnoreCase(
+                            candidate.getTable().getName())) {
                 lenient.add(candidate);
             }
         }

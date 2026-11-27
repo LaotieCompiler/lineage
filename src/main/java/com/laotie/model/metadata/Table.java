@@ -11,6 +11,7 @@ public class Table {
     private String name = "_";
     private final List<Column> columns = new ArrayList<>();
     private Boolean orderedColumns = false;
+    private boolean quotedName;
     private boolean immutable;
 
     public Table(String name, List<Column> columns, Boolean orderedColumns) {
@@ -46,6 +47,15 @@ public class Table {
         this.columns.clear();
         this.columns.addAll(columns);
         checkColumnUnique();
+    }
+
+    public boolean isQuotedName() {
+        return quotedName;
+    }
+
+    public void setQuotedName(boolean quotedName) {
+        checkMutable();
+        this.quotedName = quotedName;
     }
 
     public Boolean getOrderedColumns() {
@@ -149,6 +159,7 @@ public class Table {
 
     public Table snapshot() {
         Table copy = new Table(name, new ArrayList<Column>(), orderedColumns);
+        copy.quotedName = quotedName;
         for (Column column : columns) {
             copy.columns.add(column.snapshot());
         }

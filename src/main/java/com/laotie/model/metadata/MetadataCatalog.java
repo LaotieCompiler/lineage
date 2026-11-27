@@ -208,6 +208,11 @@ public class MetadataCatalog {
             }
         }
         Table table = new Table(parts[3], columns);
+        String[] rawParts = splitQualifiedNamePreservingQuotes(qualifiedName);
+        if (rawParts.length > 0) {
+            table.setQuotedName(isQuotedIdentifier(
+                    rawParts[rawParts.length - 1]));
+        }
         return new TableMutation(parts[0], parts[1], parts[2], table);
     }
 
@@ -295,6 +300,7 @@ public class MetadataCatalog {
         }
 
         Table table = new Table(tableName, columns);
+        table.setQuotedName(isQuotedIdentifier(tableName));
         getOrCreateInstance(instance)
                 .getOrCreateDatabase(database)
                 .getOrCreateSchema(schema)

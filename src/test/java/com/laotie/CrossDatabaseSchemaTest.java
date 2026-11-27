@@ -437,6 +437,46 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void publicFallbackKeepsExplicitDatabase() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE db2.public.a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM db1.public.a;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof com.laotie.exception.MetadataNotFoundException);
+
+        MetadataCatalog matching = new MetadataCatalog(DbType.postgresql);
+        matching.loadDdl("CREATE TABLE db1.public.a (k INT);");
+        ScanResult found = LineageScanner.withMetadata(
+                MetadataContext.of(matching),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM db1.public.a;");
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("db1.public.a.k"))),
+                found.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void quotedUppercaseTableDoesNotShadowLowercase() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s1.\"A\" (k INT);"
+                + " CREATE TABLE s2.a (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SET search_path TO s1, s2; SELECT k FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("s2.a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.k")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

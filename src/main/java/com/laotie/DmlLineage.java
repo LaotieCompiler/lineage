@@ -8531,6 +8531,11 @@ public class DmlLineage {
                         && isIdentifierChar(sql.charAt(end))) {
                     end++;
                 }
+                if (seenInsert && !tableNameSeen) {
+                    tableNameSeen = true;
+                    atInsertStart = false;
+                }
+                nextNameIsTablePart = false;
                 i = end - 1;
             } else if (depth == 0 && Character.isLetter(ch)
                     && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {

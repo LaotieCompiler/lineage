@@ -983,6 +983,29 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void ansiSettingsMatchUnderTurkishLocale() {
+        java.util.Locale previous = java.util.Locale.getDefault();
+        try {
+            java.util.Locale.setDefault(new java.util.Locale("tr", "TR"));
+            ScanResult result = LineageScanner.withoutMetadata(
+                    DbType.antspark, optional()).scan(
+                    "SET spark.sql.ansi.enabled = true;"
+                            + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                            + " INSERT INTO 2t (\"K\")"
+                            + " SELECT a.y FROM a"
+                            + " WHERE (a.y IS NOT NULL);"
+                            + " SELECT k AS copied FROM 2t;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt3.temp0.copied")));
+        } finally {
+            java.util.Locale.setDefault(previous);
+        }
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

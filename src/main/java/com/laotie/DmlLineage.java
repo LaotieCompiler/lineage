@@ -456,7 +456,8 @@ public class DmlLineage {
     private void applySet(SQLSetStatement set, SessionState session) {
         for (SQLAssignItem item : set.getItems()) {
             String target = item.getTarget() == null ? ""
-                    : item.getTarget().toString().trim().toLowerCase();
+                    : item.getTarget().toString().trim()
+                            .toLowerCase(Locale.ROOT);
             SQLExpr value = item.getValue();
             if (value == null) {
                 continue;

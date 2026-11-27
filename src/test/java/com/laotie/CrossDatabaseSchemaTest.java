@@ -14,6 +14,7 @@ import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
 import com.laotie.model.metadata.MetadataMode;
+import com.laotie.model.metadata.TableLocation;
 
 /**
  * Lineage across databases and schemas, including default-session resolution.
@@ -614,6 +615,33 @@ public class CrossDatabaseSchemaTest {
         assertEquals(0, result.getFailures().size());
         assertTrue(!result.getGraph().getSources(
                 Column.temporary("stmt0.temp0.k")).isEmpty());
+    }
+
+    @Test
+    public void sqlServerClosingBracketNameRoundTrips() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE dbo.\"a]b\" (k INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT k FROM dbo.\"a]b\";");
+        assertEquals(0, result.getFailures().size());
+
+        MetadataCatalog reloaded = new MetadataCatalog(DbType.sqlserver);
+        reloaded.loadDdl(catalog.toDdl());
+        assertEquals(catalog.getChecksum(), reloaded.getChecksum());
+    }
+
+    @Test
+    public void findTableTrimsWhitespaceOutsideQuotes() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s.\"a\" (plain_k INT);"
+                + " CREATE TABLE s.\" a \" (padded_k INT);");
+        TableLocation location = catalog.findTable("s. \"a\" ");
+
+        assertEquals("a", location.getTable().getName());
+        assertEquals("plain_k",
+                location.getTable().getColumns().get(0).getColumnName());
     }
 
     @Test

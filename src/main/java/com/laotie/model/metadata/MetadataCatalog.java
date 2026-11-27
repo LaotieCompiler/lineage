@@ -746,12 +746,12 @@ public class MetadataCatalog {
     }
 
     private String quoteAlways(String identifier) {
-        if (dialect == DbType.sqlserver) {
-            return "[" + identifier.replace("]", "]]") + "]";
+        if (isMySqlFamily()) {
+            return "`" + identifier.replace("`", "``") + "`";
         }
-        char quote = isMySqlFamily() ? '`' : '"';
-        return quote + identifier.replace(String.valueOf(quote),
-                String.valueOf(quote) + quote) + quote;
+        String inner = identifier.replace("\\", "\\\\")
+                .replace("\"", "\"\"");
+        return "\"" + inner + "\"";
     }
 
     private String quote(String identifier) {
@@ -861,7 +861,9 @@ public class MetadataCatalog {
                     || (first == '[' && last == ']')) {
                 String inner = value.substring(1, value.length() - 1);
                 if (first == '"') {
-                    return inner.replace("\"\"", "\"").replace("\\\"", "\"");
+                    return inner.replace("\"\"", "\"")
+                            .replace("\\\\", "\\")
+                            .replace("\\\"", "\"");
                 }
                 if (first == '`') {
                     return inner.replace("``", "`");
@@ -918,51 +920,11 @@ public class MetadataCatalog {
     }
 
     public static String[] splitQualifiedName(String qualifiedName) {
-        if (qualifiedName == null) {
-            return new String[0];
+        String[] parts = splitQualifiedNamePreservingQuotes(qualifiedName);
+        for (int i = 0; i < parts.length; i++) {
+            parts[i] = normalizeIdentifier(parts[i]);
         }
-        List<String> parts = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        char quote = 0;
-        boolean quotedPart = false;
-        for (int i = 0; i < qualifiedName.length(); i++) {
-            char ch = qualifiedName.charAt(i);
-            if (quote != 0) {
-                if (ch == '\\' && quote != ']'
-                        && i + 1 < qualifiedName.length()) {
-                    current.append(qualifiedName.charAt(++i));
-                } else if (ch == quote) {
-                    if (i + 1 < qualifiedName.length()
-                            && qualifiedName.charAt(i + 1) == quote) {
-                        current.append(ch);
-                        i++;
-                    } else {
-                        quote = 0;
-                    }
-                } else {
-                    current.append(ch);
-                }
-            } else if (ch == '`' || ch == '"') {
-                quote = ch;
-                quotedPart = true;
-            } else if (ch == '[') {
-                quote = ']';
-                quotedPart = true;
-            } else if (ch == '.') {
-                parts.add(quotedPart ? current.toString()
-                        : current.toString().trim());
-                current.setLength(0);
-                quotedPart = false;
-            } else {
-                current.append(ch);
-            }
-        }
-        String last = quotedPart ? current.toString()
-                : current.toString().trim();
-        if (!last.isEmpty() || !parts.isEmpty()) {
-            parts.add(last);
-        }
-        return parts.toArray(new String[0]);
+        return parts;
     }
 
     private static final class TableMutation {

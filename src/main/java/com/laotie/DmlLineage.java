@@ -8502,6 +8502,9 @@ public class DmlLineage {
             } else if (ch == ')') {
                 depth--;
                 if (depth == 0 && seenInsert && groupStart >= 0) {
+                    if (isQueryGroup(sql, groupStart + 1, i)) {
+                        break;
+                    }
                     lastStart = groupStart;
                     lastEnd = i;
                 }
@@ -8534,6 +8537,30 @@ public class DmlLineage {
         for (int i = 0; i < list.length(); i++) {
             char ch = list.charAt(i);
             char next = i + 1 < list.length() ? list.charAt(i + 1) : 0;
+            if (q == 0 && ch == '-' && next == '-') {
+                int end = list.indexOf('\n', i);
+                if (end < 0) {
+                    break;
+                }
+                i = end;
+                continue;
+            }
+            if (q == 0 && ch == '/' && next == '*') {
+                int end = list.indexOf("*/", i + 2);
+                if (end < 0) {
+                    break;
+                }
+                i = end + 1;
+                continue;
+            }
+            if (q == 0 && ch == '#') {
+                int end = list.indexOf('\n', i);
+                if (end < 0) {
+                    break;
+                }
+                i = end;
+                continue;
+            }
             if (q != 0) {
                 element.append(ch);
                 if (ch == '\\' && q == '\'') {
@@ -8567,6 +8594,47 @@ public class DmlLineage {
         }
         styles.add(isDoubleQuotedElement(element.toString()));
         return styles;
+    }
+
+    private static boolean isQueryGroup(String sql, int start, int end) {
+        int i = start;
+        while (i < end) {
+            char ch = sql.charAt(i);
+            char next = i + 1 < end ? sql.charAt(i + 1) : 0;
+            if (Character.isWhitespace(ch)) {
+                i++;
+            } else if (ch == '-' && next == '-') {
+                int newline = sql.indexOf('\n', i);
+                if (newline < 0 || newline >= end) {
+                    return false;
+                }
+                i = newline + 1;
+            } else if (ch == '/' && next == '*') {
+                int close = sql.indexOf("*/", i + 2);
+                if (close < 0 || close >= end) {
+                    return false;
+                }
+                i = close + 2;
+            } else if (ch == '#') {
+                int newline = sql.indexOf('\n', i);
+                if (newline < 0 || newline >= end) {
+                    return false;
+                }
+                i = newline + 1;
+            } else if (Character.isLetter(ch)) {
+                int stop = i + 1;
+                while (stop < end && isIdentifierChar(sql.charAt(stop))) {
+                    stop++;
+                }
+                String word = sql.substring(i, stop);
+                return "SELECT".equalsIgnoreCase(word)
+                        || "VALUES".equalsIgnoreCase(word)
+                        || "WITH".equalsIgnoreCase(word);
+            } else {
+                return false;
+            }
+        }
+        return false;
     }
 
     private static boolean isDoubleQuotedElement(String element) {

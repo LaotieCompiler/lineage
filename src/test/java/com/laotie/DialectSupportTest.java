@@ -795,6 +795,37 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void commentInsideTargetListKeepsQuoteStyle() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " INSERT OVERWRITE TABLE t (/* target */ \"K\")"
+                        + " SELECT a.y FROM a;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt3.temp0.copied")));
+    }
+
+    @Test
+    public void parenthesizedSourceQueryDoesNotReplaceTargetList() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " INSERT INTO t (\"K\") (SELECT a.y FROM a);"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt3.temp0.copied")));
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

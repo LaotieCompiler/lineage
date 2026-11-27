@@ -632,12 +632,25 @@ public class DmlLineage {
             return false;
         }
         String method = call.getMethodName();
-        if ("EXTRACT".equalsIgnoreCase(method)
-                || "TIMESTAMPDIFF".equalsIgnoreCase(method)
-                || "TIMESTAMPADD".equalsIgnoreCase(method)) {
+        if ("EXTRACT".equalsIgnoreCase(method)) {
             return true;
         }
-        if (dialect != DbType.sqlserver) {
+        boolean mysqlFamily = dialect == DbType.mysql
+                || dialect == DbType.mariadb;
+        boolean hiveFamily = dialect == DbType.hive
+                || dialect == DbType.antspark;
+        if (mysqlFamily || hiveFamily) {
+            if ("TIMESTAMPDIFF".equalsIgnoreCase(method)
+                    || "TIMESTAMPADD".equalsIgnoreCase(method)) {
+                return true;
+            }
+            if (mysqlFamily && "GET_FORMAT".equalsIgnoreCase(method)) {
+                return true;
+            }
+        }
+        boolean sqlServerFamily = dialect == DbType.sqlserver
+                || dialect == DbType.sybase || dialect == DbType.h2;
+        if (!sqlServerFamily) {
             // In MySQL/MariaDB/Hive/Spark DATEDIFF takes two date expressions,
             // not a leading date-part keyword.
             return false;

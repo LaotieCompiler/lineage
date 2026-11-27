@@ -4800,4 +4800,65 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt1.temp0.K")));
     }
 
+    @Test
+    public void innerJoinConditionPrefersTheEnclosingPlan() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM D, C;"
+                        + " UPDATE t SET v = (SELECT 1 FROM"
+                        + " (Z JOIN W ON j.k = 1)"
+                        + " CROSS JOIN (D JOIN E USING (k)) AS j LIMIT 1)"
+                        + " FROM (A JOIN B USING (k)) AS j;"
+                        + " SELECT D.y, C.y FROM D, C;");
+
+        // The same-named sibling join alias is not visible to the ON condition.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void nestedDerivedJoinConditionUsesTheEnclosingPlan() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM (A JOIN B USING (k)) AS j"
+                        + " WHERE 1 IN (SELECT 1 FROM"
+                        + " (Z JOIN W ON j.k = 1) AS j);"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void staticUsingAliasAttributesItsSides() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 IN (SELECT 1 FROM"
+                        + " (A JOIN B USING (k)) AS j WHERE j.k = 1);"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void ambiguousJoinOutputIsNotLearned() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM ((A JOIN B USING (k))"
+                        + " CROSS JOIN (D JOIN E USING (k))) AS j"
+                        + " WHERE j.k = 1;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
 }

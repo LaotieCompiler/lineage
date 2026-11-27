@@ -315,7 +315,27 @@ public class DmlLineage {
     }
 
     public SQLStatement parseStatement(String sqlStr) {
-        return SQLUtils.parseSingleStatement(sqlStr, resolveDialect());
+        return parseWithDialectFallback(sqlStr, resolveDialect());
+    }
+
+    /**
+     * Spark SQL is Hive-compatible; the antspark parser does not accept some Hive
+     * statements (for example INSERT OVERWRITE TABLE). Fall back to the Hive parser
+     * only when the dialect's own parser rejects the statement.
+     */
+    private SQLStatement parseWithDialectFallback(String sql, DbType dialect) {
+        try {
+            return SQLUtils.parseSingleStatement(sql, dialect);
+        } catch (RuntimeException e) {
+            if (dialect == DbType.antspark) {
+                try {
+                    return SQLUtils.parseSingleStatement(sql, DbType.hive);
+                } catch (RuntimeException ignored) {
+                    // Report the original dialect's error below.
+                }
+            }
+            throw e;
+        }
     }
 
     public LineageResult parse(String sqlStr) {
@@ -365,7 +385,7 @@ public class DmlLineage {
             SessionState session) {
         SQLStatement statement;
         try {
-            statement = SQLUtils.parseSingleStatement(sql, dialect);
+            statement = parseWithDialectFallback(sql, dialect);
         } catch (Throwable t) {
             return failed(sql, base, session, t);
         }

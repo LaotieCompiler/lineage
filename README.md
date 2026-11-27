@@ -38,6 +38,8 @@ All the features and test cases in `SelectLineageTest.java`.
     DB2
     H2 and HSQLDB and Derby
     SQLite
+    Hive
+    Spark (Hive-compatible statements)
 
 ### select parser
 
@@ -153,8 +155,9 @@ regression tests.
 
 ### support DB
 
-1. Hive
-2. Spark
+Hive and Spark are covered by the catalog and wildcard regression tests. Spark
+statements fall back to the Hive parser only when the Spark parser rejects them, so
+Hive-compatible DML such as `INSERT OVERWRITE TABLE` is analyzed normally.
 
 #### steps
 

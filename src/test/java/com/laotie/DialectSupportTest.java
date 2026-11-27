@@ -3,6 +3,9 @@ package com.laotie;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
+import java.util.Arrays;
+import java.util.HashSet;
+
 import org.junit.Test;
 
 import com.alibaba.druid.DbType;
@@ -71,5 +74,97 @@ public class DialectSupportTest {
         assertEquals(new java.util.HashSet<>(java.util.Arrays.asList(
                 new Column("a.c1"))),
                 result.getGraph().getSources(new Column("t.c1")));
+    }
+
+    @Test
+    public void sparkInsertOverwriteUsesCatalogMetadata() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (c1 INT, c2 INT);"
+                + " CREATE TABLE t (c1 INT, c2 INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional())
+                .scan("INSERT OVERWRITE TABLE t SELECT c2 FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.c2"))),
+                result.getGraph().getSources(new Column("t.c1")));
+    }
+
+    @Test
+    public void hiveInsertOverwriteMapsDynamicPartitionColumns() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+        catalog.loadDdl("CREATE TABLE a (c1 INT, c2 INT, dt STRING);"
+                + " CREATE TABLE t (c1 INT, c2 INT)"
+                + " PARTITIONED BY (dt STRING);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t PARTITION (dt)"
+                        + " SELECT c1, c2, dt FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.c1"))),
+                result.getGraph().getSources(new Column("t.c1")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.c2"))),
+                result.getGraph().getSources(new Column("t.c2")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.dt"))),
+                result.getGraph().getSources(new Column("t.dt")));
+    }
+
+    @Test
+    public void hiveBacktickQualifiedNamesUseCatalog() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+        catalog.loadDdl("CREATE TABLE `db`.`a` (`c1` INT, `c2` INT);"
+                + " CREATE TABLE `db`.`t` (`c1` INT, `c2` INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO `db`.`t` SELECT `c2` FROM `db`.`a`;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db.a.c2"))),
+                result.getGraph().getSources(new Column("db.t.c1")));
+    }
+
+    @Test
+    public void sparkBacktickQualifiedNamesUseCatalog() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE `db`.`a` (`c1` INT, `c2` INT);"
+                + " CREATE TABLE `db`.`t` (`c1` INT, `c2` INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO `db`.`t` SELECT `c2` FROM `db`.`a`;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db.a.c2"))),
+                result.getGraph().getSources(new Column("db.t.c1")));
+    }
+
+    @Test
+    public void hiveStoredAsDdlUsesCatalog() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+        catalog.loadDdl("CREATE TABLE `db`.`a` (`c1` INT, `c2` STRING)"
+                + " STORED AS PARQUET;"
+                + " CREATE TABLE `db`.`t` (`c1` STRING) STORED AS PARQUET;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO `db`.`t` SELECT `c2` FROM `db`.`a`;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db.a.c2"))),
+                result.getGraph().getSources(new Column("db.t.c1")));
+    }
+
+    @Test
+    public void sparkUsingDdlUsesCatalog() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE `db`.`a` (`c1` INT, `c2` STRING)"
+                + " USING parquet;"
+                + " CREATE TABLE `db`.`t` (`c1` STRING) USING parquet;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO `db`.`t` SELECT `c2` FROM `db`.`a`;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("db.a.c2"))),
+                result.getGraph().getSources(new Column("db.t.c1")));
     }
 }

@@ -38,6 +38,8 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
     DB2
     H2 and HSQLDB and Derby
     SQLite
+    Hive
+    Spark（Hive 兼容语句）
 
 ### 已支持的 SQL 语法
 

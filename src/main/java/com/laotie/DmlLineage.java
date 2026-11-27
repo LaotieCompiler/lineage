@@ -462,9 +462,9 @@ public class DmlLineage {
                 continue;
             }
             boolean enabled = "true".equalsIgnoreCase(value.toString().trim());
-            if (target.endsWith("doublequotedidentifiers")) {
+            if (target.equals("spark.sql.ansi.doublequotedidentifiers")) {
                 session.ansiDoubleQuotedIdentifiers = enabled;
-            } else if (target.endsWith("ansi.enabled")) {
+            } else if (target.equals("spark.sql.ansi.enabled")) {
                 session.ansiEnabled = enabled;
             } else if (target.endsWith("search_path")) {
                 session.schemas = stringList(value);
@@ -8524,7 +8524,16 @@ public class DmlLineage {
                 }
             } else if (depth == 0 && ch == '.' && tableNameSeen) {
                 nextNameIsTablePart = true;
-            } else if (depth == 0 && Character.isLetter(ch)) {
+            } else if (depth == 0 && (ch == '_' || ch == '$')
+                    && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {
+                int end = i + 1;
+                while (end < sql.length()
+                        && isIdentifierChar(sql.charAt(end))) {
+                    end++;
+                }
+                i = end - 1;
+            } else if (depth == 0 && Character.isLetter(ch)
+                    && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {
                 int end = i + 1;
                 while (end < sql.length()
                         && isIdentifierChar(sql.charAt(end))) {

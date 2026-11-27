@@ -907,6 +907,38 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void underscoreCteNameDoesNotHideInsert() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " WITH _insert AS (SELECT a.y FROM a)"
+                        + " INSERT INTO t (\"K\") SELECT y FROM _insert;"
+                        + " SELECT k AS copied FROM t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt3.temp0.copied")));
+    }
+
+    @Test
+    public void unrelatedSettingsDoNotEnableAnsiQuoting() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = false;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = false;"
+                        + " SET other.ansi.enabled = true;"
+                        + " SET other.doubleQuotedIdentifiers = true;"
+                        + " INSERT OVERWRITE TABLE t (\"K\")"
+                        + " SELECT a.y FROM a;"
+                        + " SELECT k AS copied FROM t;");
+
+        assertTrue(result.getResults().get(4).getError()
+                instanceof com.laotie.exception.ColumnNotFoundException);
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

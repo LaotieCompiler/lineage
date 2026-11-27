@@ -5090,6 +5090,42 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void unaliasedFunctionShadowsAnOuterAliasInLearning() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        ScanResult result = scanner.scan(
+                "SELECT generate_series FROM A, C;"
+                        + " SELECT (SELECT 1 FROM generate_series(1, 3)"
+                        + " WHERE generate_series.generate_series = 1 LIMIT 1)"
+                        + " FROM A AS generate_series;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+        assertNull(result.getResults().get(1).getError());
+        assertNull(result.getResults().get(2).getError());
+        assertTrue(scanner.scan("SELECT generate_series FROM A, C;")
+                .getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void learnedPhysicalColumnsDoNotRefineTableFunctions() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT g FROM generate_series(1, 3) AS g, C;"
+                        + " SELECT C.y FROM C;"
+                        + " SELECT q.y FROM \"generate_series(1, 3)\" AS q;");
+
+        assertNull(result.getResults().get(0).getError());
+        assertNull(result.getResults().get(1).getError());
+        assertNull(result.getResults().get(2).getError());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(
+                new Column("generate_series(1, 3).g"))),
+                result.getGraph().getSources(Column.temporary("stmt0.temp0.g")));
+    }
+
+    @Test
     public void standaloneJoinPlanDoesNotLearnTableFunctions() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.postgresql, inferring()).scan(

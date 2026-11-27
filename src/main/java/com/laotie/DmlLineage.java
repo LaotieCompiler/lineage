@@ -5607,6 +5607,17 @@ public class DmlLineage {
         return expr == null || expr instanceof SQLName;
     }
 
+    /** The implicit visible name of a table function in FROM. */
+    private static String implicitRelationName(SQLExprTableSource table) {
+        SQLExpr expr = table.getExpr();
+        if (expr instanceof SQLMethodInvokeExpr) {
+            SQLMethodInvokeExpr call = (SQLMethodInvokeExpr) expr;
+            return call.getOwner() == null ? call.getMethodName()
+                    : call.getOwner() + "." + call.getMethodName();
+        }
+        return null;
+    }
+
     /* ------------------------------------------------------------------ */
     /* expressions                                                        */
     /* ------------------------------------------------------------------ */
@@ -6285,10 +6296,17 @@ public class DmlLineage {
             }
         } else if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;
-            String name = isPhysicalTableExpression(table)
-                    ? extractTableName(table) : null;
+            boolean physical = isPhysicalTableExpression(table);
+            String name = physical ? extractTableName(table)
+                    : implicitRelationName(table);
             String reference = table.getAlias() != null
                     ? table.getAlias() : name;
+            if (reference != null && !physical) {
+                // A table function exposes its call name but owns no physical columns;
+                // it still has to shadow an outer alias of the same name.
+                putLocal(locals, qualifiedKey(reference), null);
+                return;
+            }
             if (reference != null) {
                 String referenceKey = qualifiedKey(reference);
                 String nameKey = name == null ? null : qualifiedKey(name);
@@ -7807,7 +7825,7 @@ public class DmlLineage {
                         if (source.outputKeys.contains(columnKey)) {
                             owners.add(source);
                         }
-                    } else if (learnedMetadata != null
+                    } else if (source.learnable && learnedMetadata != null
                             && source.rawName != null
                             && learnedMetadata.knowsNormalizedTable(
                                     learnedTableKey(source.rawName))) {
@@ -7953,7 +7971,8 @@ public class DmlLineage {
         }
         List<SourceTable> refined = new ArrayList<>();
         for (SourceTable source : candidates) {
-            if (source.metadataTable != null || source.temporary || source.rawName == null) {
+            if (source.metadataTable != null || source.temporary || !source.learnable
+                    || source.rawName == null) {
                 refined.add(source);
                 continue;
             }

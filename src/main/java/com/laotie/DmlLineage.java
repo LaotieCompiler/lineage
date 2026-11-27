@@ -345,16 +345,17 @@ public class DmlLineage {
      * CTE name, which act as qualifiers) must carry identifier quotes.
      */
     private void validateQuotedIdentifiers(SQLStatement statement) {
+        DbType dialect = currentDialect();
         SQLASTVisitor visitor;
-        switch (currentDialect()) {
+        switch (dialect) {
             case oracle:
-                visitor = new OracleQuotedIdentifierVisitor();
+                visitor = new OracleQuotedIdentifierVisitor(dialect);
                 break;
             case sqlserver:
-                visitor = new SqlServerQuotedIdentifierVisitor();
+                visitor = new SqlServerQuotedIdentifierVisitor(dialect);
                 break;
             default:
-                visitor = new QuotedIdentifierVisitor();
+                visitor = new QuotedIdentifierVisitor(dialect);
                 break;
         }
         statement.accept(visitor);
@@ -410,9 +411,15 @@ public class DmlLineage {
 
     private static final class SqlServerQuotedIdentifierVisitor
             extends SQLServerASTVisitorAdapter {
+        private final DbType dialect;
+
+        private SqlServerQuotedIdentifierVisitor(DbType dialect) {
+            this.dialect = dialect;
+        }
+
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x);
+            checkIdentifier(x, dialect);
             return true;
         }
 
@@ -463,9 +470,15 @@ public class DmlLineage {
     }
 
     private static final class QuotedIdentifierVisitor extends SQLASTVisitorAdapter {
+        private final DbType dialect;
+
+        private QuotedIdentifierVisitor(DbType dialect) {
+            this.dialect = dialect;
+        }
+
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x);
+            checkIdentifier(x, dialect);
             return true;
         }
 
@@ -517,9 +530,15 @@ public class DmlLineage {
 
     private static final class OracleQuotedIdentifierVisitor
             extends OracleASTVisitorAdapter {
+        private final DbType dialect;
+
+        private OracleQuotedIdentifierVisitor(DbType dialect) {
+            this.dialect = dialect;
+        }
+
         @Override
         public boolean visit(SQLIdentifierExpr x) {
-            checkIdentifier(x);
+            checkIdentifier(x, dialect);
             return true;
         }
 
@@ -588,14 +607,16 @@ public class DmlLineage {
         }
     }
 
-    private static void checkIdentifier(SQLIdentifierExpr identifier) {
-        if (isFunctionUnit(identifier)) {
+    private static void checkIdentifier(SQLIdentifierExpr identifier,
+            DbType dialect) {
+        if (isFunctionUnit(identifier, dialect)) {
             return;
         }
         requireQuotedIdentifier(identifier.getName());
     }
 
-    private static boolean isFunctionUnit(SQLIdentifierExpr identifier) {
+    private static boolean isFunctionUnit(SQLIdentifierExpr identifier,
+            DbType dialect) {
         SQLObject parent = identifier.getParent();
         if (!(parent instanceof SQLMethodInvokeExpr)) {
             return false;
@@ -611,15 +632,23 @@ public class DmlLineage {
             return false;
         }
         String method = call.getMethodName();
-        return "EXTRACT".equalsIgnoreCase(method)
+        if ("EXTRACT".equalsIgnoreCase(method)
                 || "TIMESTAMPDIFF".equalsIgnoreCase(method)
-                || "TIMESTAMPADD".equalsIgnoreCase(method)
-                || "DATEADD".equalsIgnoreCase(method)
+                || "TIMESTAMPADD".equalsIgnoreCase(method)) {
+            return true;
+        }
+        if (dialect != DbType.sqlserver) {
+            // In MySQL/MariaDB/Hive/Spark DATEDIFF takes two date expressions,
+            // not a leading date-part keyword.
+            return false;
+        }
+        return "DATEADD".equalsIgnoreCase(method)
                 || "DATEDIFF".equalsIgnoreCase(method)
                 || "DATEDIFF_BIG".equalsIgnoreCase(method)
                 || "DATEPART".equalsIgnoreCase(method)
                 || "DATENAME".equalsIgnoreCase(method)
-                || "DATETRUNC".equalsIgnoreCase(method);
+                || "DATETRUNC".equalsIgnoreCase(method)
+                || "DATE_BUCKET".equalsIgnoreCase(method);
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

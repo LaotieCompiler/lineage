@@ -280,6 +280,30 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void datediffArgumentsAreColumnsOutsideSqlServer() {
+        for (DbType dialect : Arrays.asList(DbType.mysql, DbType.mariadb,
+                DbType.hive, DbType.antspark)) {
+            assertTrue(LineageScanner.withoutMetadata(dialect, strict())
+                    .scan("SELECT DATEDIFF(c, `d`) FROM `t`;")
+                    .getResults().get(0).getError()
+                    instanceof UnquotedIdentifierException);
+            assertEquals(0, LineageScanner.withoutMetadata(dialect, strict())
+                    .scan("SELECT DATEDIFF(`c`, `d`) FROM `t`;")
+                    .getFailures().size());
+        }
+    }
+
+    @Test
+    public void sqlServerDateBucketUnitIsNotAColumn() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("SELECT DATE_BUCKET(DAY, 1, [c]) FROM [t];")
+                .getFailures().size());
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.sqlserver, strict())
+                .scan("SELECT DATEDIFF(DAY, [c], [d]) FROM [t];")
+                .getFailures().size());
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

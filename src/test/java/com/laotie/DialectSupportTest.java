@@ -737,6 +737,34 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void singleQuotedInsertColumnIsRejectedInAnsiMode() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = true;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " INSERT OVERWRITE TABLE t ('K')"
+                        + " SELECT a.y FROM a;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertTrue(result.getResults().get(2).getError()
+                instanceof com.laotie.exception.ColumnNotFoundException);
+    }
+
+    @Test
+    public void doubleQuotedInsertColumnRequiresAnsiMode() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.antspark, optional()).scan(
+                "SET spark.sql.ansi.enabled = false;"
+                        + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                        + " INSERT OVERWRITE TABLE t (\"K\")"
+                        + " SELECT a.y FROM a;"
+                        + " SELECT t.k AS copied FROM t;");
+
+        assertTrue(result.getResults().get(2).getError()
+                instanceof com.laotie.exception.ColumnNotFoundException);
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

@@ -411,6 +411,8 @@ public class DmlLineage {
         this.sessionSchema = rawSchemas.isEmpty() ? null
                 : joinIdentifierKeys(rawSchemas);
         this.pendingLearned = new HashMap<>();
+        this.statementSql = sql;
+        this.ansiEnabled = session.ansiEnabled;
         this.ansiDoubleQuotedIdentifiers = session.ansiDoubleQuotedIdentifiers;
         try {
             init(true);
@@ -459,9 +461,11 @@ public class DmlLineage {
             if (value == null) {
                 continue;
             }
+            boolean enabled = "true".equalsIgnoreCase(value.toString().trim());
             if (target.endsWith("doublequotedidentifiers")) {
-                session.ansiDoubleQuotedIdentifiers = "true".equalsIgnoreCase(
-                        value.toString().trim());
+                session.ansiDoubleQuotedIdentifiers = enabled;
+            } else if (target.endsWith("ansi.enabled")) {
+                session.ansiEnabled = enabled;
             } else if (target.endsWith("search_path")) {
                 session.schemas = stringList(value);
                 session.rawSchemas = rawStringList(value);
@@ -5739,7 +5743,11 @@ public class DmlLineage {
     /** Join alias whose USING keys attribute to the listed sides. */
     private static final String LOCAL_BINDING_USING = "\u0000binding-using:";
     private int learningBindingSeq;
+    private boolean ansiEnabled;
     private boolean ansiDoubleQuotedIdentifiers;
+    private String statementSql;
+    private static final String ANSI_IDENTIFIER_ATTRIBUTE =
+            "com.laotie.ansiQuotedIdentifier";
 
     private static String encodeLocalPart(String value) {
         if (value == null) {
@@ -8243,12 +8251,13 @@ public class DmlLineage {
         DbType dialect = currentDialect();
         if ((dialect == DbType.hive || dialect == DbType.antspark)
                 && column instanceof SQLTextLiteralExpr) {
-            if (!ansiDoubleQuotedIdentifiers) {
+            if (!Boolean.TRUE.equals(column.getAttribute(
+                    ANSI_IDENTIFIER_ATTRIBUTE))) {
+                // An INSERT target list requires identifiers; a quoted string is
+                // not one.
                 throw new ColumnNotFoundException(raw,
                         java.util.Collections.singletonList(tableName));
             }
-            // Spark ANSI double-quoted identifiers arrive as text literals. The
-            // decoded text is the whole logical name: keep spaces and backticks.
             String name = ((SQLTextLiteralExpr) column).getText();
             if (metadata == null) {
                 return renderHiveIdentifier(foldCase(name));
@@ -8403,8 +8412,138 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     private void processInsert(SQLInsertStatement insert) {
+        annotateAnsiInsertColumns(insert);
         processInsertInto(insert.getTableSource(), insert.getColumns(),
                 insert.getQuery(), insert.getWith(), insert.getPartitions());
+    }
+
+    /**
+     * Druid's Hive/Spark lexer parses every double-quoted INSERT target as a text
+     * literal. In Spark ANSI identifier mode those are identifiers; recover the
+     * original quote delimiter from the statement text.
+     */
+    private void annotateAnsiInsertColumns(SQLInsertStatement insert) {
+        if (!ansiEnabled || !ansiDoubleQuotedIdentifiers
+                || statementSql == null || insert.getColumns().isEmpty()) {
+            return;
+        }
+        List<Boolean> styles = insertColumnQuoteStyles(statementSql);
+        if (styles.size() != insert.getColumns().size()) {
+            return;
+        }
+        for (int i = 0; i < styles.size(); i++) {
+            SQLExpr column = insert.getColumns().get(i);
+            if (styles.get(i) && column instanceof SQLTextLiteralExpr) {
+                column.putAttribute(ANSI_IDENTIFIER_ATTRIBUTE, Boolean.TRUE);
+            }
+        }
+    }
+
+    /** True for a double-quoted element in the INSERT column list. */
+    private static List<Boolean> insertColumnQuoteStyles(String sql) {
+        List<Boolean> styles = new ArrayList<>();
+        int depth = 0;
+        int groupStart = -1;
+        int lastStart = -1;
+        int lastEnd = -1;
+        char quote = 0;
+        for (int i = 0; i < sql.length(); i++) {
+            char ch = sql.charAt(i);
+            char next = i + 1 < sql.length() ? sql.charAt(i + 1) : 0;
+            if (quote != 0) {
+                if (ch == '\\' && quote == '\'') {
+                    i++;
+                } else if (ch == quote) {
+                    if (next == quote) {
+                        i++;
+                    } else {
+                        quote = 0;
+                    }
+                }
+                continue;
+            }
+            if (ch == '\'' || ch == '"' || ch == '`') {
+                quote = ch;
+                continue;
+            }
+            if (ch == ';') {
+                break;
+            }
+            if (ch == '(') {
+                if (depth == 0) {
+                    groupStart = i;
+                }
+                depth++;
+            } else if (ch == ')') {
+                depth--;
+                if (depth == 0 && groupStart >= 0) {
+                    lastStart = groupStart;
+                    lastEnd = i;
+                }
+            } else if (depth == 0 && Character.isLetter(ch)) {
+                int end = i + 1;
+                while (end < sql.length()
+                        && isIdentifierChar(sql.charAt(end))) {
+                    end++;
+                }
+                String word = sql.substring(i, end);
+                if ("SELECT".equalsIgnoreCase(word)
+                        || "VALUES".equalsIgnoreCase(word)
+                        || "WITH".equalsIgnoreCase(word)) {
+                    break;
+                }
+                i = end - 1;
+            }
+        }
+        if (lastStart < 0) {
+            return styles;
+        }
+        String list = sql.substring(lastStart + 1, lastEnd);
+        int d = 0;
+        char q = 0;
+        StringBuilder element = new StringBuilder();
+        for (int i = 0; i < list.length(); i++) {
+            char ch = list.charAt(i);
+            char next = i + 1 < list.length() ? list.charAt(i + 1) : 0;
+            if (q != 0) {
+                element.append(ch);
+                if (ch == '\\' && q == '\'') {
+                    if (i + 1 < list.length()) {
+                        element.append(list.charAt(++i));
+                    }
+                } else if (ch == q) {
+                    if (next == q) {
+                        element.append(list.charAt(++i));
+                    } else {
+                        q = 0;
+                    }
+                }
+                continue;
+            }
+            if (ch == '\'' || ch == '"' || ch == '`') {
+                q = ch;
+                element.append(ch);
+            } else if (ch == '(') {
+                d++;
+                element.append(ch);
+            } else if (ch == ')') {
+                d--;
+                element.append(ch);
+            } else if (ch == ',' && d == 0) {
+                styles.add(isDoubleQuotedElement(element.toString()));
+                element.setLength(0);
+            } else {
+                element.append(ch);
+            }
+        }
+        styles.add(isDoubleQuotedElement(element.toString()));
+        return styles;
+    }
+
+    private static boolean isDoubleQuotedElement(String element) {
+        String value = element.trim();
+        return value.startsWith("\"") && value.endsWith("\"")
+                && value.length() >= 2;
     }
 
     private void processReplace(SQLReplaceStatement replace) {
@@ -9478,6 +9617,7 @@ public class DmlLineage {
         private String database;
         private List<String> schemas = new ArrayList<>();
         private List<String> rawSchemas = new ArrayList<>();
+        private boolean ansiEnabled;
         private boolean ansiDoubleQuotedIdentifiers;
 
         private SessionState(MetadataContext base) {

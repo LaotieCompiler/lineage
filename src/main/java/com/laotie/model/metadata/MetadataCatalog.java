@@ -861,9 +861,7 @@ public class MetadataCatalog {
                     || (first == '[' && last == ']')) {
                 String inner = value.substring(1, value.length() - 1);
                 if (first == '"') {
-                    return inner.replace("\"\"", "\"")
-                            .replace("\\\\", "\\")
-                            .replace("\\\"", "\"");
+                    return decodeDoubleQuoted(inner);
                 }
                 if (first == '`') {
                     return inner.replace("``", "`");
@@ -875,6 +873,27 @@ public class MetadataCatalog {
             }
         }
         return value;
+    }
+
+    private static String decodeDoubleQuoted(String inner) {
+        StringBuilder decoded = new StringBuilder(inner.length());
+        for (int i = 0; i < inner.length(); i++) {
+            char ch = inner.charAt(i);
+            char next = i + 1 < inner.length() ? inner.charAt(i + 1) : 0;
+            if (ch == '\\' && next == '\\') {
+                decoded.append('\\');
+                i++;
+            } else if (ch == '\\' && next == '"') {
+                decoded.append('"');
+                i++;
+            } else if (ch == '"' && next == '"') {
+                decoded.append('"');
+                i++;
+            } else {
+                decoded.append(ch);
+            }
+        }
+        return decoded.toString();
     }
 
     /**

@@ -9244,7 +9244,8 @@ public class DmlLineage {
         if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             return name;
         }
-        return "\"" + name.replace("\"", "\"\"") + "\"";
+        return "\"" + name.replace("\\", "\\\\")
+                .replace("\"", "\"\"") + "\"";
     }
 
     private List<SourceTable> currentSources() {

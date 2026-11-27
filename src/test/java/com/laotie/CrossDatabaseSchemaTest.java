@@ -675,6 +675,40 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void backslashBeforeQuoteKeepsDisplayIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a\\\"b] ([k] INT);"
+                + " CREATE TABLE [dbo].[a\"b] ([v] INT);");
+        TableLocation first = catalog.findTable("[dbo].[a\\\"b]");
+        TableLocation second = catalog.findTable(first.getDisplayName());
+
+        assertEquals("k",
+                second.getTable().getColumns().get(0).getColumnName());
+    }
+
+    @Test
+    public void backslashBeforeQuoteKeepsColumnIdentity() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE [dbo].[a] ([c\\\"d] INT,"
+                + " [c\"d] INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT [c\\\"d] AS [with_slash], [c\"d] AS [without_slash]"
+                        + " FROM [dbo].[a];");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("dbo.a", "c\\\"d"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.with_slash")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("dbo.a", "c\"d"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.without_slash")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

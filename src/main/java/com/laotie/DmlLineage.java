@@ -8247,6 +8247,11 @@ public class DmlLineage {
                     String outputName = declaredTarget != null
                             && startPosition + relative < declaredTarget.size()
                                     ? declaredTarget.get(startPosition + relative) : name;
+                    String locked = lockedOutputName(targetTable,
+                            startPosition + relative);
+                    if (locked != null) {
+                        outputName = locked;
+                    }
                     instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                             sourceReference,
                             targetTable + "." + renderIdentifier(outputName),

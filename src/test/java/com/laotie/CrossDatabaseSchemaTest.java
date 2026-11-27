@@ -878,6 +878,25 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void unionLockedOutputNameSurvivesNestedStar() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE dst.t (a INT);"
+                + " CREATE TABLE src.v (w INT);"
+                + " CREATE TABLE src.s (x INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO dst.t (a) SELECT r.p FROM ("
+                        + " SELECT w AS p FROM src.v"
+                        + " UNION ALL SELECT q.* FROM ("
+                        + " SELECT * FROM ext.missing"
+                        + " UNION ALL SELECT x FROM src.s) AS q) AS r;");
+
+        assertEquals(0, result.getFailures().size());
+        assertTrue(result.getGraph().getSources(new Column("dst.t.a"))
+                .contains(new Column("src.v.w")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

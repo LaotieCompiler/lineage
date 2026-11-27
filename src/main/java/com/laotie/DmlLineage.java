@@ -8252,6 +8252,8 @@ public class DmlLineage {
                             targetTable + "." + renderIdentifier(outputName),
                             startPosition + relative, source.temporary,
                             targetTemporary));
+                    setTargetOutput(targetTable, startPosition + relative,
+                            outputName, identifierKey(outputName));
                 }
                 return totalWidth;
             }

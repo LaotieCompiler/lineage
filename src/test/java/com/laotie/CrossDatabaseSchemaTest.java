@@ -855,6 +855,29 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
+    public void nestedDerivedUnionKeepsKnownBranchMappings() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.sqlserver);
+        catalog.loadDdl("CREATE TABLE dst.t (a INT, b INT);"
+                + " CREATE TABLE src.s (x INT, y INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT INTO dst.t SELECT r.* FROM (SELECT q.* FROM ("
+                        + " SELECT * FROM ext.missing"
+                        + " UNION ALL SELECT x, y FROM src.s) AS q) AS r;"
+                        + " SELECT a, b FROM dst.t;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("ext.missing.*"), new Column("src.s.x"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.a")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("ext.missing.*"), new Column("src.s.y"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt1.temp0.b")));
+    }
+
+    @Test
     public void hiveJoinsAcrossDatabases() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
         catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"

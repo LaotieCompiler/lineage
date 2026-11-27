@@ -181,6 +181,15 @@ ANSI settings. No further adversarial review rounds were run for that batch.
 Cross-database and cross-schema lineage, including default database/schema selected via
 `USE` or `search_path`, is covered by `CrossDatabaseSchemaTest`.
 
+#### Known limitation: nested derived/union output names
+
+Cross-database resolution is covered by regression tests, but nested derived tables whose
+`*` expands a UNION of quoted and uncataloged branches are best-effort. The review batch was
+closed at 22 failed rounds when a requested case required a named column (`ext.missing.p`)
+from a table that was explicitly left uncataloged; that column cannot be derived under the
+metadata-free contract. When a branch's output names are unknown, the analyzer keeps
+table-level edges instead of guessing.
+
 ### support DB
 
 Hive and Spark are covered by the catalog and wildcard regression tests. Spark

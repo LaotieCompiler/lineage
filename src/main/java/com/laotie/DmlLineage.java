@@ -8264,10 +8264,13 @@ public class DmlLineage {
                             && startPosition + relative < declaredKeys.size()
                                     ? declaredKeys.get(startPosition + relative)
                                     : null;
+                    String sourceKey = relative < source.outputKeys.size()
+                            ? source.outputKeys.get(relative) : null;
                     setTargetOutput(targetTable, startPosition + relative,
                             outputName, lockedKey != null ? lockedKey
                                     : declaredKey != null ? declaredKey
-                                            : identifierKey(outputName));
+                                            : sourceKey != null ? sourceKey
+                                                    : identifierKey(outputName));
                 }
                 return totalWidth;
             }

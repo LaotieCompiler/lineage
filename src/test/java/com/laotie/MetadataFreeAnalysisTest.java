@@ -4936,4 +4936,32 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.\"a=b\"")));
     }
 
+    @Test
+    public void joinConditionTokenUsesItsOwnSubtree() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 FROM (((SELECT 1 AS k) AS d"
+                        + " CROSS JOIN D) AS j JOIN Z ON j.k = 1) AS p"
+                        + " CROSS JOIN (A JOIN B USING (k)) AS j;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        // The ON condition resolves the inner j, not the same-named sibling.
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void compositeUsingSideWithDerivedTableAttributesNothing() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM X, C;"
+                        + " SELECT 1 IN (SELECT 1 FROM (((SELECT 1 AS k) AS d"
+                        + " CROSS JOIN X) JOIN B USING (k)) AS j WHERE j.k = 1);"
+                        + " SELECT X.y, C.y FROM X, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
 }

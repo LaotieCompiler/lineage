@@ -117,6 +117,8 @@ public class DmlLineage {
     private boolean learningDisabled;
     /** JOIN alias bindings visible while discovering a query block. */
     private Map<String, Object> learningBindings = new HashMap<>();
+    /** The exact plan built for each JOIN table source, including its alias. */
+    private Map<SQLTableSource, SourceNode> tableSourceBindings = new IdentityHashMap<>();
     /** Depth of scalar-subquery analysis; outer scopes stay visible inside it. */
     private int scalarSubqueryDepth;
     private Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
@@ -4195,6 +4197,7 @@ public class DmlLineage {
                         }
                     }
                     bindings.put(identifierKey(join.getAlias()), joined);
+                    tableSourceBindings.put(join, joined);
                 }
                 if (!stackHiddenSources.isEmpty()) {
                     // An alias hides every qualifier inside its join subtree.
@@ -6112,20 +6115,20 @@ public class DmlLineage {
 
     private static void addSingleTable(Set<String> sides,
             Iterable<String> localValues) {
-        Set<String> tables = new LinkedHashSet<>();
+        List<String> values = new ArrayList<>();
         for (String value : localValues) {
-            if (value != null && !LOCAL_AMBIGUOUS.equals(value)) {
-                for (String table : value.split(LOCAL_TABLE_SEPARATOR)) {
-                    if (!table.isEmpty()) {
-                        tables.add(table);
-                    }
-                }
-            }
+            values.add(value);
         }
-        // Only a side that is exactly one table proves the key's ownership.
-        if (tables.size() == 1) {
-            sides.add(tables.iterator().next());
+        if (values.size() != 1) {
+            // A composite side (including a derived table or CTE) proves nothing.
+            return;
         }
+        String value = values.get(0);
+        if (value == null || LOCAL_AMBIGUOUS.equals(value)
+                || value.contains(LOCAL_TABLE_SEPARATOR)) {
+            return;
+        }
+        sides.add(value);
     }
 
     private String usingBindingMark(SQLJoinTableSource join,
@@ -6173,7 +6176,7 @@ public class DmlLineage {
         Set<String> ctes = currentCteKeys();
         Map<String, String> frameLocals = new HashMap<>();
         collectLocalNames(block.getFrom(), frameLocals, ctes);
-        upgradeBindings(frameLocals);
+        upgradeBindings(block.getFrom(), frameLocals);
         Set<String> fromNames = new HashSet<>();
         collectFromNames(block.getFrom(), fromNames);
         learnDerivedBodies(block.getFrom(), inherited, ctes);
@@ -6186,20 +6189,24 @@ public class DmlLineage {
         learnExplicitReferences(block.getWhere(), locals, ctes);
     }
 
-    private void upgradeBindings(Map<String, String> locals) {
-        if (stackJoinBindings.isEmpty()) {
+    private void upgradeBindings(SQLTableSource from, Map<String, String> locals) {
+        if (from == null) {
             return;
         }
-        Map<String, SourceNode> current = stackJoinBindings.peek();
-        for (Map.Entry<String, String> local : locals.entrySet()) {
-            String value = local.getValue();
-            if (value != null && (LOCAL_BINDING.equals(value)
-                    || value.startsWith(LOCAL_BINDING_USING))) {
-                SourceNode binding = current.get(local.getKey());
-                if (binding != null) {
-                    local.setValue(bindingToken(binding));
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            if (join.getAlias() != null) {
+                String key = qualifiedKey(join.getAlias());
+                String value = locals.get(key);
+                SourceNode binding = tableSourceBindings.get(join);
+                if (binding != null && value != null
+                        && (LOCAL_BINDING.equals(value)
+                                || value.startsWith(LOCAL_BINDING_USING))) {
+                    locals.put(key, bindingToken(binding));
                 }
             }
+            upgradeBindings(join.getLeft(), locals);
+            upgradeBindings(join.getRight(), locals);
         }
     }
 
@@ -6210,7 +6217,8 @@ public class DmlLineage {
             Map<String, String> subtree = new HashMap<>();
             collectLocalNames(join.getLeft(), subtree, ctes);
             collectLocalNames(join.getRight(), subtree, ctes);
-            upgradeBindings(subtree);
+            upgradeBindings(join.getLeft(), subtree);
+            upgradeBindings(join.getRight(), subtree);
             Map<String, String> conditionLocals = new HashMap<>(locals);
             conditionLocals.putAll(subtree);
             for (String name : fromNames) {
@@ -8841,6 +8849,7 @@ public class DmlLineage {
         stackUsing = new Stack<>();
         stackJoinBindings = new Stack<>();
         usingParticipantsByIdentity = new IdentityHashMap<>();
+        tableSourceBindings = new IdentityHashMap<>();
         stackHiddenSources = new Stack<>();
         inTargetExpression = false;
         currentOrdinal = -1;

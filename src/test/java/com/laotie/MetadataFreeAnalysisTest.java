@@ -4597,4 +4597,60 @@ public class MetadataFreeAnalysisTest {
                         Column.temporary("stmt0.temp0.k")));
     }
 
+    @Test
+    public void derivedBodyDoesNotLearnFromSiblingSources() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT (SELECT 1 FROM B AS q"
+                + " CROSS JOIN (SELECT q.k) AS d LIMIT 1) FROM A AS q;"
+                + " SELECT B.y, C.y FROM B, C;");
+        ScanResult result = scanner.scan("SELECT k FROM B, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void joinBlockingCoversQualifiedShortNames() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        scanner.scan("SELECT (SELECT 1 FROM"
+                + " (B JOIN D ON e.k = B.y) CROSS JOIN s.e LIMIT 1) FROM A AS e;"
+                + " SELECT s.e.y, C.y FROM s.e, C;");
+        ScanResult result = scanner.scan("SELECT k FROM s.e, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void joinConditionSeesTheEnclosingAlias() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " UPDATE t SET v = (SELECT 1 FROM"
+                        + " (B JOIN D ON q.k = B.y) CROSS JOIN E AS q LIMIT 1)"
+                        + " FROM A AS q;"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
+    @Test
+    public void noFromBlockStillDiscoversItsSubqueries() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 IN (SELECT A.k FROM A);"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(java.util.Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.k")));
+    }
+
 }

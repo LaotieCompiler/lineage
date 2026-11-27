@@ -1828,6 +1828,9 @@ public class DmlLineage {
         currentExpandedSourceNodes = new HashMap<>();
         SQLTableSource fromItem = queryBlock.getFrom();
         if (fromItem == null) {
+            if (metadataPass) {
+                learnNoFromExplicitReferences(queryBlock, outerBlockLocals());
+            }
             int position = 0;
             int minWidth = 0;
             boolean widthKnown = true;
@@ -1920,7 +1923,7 @@ public class DmlLineage {
         stackSourceTable.push(sources.get(0).displayName);
         targetOutputs.computeIfAbsent(stackTargetTable.peek(), k -> new ArrayList<String>());
         if (metadataPass) {
-            learnBlockExplicitReferences(queryBlock);
+            learnBlockExplicitReferences(queryBlock, outerBlockLocals());
         }
 
         List<SQLSelectItem> selectItems = queryBlock.getSelectList();
@@ -3766,23 +3769,6 @@ public class DmlLineage {
         stackTargetColumn.push(targetColumn);
         int before = instructions.size();
         inTargetExpression = true;
-        if (metadataPass) {
-            // Discover every explicit reference even when an earlier part of the
-            // expression cannot be resolved. The enclosing CTE names are not
-            // physical tables.
-            Map<String, String> seedLocals = new HashMap<>();
-            Set<String> seedCtes = new HashSet<>();
-            for (Map<String, String> frame : cteScopes) {
-                for (String alias : frame.keySet()) {
-                    // The frame key is already the normalized identifier; folding it
-                    // again would lose a quoted spelling (for example "X").
-                    // Only the name set is seeded; a CTE shadows an outer alias
-                    // only where a FROM actually reads it.
-                    seedCtes.add(alias);
-                }
-            }
-            learnExplicitReferences(item.getExpr(), seedLocals, seedCtes);
-        }
         visitExpr(item.getExpr());
         inTargetExpression = false;
         boolean uncertain = uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal;
@@ -5747,25 +5733,8 @@ public class DmlLineage {
     }
 
     private void learnExplicitReference(SQLPropertyExpr property) {
-        String rawName = property.getName();
-        CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
-        SourceTable source = correlated == null ? null : correlated.source;
-        SourceNode binding = correlated == null ? null : correlated.binding;
-        if (source != null) {
-            learnColumn(source, rawName, true);
-        } else if (binding != null) {
-            String key = identifierKey(rawName);
-            for (StarOutput output : binding.plan) {
-                for (StarColumn column : output.sources) {
-                    if (key != null && key.equals(column.key)) {
-                        learnColumn(column.source, column.column, true);
-                    }
-                }
-            }
-        }
-        // An owner that is neither visible locally nor through an enclosing scope
-        // (for example a CTE name without a FROM, or a hidden sibling alias) must
-        // not be guessed to be a physical table.
+        // The caller resolves owners against local or inherited bindings only; an
+        // unbound name is never guessed to be a physical table.
     }
 
     private void learnSelectExplicitReferences(SQLSelect select,
@@ -5831,6 +5800,9 @@ public class DmlLineage {
                 names.add(qualifiedKey(table.getAlias()));
             } else if (name != null) {
                 names.add(qualifiedKey(name));
+                if (!isSingleSegmentName(name)) {
+                    names.add(qualifiedKey(lastSegment(name)));
+                }
             }
         } else if (from instanceof SQLSubqueryTableSource) {
             SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) from;
@@ -5901,9 +5873,45 @@ public class DmlLineage {
         return ctes;
     }
 
-    private void learnBlockExplicitReferences(SQLSelectQueryBlock block) {
+    private Map<String, String> outerBlockLocals() {
+        Map<String, String> locals = new HashMap<>();
+        for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
+            Set<SourceTable> hidden = frame < stackHiddenSources.size()
+                    ? stackHiddenSources.get(frame)
+                    : java.util.Collections.<SourceTable>emptySet();
+            for (SourceTable source : stackSources.get(frame)) {
+                if (hidden.contains(source)) {
+                    continue;
+                }
+                String learnedTable = source.temporary || source.rawName == null
+                        ? null : learnedTableKey(source.rawName);
+                for (String reference : new String[] {source.displayName,
+                        source.rawName, source.alias}) {
+                    if (reference != null) {
+                        locals.put(qualifiedKey(reference), learnedTable);
+                    }
+                }
+                if (source.alias == null && source.rawName != null
+                        && !isSingleSegmentName(source.rawName)) {
+                    locals.put(qualifiedKey(lastSegment(source.rawName)), learnedTable);
+                }
+            }
+        }
+        return locals;
+    }
+
+    private void learnNoFromExplicitReferences(SQLSelectQueryBlock block,
+            Map<String, String> inherited) {
         Set<String> ctes = currentCteKeys();
-        Map<String, String> inherited = new HashMap<>();
+        for (SQLSelectItem item : block.getSelectList()) {
+            learnExplicitReferences(item.getExpr(), inherited, ctes);
+        }
+        learnExplicitReferences(block.getWhere(), inherited, ctes);
+    }
+
+    private void learnBlockExplicitReferences(SQLSelectQueryBlock block,
+            Map<String, String> inherited) {
+        Set<String> ctes = currentCteKeys();
         Map<String, String> frameLocals = new HashMap<>();
         collectLocalNames(block.getFrom(), frameLocals, ctes);
         Set<String> fromNames = new HashSet<>();

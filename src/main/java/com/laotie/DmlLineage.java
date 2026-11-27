@@ -8805,6 +8805,17 @@ public class DmlLineage {
         return MetadataCatalog.normalizeIdentifier(value);
     }
 
+    private static String catalogSpelling(Table metadata, String raw) {
+        String logical = hiveLogicalName(raw);
+        String key = foldCase(logical);
+        for (Column column : metadata.getFields()) {
+            if (foldCase(column.getColumnName()).equals(key)) {
+                return column.getColumnName();
+            }
+        }
+        return logical;
+    }
+
     private static String renderHiveIdentifier(String name) {
         if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
             return name;
@@ -8853,7 +8864,8 @@ public class DmlLineage {
         for (String name : dynamic) {
             String key = partitionKey(name);
             if (present.add(key)) {
-                targets.add(renderHiveIdentifier(normalizeIdentifier(name)));
+                targets.add(renderHiveIdentifier(
+                        catalogSpelling(targetMetadata, name)));
             }
         }
         return targets.isEmpty() ? null : String.join(",", targets);

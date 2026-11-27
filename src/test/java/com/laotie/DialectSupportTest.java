@@ -526,6 +526,28 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void dynamicPartitionTargetUsesCatalogSpelling() {
+        for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
+            MetadataCatalog catalog = new MetadataCatalog(dialect);
+            catalog.loadDdl("CREATE TABLE t (k STRING, dt STRING)"
+                    + " USING parquet PARTITIONED BY (dt);");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "INSERT OVERWRITE TABLE t PARTITION (`DT`)"
+                            + " SELECT * FROM missing;"
+                            + " SELECT t.dt AS copied FROM t;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(
+                    new Column("missing.*"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt1.temp0.copied")));
+            assertFalse(result.getGraph().getReverseGraph()
+                    .containsVertex(new Column("t.DT")));
+        }
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

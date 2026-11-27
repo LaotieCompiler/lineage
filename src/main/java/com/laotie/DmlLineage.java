@@ -507,6 +507,7 @@ public class DmlLineage {
         StringBuilder current = new StringBuilder();
         char quote = 0;
         boolean escapeString = false;
+        boolean rawString = false;
         String dollarTag = null;
         boolean lineComment = false;
         boolean blockComment = false;
@@ -554,12 +555,13 @@ public class DmlLineage {
                 if (escapeString && ch == '\\' && i + 1 < sql.length()) {
                     current.append(sql.charAt(++i));
                 } else if (ch == quote) {
-                    if (next == quote) {
+                    if (!rawString && next == quote) {
                         current.append(next);
                         i++;
                     } else {
                         quote = 0;
                         escapeString = false;
+                        rawString = false;
                     }
                 }
                 continue;
@@ -567,7 +569,7 @@ public class DmlLineage {
             if (ch == '\'' || ch == '"' || ch == '`'
                     || (bracketQuotes && ch == '[')) {
                 quote = ch == '[' ? ']' : ch;
-                boolean rawString = dialect == DbType.antspark
+                rawString = dialect == DbType.antspark
                         && (ch == '\'' || ch == '"')
                         && isRawStringPrefix(sql, i);
                 boolean backslashQuotes = mysqlFamily || hiveFamily;
@@ -8732,7 +8734,7 @@ public class DmlLineage {
             if (name == null) {
                 continue;
             }
-            partitionKeys.add(identifierKey(name));
+            partitionKeys.add(identifierKey(normalizeIdentifier(name)));
             if (partition.getValue() == null) {
                 dynamic.add(name);
             }
@@ -8754,10 +8756,10 @@ public class DmlLineage {
         }
         Set<String> present = new HashSet<>();
         for (String target : targets) {
-            present.add(identifierKey(target));
+            present.add(identifierKey(normalizeIdentifier(target)));
         }
         for (String name : dynamic) {
-            String key = identifierKey(name);
+            String key = identifierKey(normalizeIdentifier(name));
             if (present.add(key)) {
                 targets.add(renderIdentifier(normalizeIdentifier(name)));
             }

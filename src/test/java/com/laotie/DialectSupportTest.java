@@ -162,6 +162,39 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void quotedPartitionKeysKeepTheStaticColumnOut() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (x INT, src_day STRING) USING parquet;"
+                + " CREATE TABLE t (x INT, `region` STRING, `dt` STRING)"
+                + " USING parquet PARTITIONED BY (`region`, `dt`);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t"
+                        + " PARTITION (`region` = 'US', `dt`)"
+                        + " SELECT x, src_day FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.x"))),
+                result.getGraph().getSources(new Column("t.x")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a.src_day"))),
+                result.getGraph().getSources(new Column("t.dt")));
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.region")));
+    }
+
+    @Test
+    public void rawLiteralAdjacentToOrdinaryLiteralKeepsBoundary() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT r'a''it\\'s;ok'; SELECT x FROM a;");
+
+        assertEquals(2, result.getResults().size());
+        assertNull(result.getResults().get(1).getError());
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

@@ -4182,4 +4182,46 @@ public class MetadataFreeAnalysisTest {
         assertEquals(0, result.getFailures().size());
     }
 
+    @Test
+    public void twoPassLearningDropsObservationsOfAFailingStatement() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        ScanResult log = scanner.scan(
+                "SELECT C.z, y FROM C; SELECT A.y, A.x, y FROM A,C;");
+        assertTrue(log.getResults().get(1).getError()
+                instanceof AmbiguousColumnException);
+
+        // A.y/A.x came from the failing statement and must not block A.z.
+        ScanResult rescan = scanner.scan("SELECT z FROM A;");
+        assertEquals(0, rescan.getFailures().size());
+    }
+
+    @Test
+    public void joinAliasIsNotLearnedAsAPhysicalTable() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE s (k INT); CREATE TABLE b (v INT);");
+        LineageScanner scanner = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), inferring());
+        assertEquals(0, scanner.scan(
+                "SELECT j.k FROM (s CROSS JOIN b) AS j;").getFailures().size());
+        assertEquals(0, scanner.scan(
+                "SELECT j.y, o.y FROM j,o;").getFailures().size());
+
+        ScanResult result = scanner.scan("SELECT k FROM j,o;");
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void metadataDiscoverySeesReferencesInsideScalarSubqueries() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        assertEquals(0, scanner.scan(
+                "SELECT A.y, B.y FROM A,B;").getFailures().size());
+        ScanResult result = scanner.scan(
+                "SELECT k+(SELECT A.k FROM A) AS z FROM A,B;");
+
+        assertEquals(0, result.getFailures().size());
+    }
+
 }

@@ -115,6 +115,8 @@ public class DmlLineage {
      * statement sees the same picture.
      */
     private boolean learningDisabled;
+    /** Depth of scalar-subquery analysis; outer scopes stay visible inside it. */
+    private int scalarSubqueryDepth;
     private Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
 
     private Set<String> tempTables;
@@ -3099,7 +3101,7 @@ public class DmlLineage {
             throw new AmbiguousColumnException(normalizeIdentifier(rawName),
                     displayNames(unknown));
         }
-        if (hasLateralAncestorScope()) {
+        if (hasOuterScopeFallback()) {
             List<SourceTable> ancestors = resolveCorrelatedUnqualified(rawName);
             List<SourceTable> mapped = new ArrayList<>();
             Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
@@ -3250,7 +3252,7 @@ public class DmlLineage {
             }
         }
         for (String table : tables) {
-            if (targetColumn != null) {
+            if (targetColumn != null && !tempTables.contains(targetTable)) {
                 String rendered = targetColumn;
                 Instruction edge = new Instruction(OperationType.COLUMNS_INJECT,
                         table, targetTable + "(" + rendered + ")", -1, false, false);
@@ -3587,11 +3589,13 @@ public class DmlLineage {
         int savedUncertain = uncertainOrdinal;
         int savedBudget = currentStarBudget;
         boolean savedInTarget = inTargetExpression;
+        scalarSubqueryDepth++;
         try {
             stackTargetTable.push(target);
             processSelect(select);
             stackTargetTable.pop();
         } finally {
+            scalarSubqueryDepth--;
             currentOrdinal = savedOrdinal;
             uncertainOrdinal = savedUncertain;
             currentStarBudget = savedBudget;
@@ -5644,8 +5648,18 @@ public class DmlLineage {
                 String rawName = property.getName();
                 CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
                 SourceTable source = correlated == null ? null : correlated.source;
+                SourceNode binding = correlated == null ? null : correlated.binding;
                 if (source != null) {
                     learnColumn(source, rawName, true);
+                } else if (binding != null) {
+                    String key = identifierKey(rawName);
+                    for (StarOutput output : binding.plan) {
+                        for (StarColumn column : output.sources) {
+                            if (key != null && key.equals(column.key)) {
+                                learnColumn(column.source, column.column, true);
+                            }
+                        }
+                    }
                 } else if (property.getOwner() != null) {
                     String key = learnedTableKey(property.getOwner().toString());
                     pendingLearned.computeIfAbsent(key,
@@ -5699,6 +5713,54 @@ public class DmlLineage {
             learnExplicitReferences(((SQLInSubQueryExpr) expr).getExpr());
         } else if (expr instanceof SQLExtractExpr) {
             learnExplicitReferences(((SQLExtractExpr) expr).getValue());
+        } else if (expr instanceof SQLQueryExpr) {
+            learnExplicitReferences(((SQLQueryExpr) expr).getSubQuery());
+        } else if (expr instanceof SQLInSubQueryExpr) {
+            learnExplicitReferences(((SQLInSubQueryExpr) expr).getSubQuery());
+        }
+    }
+
+    private void learnExplicitReferences(SQLSelect select) {
+        if (select == null) {
+            return;
+        }
+        SQLWithSubqueryClause with = select.getWithSubQuery();
+        if (with != null) {
+            for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
+                learnExplicitReferences(entry.getSubQuery());
+            }
+        }
+        learnExplicitReferences(select.getQuery());
+    }
+
+    private void learnExplicitReferences(SQLSelectQuery query) {
+        if (query instanceof SQLSelectQueryBlock) {
+            SQLSelectQueryBlock block = (SQLSelectQueryBlock) query;
+            for (SQLSelectItem item : block.getSelectList()) {
+                learnExplicitReferences(item.getExpr());
+            }
+            collectExplicitSourceReferences(block.getFrom());
+            learnExplicitReferences(block.getWhere());
+        } else if (query instanceof SQLUnionQuery) {
+            SQLUnionQuery union = (SQLUnionQuery) query;
+            learnExplicitReferences(union.getLeft());
+            learnExplicitReferences(union.getRight());
+        }
+    }
+
+    private void collectExplicitSourceReferences(SQLTableSource from) {
+        if (from == null) {
+            return;
+        }
+        if (from instanceof SQLJoinTableSource) {
+            SQLJoinTableSource join = (SQLJoinTableSource) from;
+            collectExplicitSourceReferences(join.getLeft());
+            collectExplicitSourceReferences(join.getRight());
+            learnExplicitReferences(join.getCondition());
+        } else if (from instanceof SQLSubqueryTableSource) {
+            learnExplicitReferences(((SQLSubqueryTableSource) from).getSelect());
+        } else if (from instanceof SQLUnionQueryTableSource) {
+            learnExplicitReferences(((SQLUnionQueryTableSource) from).getUnion());
         }
     }
 
@@ -5795,12 +5857,12 @@ public class DmlLineage {
         try {
             sources = resolveUnqualified(rawName);
         } catch (ColumnNotFoundException e) {
-            if (!hasLateralAncestorScope()) {
+            if (!hasOuterScopeFallback()) {
                 throw e;
             }
             sources = resolveCorrelatedUnqualified(rawName);
         }
-        if (sources.isEmpty() && hasLateralAncestorScope()) {
+        if (sources.isEmpty() && hasOuterScopeFallback()) {
             sources = resolveCorrelatedUnqualified(rawName);
         }
         for (SourceTable source : sources) {
@@ -5850,6 +5912,10 @@ public class DmlLineage {
                 || hasLateralAncestorScope();
     }
 
+    private boolean hasOuterScopeFallback() {
+        return hasLateralAncestorScope() || scalarSubqueryDepth > 0;
+    }
+
     private boolean hasLateralAncestorScope() {
         for (int frame = 0; frame < stackSources.size() - 1; frame++) {
             if (frame < lateralScopes.size()
@@ -5864,8 +5930,9 @@ public class DmlLineage {
         String key = identifierKey(rawName);
         boolean lateralScope = false;
         for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
-            if (frame >= lateralScopes.size()
-                    || !Boolean.TRUE.equals(lateralScopes.get(frame))) {
+            boolean lateralFrame = frame < lateralScopes.size()
+                    && Boolean.TRUE.equals(lateralScopes.get(frame));
+            if (!lateralFrame && scalarSubqueryDepth == 0) {
                 continue;
             }
             lateralScope = true;
@@ -7706,6 +7773,25 @@ public class DmlLineage {
         }
     }
 
+    private void pushClauseScope(List<SourceTable> sources,
+            Map<String, List<SourceTable>> using) {
+        stackSources.push(sources);
+        lateralScopes.push(Boolean.FALSE);
+        stackUsing.push(using);
+        stackStarPlan.push(new ArrayList<StarOutput>());
+        stackHiddenSources.push(stackHiddenSources.isEmpty()
+                ? new HashSet<SourceTable>()
+                : new HashSet<>(stackHiddenSources.peek()));
+    }
+
+    private void popClauseScope() {
+        stackHiddenSources.pop();
+        stackStarPlan.pop();
+        stackUsing.pop();
+        lateralScopes.pop();
+        stackSources.pop();
+    }
+
     private void processMerge(SQLMergeStatement merge) {
         SQLTableSource into = merge.getInto();
         if (!(into instanceof SQLExprTableSource)) {
@@ -7752,7 +7838,7 @@ public class DmlLineage {
                 // The update expression reads the target and the source.
                 List<SourceTable> scope = new ArrayList<>(targetSources);
                 scope.addAll(sourceSources);
-                stackSources.push(scope);
+                pushClauseScope(scope, using);
                 try {
                     for (SQLUpdateSetItem item : update.getItems()) {
                         stackTargetColumn.push(renderIdentifier(
@@ -7763,7 +7849,7 @@ public class DmlLineage {
                         stackTargetColumn.pop();
                     }
                 } finally {
-                    stackSources.pop();
+                    popClauseScope();
                 }
                 collectTablesFromExpression(update.getWhere());
             }
@@ -7776,7 +7862,7 @@ public class DmlLineage {
                 List<String> targetColumns = hasColumnList ? null
                         : mergeTargetColumns(targetTableMetadata, tableName,
                                 values.size());
-                stackSources.push(new ArrayList<>(sourceSources));
+                pushClauseScope(new ArrayList<>(sourceSources), using);
                 try {
                     for (int i = 0; i < values.size(); i++) {
                         String column;
@@ -7795,7 +7881,7 @@ public class DmlLineage {
                         stackTargetColumn.pop();
                     }
                 } finally {
-                    stackSources.pop();
+                    popClauseScope();
                 }
                 collectTablesFromExpression(insert.getWhere());
             }

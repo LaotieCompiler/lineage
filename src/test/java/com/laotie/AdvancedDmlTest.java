@@ -549,4 +549,32 @@ public class AdvancedDmlTest {
         assertTrue(sources.contains(new Column("b.c1")));
     }
 
+    @Test
+    public void compositeScalarWithOuterFromKeepsTableLevel() {
+        MetadataContext context = catalog(
+                "CREATE TABLE t (c1 INT); CREATE TABLE b (c1 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("INSERT INTO t(c1) SELECT"
+                        + " 1+(SELECT * FROM sch.missing) AS v FROM b;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("sch.missing.*"))),
+                sources(result, "t.c1"));
+    }
+
+    @Test
+    public void mergeScalarCorrelatesToUsingScopeWithLocalFrom() {
+        MetadataContext context = catalog(
+                "CREATE TABLE t (c2 INT); CREATE TABLE s (c1 INT);"
+                        + " CREATE TABLE b (c1 INT); CREATE TABLE other (c3 INT);");
+        ScanResult result = LineageScanner.withMetadata(context, optional())
+                .scan("MERGE INTO t USING (s JOIN b USING(c1)) AS src ON true"
+                        + " WHEN MATCHED THEN UPDATE SET c2 = (SELECT c1 FROM other);");
+
+        assertEquals(0, result.getFailures().size());
+        Set<Column> sources = sources(result, "t.c2");
+        assertTrue(sources.contains(new Column("s.c1")));
+        assertTrue(sources.contains(new Column("b.c1")));
+    }
+
 }

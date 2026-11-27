@@ -137,11 +137,7 @@ public class LineageScanner {
         // Validate the final candidate against the statements that actually succeed;
         // prefer the variant with fewer failures so no unsupported observation (for
         // example a guess that makes its own statement fail) is persisted.
-        LearnedMetadata supported = new LearnedMetadata(base);
-        String accepted = successfulSql(scan.getResults());
-        if (!accepted.isEmpty()) {
-            learn(accepted, supported);
-        }
+        LearnedMetadata supported = rebuild(scan, base);
         if (!supported.sameAs(candidate)) {
             ScanResult supportedScan = analyze(sqlLog, supported, true);
             if (supportedScan.getFailures().size() <= scan.getFailures().size()) {
@@ -149,8 +145,21 @@ public class LineageScanner {
                 scan = supportedScan;
             }
         }
-        learnedMetadata.mergeFrom(candidate);
+        // Only a self-consistent candidate may be persisted: the observations it
+        // holds must be exactly the ones its own successful statements produce.
+        if (rebuild(scan, base).sameAs(candidate)) {
+            learnedMetadata.mergeFrom(candidate);
+        }
         return scan;
+    }
+
+    private LearnedMetadata rebuild(ScanResult scan, LearnedMetadata base) {
+        LearnedMetadata rebuilt = new LearnedMetadata(base);
+        String accepted = successfulSql(scan.getResults());
+        if (!accepted.isEmpty()) {
+            learn(accepted, rebuilt);
+        }
+        return rebuilt;
     }
 
     private static final int MAX_METADATA_ROUNDS = 8;

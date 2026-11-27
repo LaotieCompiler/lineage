@@ -512,6 +512,60 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void realEscapeDoesNotMarkAFakePrefixCall() {
+        assertTrue(LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn ABS(1)}, LO_JDBC_TIMESTAMPADD(sql_tsi_day, 1)"
+                        + " FROM \"t\";")
+                .getResults().get(0).getError()
+                instanceof UnquotedIdentifierException);
+    }
+
+    @Test
+    public void commentDirectlyAfterFnIsAllowed() {
+        assertEquals(0, LineageScanner.withoutMetadata(DbType.derby, strict())
+                .scan("SELECT {fn/* jdbc */ TIMESTAMPADD(SQL_TSI_DAY, 1,"
+                        + " \"c\")} FROM \"t\";")
+                .getFailures().size());
+    }
+
+    @Test
+    public void parsedSourceSurvivesLaterParses() {
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement statement = lineage.parseStatement(
+                "SELECT TIMESTAMPADD(sql_tsi_day, 1) FROM \"t\";");
+        lineage.parseStatement("SELECT 1;");
+        try {
+            lineage.getLineage(statement);
+            org.junit.Assert.fail("unquoted column must be rejected");
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
+    }
+
+    @Test
+    public void editedAstIsStillValidated() {
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement statement = lineage.parseStatement(
+                "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                        + " FROM \"t\";");
+        com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock block =
+                (com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                statement).getSelect().getQuery();
+        ((com.alibaba.druid.sql.ast.statement.SQLExprTableSource)
+                block.getFrom()).setExpr(
+                        new com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr("t"));
+        try {
+            lineage.getLineage(statement);
+            org.junit.Assert.fail("unquoted edited table must be rejected");
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

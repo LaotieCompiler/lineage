@@ -311,8 +311,7 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     public List<Instruction> getLineage(SQLStatement statement) {
-        String source = statement == lastParsedStatement ? lastParsedSql : null;
-        return getLineage(statement, source);
+        return getLineage(statement, parsedSources.get(statement));
     }
 
     private List<Instruction> getLineage(SQLStatement statement, String sourceSql) {
@@ -340,8 +339,7 @@ public class DmlLineage {
     public SQLStatement parseStatement(String sqlStr) {
         SQLStatement statement = parseWithDialectFallback(sqlStr,
                 resolveDialect());
-        this.lastParsedStatement = statement;
-        this.lastParsedSql = sqlStr;
+        parsedSources.put(statement, sqlStr);
         return statement;
     }
 
@@ -434,15 +432,57 @@ public class DmlLineage {
         return i;
     }
 
-    private static void markJdbcEscapedArguments(SQLStatement statement) {
+    private static final class EscapeUnit {
+        private final String method;
+        private final String unit;
+
+        private EscapeUnit(String method, String unit) {
+            this.method = method;
+            this.unit = unit;
+        }
+    }
+
+    private static List<EscapeUnit> jdbcEscapeUnits(SQLStatement marked) {
+        List<EscapeUnit> units = new ArrayList<>();
+        marked.accept(new SQLASTVisitorAdapter() {
+            @Override
+            public boolean visit(SQLMethodInvokeExpr x) {
+                String method = x.getMethodName();
+                if (method != null && method.startsWith("LO_JDBC_")
+                        && !x.getArguments().isEmpty()
+                        && x.getArguments().get(0) instanceof SQLIdentifierExpr) {
+                    units.add(new EscapeUnit(
+                            method.substring("LO_JDBC_".length()),
+                            ((SQLIdentifierExpr) x.getArguments().get(0))
+                                    .getName()));
+                }
+                return true;
+            }
+        });
+        return units;
+    }
+
+    private static void markJdbcEscapedArguments(SQLStatement statement,
+            List<EscapeUnit> units) {
         statement.accept(new SQLASTVisitorAdapter() {
             @Override
             public boolean visit(SQLMethodInvokeExpr x) {
-                if (x.getMethodName() != null
-                        && x.getMethodName().startsWith("LO_JDBC_")
-                        && !x.getArguments().isEmpty()) {
-                    x.getArguments().get(0).putAttribute(
-                            JDBC_UNIT_ATTRIBUTE, Boolean.TRUE);
+                if (x.getArguments().isEmpty()
+                        || !(x.getArguments().get(0) instanceof SQLIdentifierExpr)) {
+                    return true;
+                }
+                SQLIdentifierExpr unitExpr =
+                        (SQLIdentifierExpr) x.getArguments().get(0);
+                for (int i = 0; i < units.size(); i++) {
+                    EscapeUnit candidate = units.get(i);
+                    if (candidate.method.equalsIgnoreCase(x.getMethodName())
+                            && candidate.unit.equalsIgnoreCase(
+                                    unitExpr.getName())) {
+                        unitExpr.putAttribute(JDBC_UNIT_ATTRIBUTE,
+                                Boolean.TRUE);
+                        units.remove(i);
+                        break;
+                    }
                 }
                 return true;
             }
@@ -456,7 +496,8 @@ public class DmlLineage {
             return null;
         }
         i += 2;
-        if (i >= sql.length() || !Character.isWhitespace(sql.charAt(i))) {
+        if (i < sql.length() && !Character.isWhitespace(sql.charAt(i))
+                && sql.charAt(i) != '/' && sql.charAt(i) != '-') {
             return null;
         }
         i = skipSpaceAndComments(sql, i);
@@ -484,8 +525,10 @@ public class DmlLineage {
             String marked = markJdbcEscapes(statementSql);
             if (!marked.equals(statementSql)) {
                 try {
-                    statement = parseWithDialectFallback(marked, dialect);
-                    markJdbcEscapedArguments(statement);
+                    SQLStatement markedStatement =
+                            parseWithDialectFallback(marked, dialect);
+                    markJdbcEscapedArguments(statement,
+                            jdbcEscapeUnits(markedStatement));
                 } catch (RuntimeException ignored) {
                     // Validate the original AST if the marker form is rejected.
                 }
@@ -6320,8 +6363,8 @@ public class DmlLineage {
     private boolean ansiEnabled;
     private boolean ansiDoubleQuotedIdentifiers;
     private String statementSql;
-    private SQLStatement lastParsedStatement;
-    private String lastParsedSql;
+    private final java.util.IdentityHashMap<SQLStatement, String> parsedSources =
+            new java.util.IdentityHashMap<>();
     private static final String JDBC_UNIT_ATTRIBUTE =
             "com.laotie.jdbcUnit";
     private static final String ANSI_IDENTIFIER_ATTRIBUTE =

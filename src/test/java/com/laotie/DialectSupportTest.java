@@ -961,6 +961,28 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void digitLeadingTableNameKeepsItsTargetList() {
+        String prefix = "SET spark.sql.ansi.enabled = true;"
+                + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;";
+        String[] bodies = {
+            "INSERT INTO 2t (\"K\")"
+                    + " SELECT a.y FROM a WHERE (a.y IS NOT NULL);"
+                    + " SELECT k AS copied FROM 2t;",
+            "INSERT INTO s.2t (\"K\") SELECT a.y FROM a;"
+                    + " SELECT k AS copied FROM s.2t;"
+        };
+        for (String body : bodies) {
+            ScanResult result = LineageScanner.withoutMetadata(
+                    DbType.antspark, optional()).scan(prefix + " " + body);
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt3.temp0.copied")));
+        }
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

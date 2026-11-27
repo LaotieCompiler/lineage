@@ -8524,6 +8524,19 @@ public class DmlLineage {
                 }
             } else if (depth == 0 && ch == '.' && tableNameSeen) {
                 nextNameIsTablePart = true;
+            } else if (depth == 0 && Character.isDigit(ch)
+                    && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {
+                int end = i + 1;
+                while (end < sql.length()
+                        && isIdentifierChar(sql.charAt(end))) {
+                    end++;
+                }
+                if (seenInsert && !tableNameSeen) {
+                    tableNameSeen = true;
+                    atInsertStart = false;
+                }
+                nextNameIsTablePart = false;
+                i = end - 1;
             } else if (depth == 0 && (ch == '_' || ch == '$')
                     && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {
                 int end = i + 1;

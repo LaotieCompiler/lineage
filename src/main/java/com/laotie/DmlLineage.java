@@ -498,6 +498,7 @@ public class DmlLineage {
             return statements;
         }
         boolean mysqlFamily = dialect == DbType.mysql || dialect == DbType.mariadb;
+        boolean hiveFamily = dialect == DbType.hive || dialect == DbType.antspark;
         boolean hashComments = mysqlFamily;
         boolean postgres = dialect == DbType.postgresql;
         boolean nestedComments = postgres;
@@ -566,7 +567,7 @@ public class DmlLineage {
             if (ch == '\'' || ch == '"' || ch == '`'
                     || (bracketQuotes && ch == '[')) {
                 quote = ch == '[' ? ']' : ch;
-                escapeString = mysqlFamily
+                escapeString = mysqlFamily || hiveFamily
                         ? (ch == '\'' || ch == '"')
                         : (ch == '\'' && isEscapeStringPrefix(sql, i));
                 current.append(ch);
@@ -8279,14 +8280,14 @@ public class DmlLineage {
 
     private void processInsert(SQLInsertStatement insert) {
         processInsertInto(insert.getTableSource(), insert.getColumns(),
-                insert.getQuery(), insert.getWith());
+                insert.getQuery(), insert.getWith(), insert.getPartitions());
     }
 
     private void processReplace(SQLReplaceStatement replace) {
         SQLQueryExpr query = replace.getQuery();
         if (query != null) {
             processInsertInto(replace.getTableSource(), replace.getColumns(),
-                    query.getSubQuery(), null);
+                    query.getSubQuery(), null, null);
             return;
         }
         // REPLACE INTO ... VALUES: the written values are literals or expressions.
@@ -8619,7 +8620,7 @@ public class DmlLineage {
 
     private void processInsertInto(SQLExprTableSource tableSource,
             List<SQLExpr> insertColumns, SQLSelect select,
-            SQLWithSubqueryClause with) {
+            SQLWithSubqueryClause with, List<SQLAssignItem> partitions) {
         String rawName = extractTableName(tableSource);
         String written = normalizeQualifiedName(rawName);
         // The graph identity of an unaliased target keeps its written reference when
@@ -8642,6 +8643,11 @@ public class DmlLineage {
                 ? null : normalizeIdentifier(tableSource.getAlias()),
                 findCteTarget(identifierKey(rawName)) != null);
 
+        // Static partition columns receive no data; dynamic partition columns follow
+        // the table's non-partition columns in partition-spec order.
+        String partitionTargets = partitionTargetList(insertColumns, partitions,
+                targetMetadata, tableName);
+
         boolean scoped = with != null;
         if (scoped) {
             cteScopes.push(new HashMap<String, String>());
@@ -8662,7 +8668,14 @@ public class DmlLineage {
             String fromTable = stackTargetTable.peek();
             boolean fromTemporary = tempTables.contains(fromTable);
             List<SQLExpr> columns = insertColumns;
-            if (columns != null && !columns.isEmpty()) {
+            if (partitionTargets != null) {
+                Instruction insertEdge = new Instruction(OperationType.COLUMNS_INJECT,
+                        fromTable, String.format("%s(%s)", tableName, partitionTargets),
+                        -1, fromTemporary, false);
+                insertEdge.setWildcardTable(tableName);
+                insertEdge.setPopulatedColumns(partitionTargets);
+                instructions.add(insertEdge);
+            } else if (columns != null && !columns.isEmpty()) {
                 final Table insertMetadata = targetMetadata;
                 final String insertTable = tableName;
                 String colStr = columns.stream()
@@ -8684,6 +8697,52 @@ public class DmlLineage {
                 cteScopes.pop();
             }
         }
+    }
+
+    private String partitionTargetList(List<SQLExpr> insertColumns,
+            List<SQLAssignItem> partitions, Table targetMetadata, String tableName) {
+        if (targetMetadata == null || partitions == null || partitions.isEmpty()) {
+            return null;
+        }
+        Set<String> partitionKeys = new HashSet<>();
+        List<String> dynamic = new ArrayList<>();
+        for (SQLAssignItem partition : partitions) {
+            String name = partition.getTarget() == null ? null
+                    : partition.getTarget().toString();
+            if (name == null) {
+                continue;
+            }
+            partitionKeys.add(identifierKey(name));
+            if (partition.getValue() == null) {
+                dynamic.add(name);
+            }
+        }
+        if (partitionKeys.isEmpty()) {
+            return null;
+        }
+        List<String> targets = new ArrayList<>();
+        if (insertColumns != null && !insertColumns.isEmpty()) {
+            for (SQLExpr column : insertColumns) {
+                targets.add(renderInsertColumn(targetMetadata, tableName, column));
+            }
+        } else {
+            for (Column column : targetMetadata.getFields()) {
+                if (!partitionKeys.contains(identifierKey(column.getColumnName()))) {
+                    targets.add(column.getColumnName());
+                }
+            }
+        }
+        Set<String> present = new HashSet<>();
+        for (String target : targets) {
+            present.add(identifierKey(target));
+        }
+        for (String name : dynamic) {
+            String key = identifierKey(name);
+            if (present.add(key)) {
+                targets.add(name);
+            }
+        }
+        return targets.isEmpty() ? null : String.join(",", targets);
     }
 
     private void processUpdate(SQLUpdateStatement update) {

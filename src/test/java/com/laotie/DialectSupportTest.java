@@ -1,6 +1,7 @@
 package com.laotie;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 
 import java.util.Arrays;
@@ -99,7 +100,7 @@ public class DialectSupportTest {
         ScanResult result = LineageScanner.withMetadata(
                 MetadataContext.of(catalog), optional()).scan(
                 "INSERT OVERWRITE TABLE t PARTITION (dt)"
-                        + " SELECT c1, c2, dt FROM a;");
+                        + " SELECT c1, c2, dt AS src_day FROM a;");
 
         assertEquals(0, result.getFailures().size());
         assertEquals(new HashSet<>(Arrays.asList(new Column("a.c1"))),
@@ -108,6 +109,45 @@ public class DialectSupportTest {
                 result.getGraph().getSources(new Column("t.c2")));
         assertEquals(new HashSet<>(Arrays.asList(new Column("a.dt"))),
                 result.getGraph().getSources(new Column("t.dt")));
+    }
+
+    @Test
+    public void hiveAndSparkSplitEscapedSemicolonLiterals() {
+        for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
+            MetadataCatalog catalog = new MetadataCatalog(dialect);
+            catalog.loadDdl("CREATE TABLE a (x STRING);"
+                    + " CREATE TABLE t (x STRING);");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "INSERT OVERWRITE TABLE t"
+                            + " SELECT concat(x, 'it\\'s;ok') FROM a;"
+                            + " SELECT x FROM a;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.x"))),
+                    result.getGraph().getSources(new Column("t.x")));
+        }
+    }
+
+    @Test
+    public void sparkOverwriteHonorsStaticAndDynamicPartitions() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (payload INT, src_day STRING)"
+                + " USING parquet;"
+                + " CREATE TABLE t (payload INT, region STRING, dt STRING)"
+                + " USING parquet PARTITIONED BY (region, dt);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "INSERT OVERWRITE TABLE t PARTITION (region = 'US', dt)"
+                        + " SELECT payload, src_day FROM a;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.payload"))),
+                result.getGraph().getSources(new Column("t.payload")));
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.src_day"))),
+                result.getGraph().getSources(new Column("t.dt")));
+        assertFalse(result.getGraph().getReverseGraph()
+                .containsVertex(new Column("t.region")));
     }
 
     @Test

@@ -20,6 +20,7 @@ import java.util.stream.Collectors;
 import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
+import com.alibaba.druid.sql.ast.SQLName;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
 import com.alibaba.druid.sql.ast.expr.SQLBetweenExpr;
@@ -5598,6 +5599,12 @@ public class DmlLineage {
         return expr != null ? expr.toString() : table.getTableName();
     }
 
+    /** A FROM item is a table only when its expression is a relation name. */
+    private static boolean isPhysicalTableExpression(SQLExprTableSource table) {
+        SQLExpr expr = table.getExpr();
+        return expr == null || expr instanceof SQLName;
+    }
+
     /* ------------------------------------------------------------------ */
     /* expressions                                                        */
     /* ------------------------------------------------------------------ */
@@ -5817,11 +5824,13 @@ public class DmlLineage {
                     || !decodeLocalPart(entry.substring(0, eq)).equals(columnKey)) {
                 continue;
             }
-            String tables = decodeLocalPart(entry.substring(eq + 1));
+            String tables = entry.substring(eq + 1);
             if (tables.isEmpty()) {
                 return;
             }
-            for (String table : tables.split(LOCAL_TABLE_SEPARATOR)) {
+            // Split while still encoded: a separator inside a quoted name is %02.
+            for (String encoded : tables.split(LOCAL_TABLE_SEPARATOR)) {
+                String table = decodeLocalPart(encoded);
                 if (!table.isEmpty()) {
                     pendingLearned.computeIfAbsent(table,
                             k -> new LinkedHashSet<String>())
@@ -6141,6 +6150,9 @@ public class DmlLineage {
         }
         if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;
+            if (!isPhysicalTableExpression(table)) {
+                return null;
+            }
             String name = extractTableName(table);
             if (name == null) {
                 return null;
@@ -6189,9 +6201,12 @@ public class DmlLineage {
             if (mark.length() > LOCAL_BINDING_USING.length()) {
                 mark.append(';');
             }
+            List<String> encodedSides = new ArrayList<>();
+            for (String side : sides) {
+                encodedSides.add(encodeLocalPart(side));
+            }
             mark.append(encodeLocalPart(key)).append('=')
-                    .append(encodeLocalPart(String.join(LOCAL_TABLE_SEPARATOR,
-                            sides)));
+                    .append(String.join(LOCAL_TABLE_SEPARATOR, encodedSides));
         }
         return mark.toString();
     }
@@ -6286,7 +6301,8 @@ public class DmlLineage {
             }
         } else if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;
-            String name = extractTableName(table);
+            String name = isPhysicalTableExpression(table)
+                    ? extractTableName(table) : null;
             String reference = table.getAlias() != null
                     ? table.getAlias() : name;
             if (reference != null) {

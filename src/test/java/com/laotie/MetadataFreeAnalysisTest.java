@@ -5012,4 +5012,41 @@ public class MetadataFreeAnalysisTest {
                 result.getGraph().getSources(Column.temporary("stmt2.temp0.y")));
     }
 
+    @Test
+    public void usingMarkerKeepsSeparatorInsideQuotedTable() {
+        String quoted = "\"a" + (char) 2 + "b\"";
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        ScanResult result = scanner.scan(
+                "SELECT k FROM A, C;"
+                        + " SELECT 1 IN (SELECT 1 FROM (" + quoted
+                        + " LEFT JOIN D USING (k)) AS j WHERE j.k = 1);"
+                        + " SELECT A.y, C.y FROM A, C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+        assertNull(result.getResults().get(1).getError());
+        assertTrue(scanner.scan("SELECT k FROM A, C;")
+                .getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
+    public void tableFunctionIsNotAPhysicalUsingSide() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring()).scan(
+                "SELECT generate_series FROM \"generate_series(1, 3)\", C;"
+                        + " SELECT 1 IN (SELECT 1 FROM"
+                        + " (generate_series(1, 3) JOIN B"
+                        + " USING (generate_series)) AS j"
+                        + " WHERE j.generate_series = 1);"
+                        + " SELECT \"generate_series(1, 3)\".y, C.y"
+                        + " FROM \"generate_series(1, 3)\", C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+        assertNull(result.getResults().get(1).getError());
+        assertNull(result.getResults().get(2).getError());
+    }
+
 }

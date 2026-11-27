@@ -8452,6 +8452,7 @@ public class DmlLineage {
         boolean sawIntoOrTable = false;
         boolean tableNameSeen = false;
         boolean nextNameIsTablePart = false;
+        boolean atInsertStart = false;
         char quote = 0;
         for (int i = 0; i < sql.length(); i++) {
             char ch = sql.charAt(i);
@@ -8493,9 +8494,10 @@ public class DmlLineage {
                 continue;
             }
             if (ch == '\'' || ch == '"' || ch == '`') {
-                if (seenInsert && depth == 0 && !tableNameSeen
-                        && sawIntoOrTable) {
-                    tableNameSeen = true;
+                if (seenInsert && depth == 0) {
+                    if (!tableNameSeen) {
+                        tableNameSeen = true;
+                    }
                     nextNameIsTablePart = false;
                 }
                 quote = ch;
@@ -8532,15 +8534,22 @@ public class DmlLineage {
                 if (!seenInsert) {
                     if ("INSERT".equalsIgnoreCase(word)) {
                         seenInsert = true;
+                        atInsertStart = true;
                     }
                 } else if (!tableNameSeen) {
                     if ("INTO".equalsIgnoreCase(word)
                             || "TABLE".equalsIgnoreCase(word)) {
                         sawIntoOrTable = true;
-                    } else if (!"OVERWRITE".equalsIgnoreCase(word)
-                            && !"IGNORE".equalsIgnoreCase(word)) {
+                        atInsertStart = false;
+                    } else if (atInsertStart && ("OVERWRITE".equalsIgnoreCase(word)
+                            || "IGNORE".equalsIgnoreCase(word))
+                            || !sawIntoOrTable
+                                    && "OVERWRITE".equalsIgnoreCase(word)) {
+                        atInsertStart = false;
+                    } else {
                         tableNameSeen = true;
                         nextNameIsTablePart = false;
+                        atInsertStart = false;
                     }
                 } else if (nextNameIsTablePart) {
                     nextNameIsTablePart = false;

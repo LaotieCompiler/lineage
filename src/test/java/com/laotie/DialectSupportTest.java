@@ -879,6 +879,34 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void insertHeaderHandlesQuotedPartsAndModifierNames() {
+        String prefix = "SET spark.sql.ansi.enabled = true;"
+                + " SET spark.sql.ansi.doubleQuotedIdentifiers = true;"
+                + " SET spark.sql.ansi.enforceReservedKeywords = false;";
+        String[] bodies = {
+            "INSERT INTO s.`t` (\"K\")"
+                    + " SELECT max(a.y) AS y FROM a;"
+                    + " SELECT k AS copied FROM s.`t`;",
+            "INSERT OVERWRITE TABLE ignore"
+                    + " PARTITION (with='fixed') (\"K\")"
+                    + " SELECT a.y FROM a;"
+                    + " SELECT k AS copied FROM ignore;",
+            "INSERT OVERWRITE `t` PARTITION (with='fixed') (\"K\")"
+                    + " SELECT a.y FROM a;"
+                    + " SELECT k AS copied FROM `t`;"
+        };
+        for (String body : bodies) {
+            ScanResult result = LineageScanner.withoutMetadata(
+                    DbType.antspark, optional()).scan(prefix + " " + body);
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(new Column("a.y"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt4.temp0.copied")));
+        }
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

@@ -107,6 +107,33 @@ public class Table {
         if (columnName == null) {
             return null;
         }
+        for (Column column : columns) {
+            if (column.getColumnName().equalsIgnoreCase(columnName)) {
+                return immutable ? column.snapshot() : column;
+            }
+        }
+        return null;
+    }
+
+    /** Case-insensitive fallback limited to unquoted (folded) columns. */
+    public Column getUnquotedColumnIgnoreCase(String columnName) {
+        if (columnName == null) {
+            return null;
+        }
+        for (Column column : columns) {
+            if (!column.isQuoted()
+                    && column.getColumnName().equalsIgnoreCase(columnName)) {
+                return immutable ? column.snapshot() : column;
+            }
+        }
+        return null;
+    }
+
+    /** Case-insensitive lookup using the shared code-point fold. */
+    public Column getColumnCaseFold(String columnName) {
+        if (columnName == null) {
+            return null;
+        }
         String folded = MetadataCatalog.caseFold(columnName);
         for (Column column : columns) {
             if (MetadataCatalog.caseFold(column.getColumnName()).equals(folded)) {

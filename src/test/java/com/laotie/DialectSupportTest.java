@@ -402,6 +402,39 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void sparkDerivedLiteralQuotedNameStaysDistinct() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
+        catalog.loadDdl("CREATE TABLE a (k STRING, `\"k\"` STRING)"
+                + " USING parquet;");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog), optional()).scan(
+                "SELECT q.k AS regular, q.`\"k\"` AS quoted"
+                        + " FROM (SELECT * FROM a) AS q;");
+
+        assertEquals(0, result.getFailures().size());
+        assertEquals(new HashSet<>(Arrays.asList(new Column("a.k"))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.regular")));
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("a", "\"k\""))),
+                result.getGraph().getSources(
+                        Column.temporary("stmt0.temp0.quoted")));
+    }
+
+    @Test
+    public void postgresUnquotedSupplementaryDoesNotMatchQuotedCase() {
+        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
+        catalog.loadDdl("CREATE TABLE a (\"\uD801\uDC00\" INT);");
+        ScanResult result = LineageScanner.withMetadata(
+                MetadataContext.of(catalog),
+                LineageOptions.of(MetadataMode.STRICT, false)).scan(
+                "SELECT a.\uD801\uDC28 AS copied FROM a;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof com.laotie.exception.ColumnNotFoundException);
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

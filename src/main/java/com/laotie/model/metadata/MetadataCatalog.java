@@ -742,13 +742,15 @@ public class MetadataCatalog {
                 || dialect == DbType.hive || dialect == DbType.antspark) {
             // MySQL/MariaDB and the case-insensitive Hive/Spark modes ignore case
             // even when the reference is quoted.
-            column = table.getColumnIgnoreCase(name);
+            column = table.getColumnCaseFold(name);
         } else if (quoted) {
             column = table.getColumnExact(name);
         } else if (dialect == DbType.postgresql) {
             column = table.getColumnExact(name.toLowerCase());
             if (column == null) {
-                column = table.getColumnIgnoreCase(name);
+                // PostgreSQL quoted names keep their case; only unquoted
+                // catalog names may match leniently.
+                column = table.getUnquotedColumnIgnoreCase(name);
             }
         } else {
             column = table.getColumnExact(name.toUpperCase());

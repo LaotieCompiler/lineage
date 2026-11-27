@@ -8248,9 +8248,13 @@ public class DmlLineage {
                     break;
                 }
             }
-            addColumnMapping(sourceName,
-                    canonical == null ? normalizeIdentifier(columnName) : canonical,
-                    source.temporary, null);
+            if (canonical == null) {
+                addColumnMapping(sourceName, normalizeIdentifier(columnName),
+                        source.temporary, null);
+            } else {
+                addResolvedColumnMapping(sourceName, canonical,
+                        source.temporary);
+            }
             return;
         }
         String mappedName = source.metadataTable == null
@@ -8271,6 +8275,19 @@ public class DmlLineage {
         if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
             // The projection's position cannot be derived from the declaration, so a
             // positional edge would be a guess.
+            return;
+        }
+        String targetTable = stackTargetTable.peek();
+        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
+                sourceTable + "." + renderIdentifier(columnName),
+                targetTable + "." + stackTargetColumn.peek(), currentOrdinal,
+                sourceTemporary, tempTables.contains(targetTable)));
+    }
+
+    /** Write an edge for a name that is already the catalog/derived spelling. */
+    private void addResolvedColumnMapping(String sourceTable, String columnName,
+            boolean sourceTemporary) {
+        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
             return;
         }
         String targetTable = stackTargetTable.peek();

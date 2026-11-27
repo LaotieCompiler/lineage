@@ -6025,7 +6025,8 @@ public class DmlLineage {
                 if (hidden.contains(source)) {
                     continue;
                 }
-                String learnedTable = source.temporary || source.rawName == null
+                String learnedTable = source.temporary || !source.learnable
+                        || source.rawName == null
                         ? null : learnedTableKey(source.rawName);
                 if (source.alias != null) {
                     // An alias hides the original table name.

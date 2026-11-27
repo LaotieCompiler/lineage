@@ -5069,6 +5069,27 @@ public class MetadataFreeAnalysisTest {
     }
 
     @Test
+    public void correlatedSubqueryDoesNotLearnTableFunctions() {
+        LineageScanner scanner = LineageScanner.withoutMetadata(
+                DbType.postgresql, inferring());
+        ScanResult result = scanner.scan(
+                "SELECT g FROM \"generate_series(1, 3)\", C;"
+                        + " SELECT (SELECT 1 WHERE g.g = 1)"
+                        + " FROM generate_series(1, 3) AS g;"
+                        + " SELECT \"generate_series(1, 3)\".y, C.y"
+                        + " FROM \"generate_series(1, 3)\", C;");
+
+        assertTrue(result.getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+        assertNull(result.getResults().get(1).getError());
+        assertNull(result.getResults().get(2).getError());
+        assertTrue(scanner.scan(
+                "SELECT g FROM \"generate_series(1, 3)\", C;")
+                .getResults().get(0).getError()
+                instanceof ColumnNotFoundException);
+    }
+
+    @Test
     public void standaloneJoinPlanDoesNotLearnTableFunctions() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.postgresql, inferring()).scan(

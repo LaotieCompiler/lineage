@@ -8211,7 +8211,7 @@ public class DmlLineage {
         if (MetadataCatalog.isQuotedIdentifier(raw)) {
             DbType dialect = currentDialect();
             if (dialect == DbType.hive || dialect == DbType.antspark) {
-                return renderHiveIdentifier(hiveLogicalName(raw));
+                return renderHiveIdentifier(resolved);
             }
             return "\"" + resolved.replace("\"", "\"\"") + "\"";
         }

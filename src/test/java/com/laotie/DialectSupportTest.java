@@ -505,6 +505,27 @@ public class DialectSupportTest {
     }
 
     @Test
+    public void quotedInsertTargetUsesCatalogSpelling() {
+        for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
+            MetadataCatalog catalog = new MetadataCatalog(dialect);
+            catalog.loadDdl("CREATE TABLE t (k STRING) USING parquet;");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "INSERT OVERWRITE TABLE t (`K`)"
+                            + " SELECT * FROM missing;"
+                            + " SELECT t.k AS copied FROM t;");
+
+            assertEquals(0, result.getFailures().size());
+            assertEquals(new HashSet<>(Arrays.asList(
+                    new Column("missing.*"))),
+                    result.getGraph().getSources(
+                            Column.temporary("stmt1.temp0.copied")));
+            assertFalse(result.getGraph().getReverseGraph()
+                    .containsVertex(new Column("t.K")));
+        }
+    }
+
+    @Test
     public void hiveAndSparkSplitEscapedSemicolonLiterals() {
         for (DbType dialect : Arrays.asList(DbType.hive, DbType.antspark)) {
             MetadataCatalog catalog = new MetadataCatalog(dialect);

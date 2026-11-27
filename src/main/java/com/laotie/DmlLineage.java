@@ -642,7 +642,8 @@ public class DmlLineage {
         boolean sqlServerFamily = dialect == DbType.sqlserver
                 || dialect == DbType.sybase || dialect == DbType.h2;
         boolean timestampUnit = mysqlFamily || hiveFamily
-                || sqlServerFamily;
+                || sqlServerFamily || dialect == DbType.derby
+                || dialect == DbType.hsql;
         if (timestampUnit
                 && ("TIMESTAMPDIFF".equalsIgnoreCase(method)
                         || "TIMESTAMPADD".equalsIgnoreCase(method))) {
@@ -656,17 +657,24 @@ public class DmlLineage {
             // not a leading date-part keyword.
             return false;
         }
-        if ("DATE_BUCKET".equalsIgnoreCase(method)) {
-            // SQL Server's DATE_BUCKET takes a date part; H2 users can define
-            // an ordinary function of the same name.
-            return dialect == DbType.sqlserver;
+        if (dialect == DbType.h2) {
+            // H2 has DATEADD/DATEDIFF; other same-named functions may be aliases.
+            return "DATEADD".equalsIgnoreCase(method)
+                    || "DATEDIFF".equalsIgnoreCase(method);
+        }
+        if (dialect == DbType.sybase) {
+            return "DATEADD".equalsIgnoreCase(method)
+                    || "DATEDIFF".equalsIgnoreCase(method)
+                    || "DATEPART".equalsIgnoreCase(method)
+                    || "DATENAME".equalsIgnoreCase(method);
         }
         return "DATEADD".equalsIgnoreCase(method)
                 || "DATEDIFF".equalsIgnoreCase(method)
                 || "DATEDIFF_BIG".equalsIgnoreCase(method)
                 || "DATEPART".equalsIgnoreCase(method)
                 || "DATENAME".equalsIgnoreCase(method)
-                || "DATETRUNC".equalsIgnoreCase(method);
+                || "DATETRUNC".equalsIgnoreCase(method)
+                || "DATE_BUCKET".equalsIgnoreCase(method);
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

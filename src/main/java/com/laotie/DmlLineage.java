@@ -2963,7 +2963,7 @@ public class DmlLineage {
     private void addOuterColumnMapping(SourceTable source, String column,
             String target, String targetName, int position, Boolean quoted) {
         if (source.metadataTable == null && !source.temporary && quoted == null) {
-            column = canonicalColumnName(column);
+            column = uncatalogedColumnSpelling(column);
         }
         String rendered = quoted == null
                 ? renderIdentifier(column)
@@ -7179,7 +7179,9 @@ public class DmlLineage {
         for (StarColumn column : columns) {
             String sourceColumn = column.quoted || column.source.temporary
                     ? renderSourceColumn(column)
-                    : renderIdentifier(canonicalColumnName(column.column));
+                    : renderIdentifier(column.source.metadataTable == null
+                            ? uncatalogedColumnSpelling(column.column)
+                            : canonicalColumnName(column.column));
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                     lineageTableName(column.source) + "." + sourceColumn,
                     targetTable + "." + targetColumn, currentOrdinal,
@@ -7581,6 +7583,12 @@ public class DmlLineage {
      * A canonical column identity: PostgreSQL folds unquoted column names to lower
      * case, quoted names keep their case.
      */
+    private String uncatalogedColumnSpelling(String raw) {
+        DbType dialect = currentDialect();
+        return dialect == DbType.hive || dialect == DbType.antspark
+                ? hiveColumnIdentity(raw) : canonicalColumnName(raw);
+    }
+
     private String canonicalColumnName(String raw) {
         if (raw == null) {
             return null;

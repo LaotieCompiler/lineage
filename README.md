@@ -52,7 +52,7 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 911 tests, 2 skipped).
+Run the full unit suite with `mvn test` (currently 933 tests, 2 skipped).
 
 The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
 run `JdbcMetadataScannerDockerTest`:
@@ -60,6 +60,12 @@ run `JdbcMetadataScannerDockerTest`:
 ```bash
 ./scripts/run-jdbc-docker-tests.sh
 ```
+
+### build
+
+The project targets Java 8. JUnit 4 and JUnit 5 tests run together through Maven Surefire.
+Druid is pinned to 1.2.23 because its parser output is part of the tested contract; a Druid
+upgrade is a separate change that must pass the full regression suite.
 
 ## Feature
 
@@ -86,6 +92,19 @@ run `JdbcMetadataScannerDockerTest`:
 7. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
 8. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
 9. `select * from A` // dependence on metadata
+
+### DDL
+
+- `CREATE TABLE ... AS SELECT` and `CREATE VIEW ... AS SELECT` write lineage into the new
+  relation. A declared column list (`CREATE TABLE x (a, b) AS ...`) names the target
+  columns.
+- Relations created, replaced, altered or dropped by DDL are visible to later statements in
+  the same scanned script, including strict mode.
+- `ALTER TABLE ... ADD COLUMN` / `DROP COLUMN` updates the session view of the table.
+- `DELETE` and `TRUNCATE` write no columns, so they produce no column-level edges; in
+  strict mode a missing table still fails the statement.
+- `CREATE INDEX`, `EXPLAIN` and `GRANT` remain unsupported: the statement is recorded as a
+  failure and the scan continues with the next statement.
 
 ### metadata
 

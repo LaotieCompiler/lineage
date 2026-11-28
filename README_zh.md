@@ -56,7 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 911 个测试通过、2 个跳过。
+当前为 933 个测试通过、2 个跳过。
 
 Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 `JdbcMetadataScannerDockerTest`：
@@ -64,6 +64,12 @@ Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 ```bash
 ./scripts/run-jdbc-docker-tests.sh
 ```
+
+### 构建
+
+项目目标为 Java 8；JUnit 4 与 JUnit 5 测试由 Maven Surefire 一起运行。Druid 固定为
+1.2.23，因为其解析结果属于受测试约束的契约；升级 Druid 是独立的变更，必须通过全量回归
+测试。
 
 ## 功能
 
@@ -90,6 +96,15 @@ Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 7. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
 8. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
 9. `select * from A` //依赖元数据
+
+### DDL
+
+- `CREATE TABLE ... AS SELECT` 与 `CREATE VIEW ... AS SELECT` 会把血缘写入新建关系；
+  声明列列表（`CREATE TABLE x (a, b) AS ...`）会作为目标列名。
+- DDL 创建、替换、修改或删除的关系，对同一脚本中后续语句可见（严格模式同样生效）。
+- `ALTER TABLE ... ADD COLUMN` / `DROP COLUMN` 会更新该表的会话视图。
+- `DELETE` 与 `TRUNCATE` 不写入列，因此不产生列级边；严格模式下目标表缺失仍会使该语句失败。
+- `CREATE INDEX`、`EXPLAIN`、`GRANT` 仍不支持：该语句记录为失败，扫描继续处理下一条。
 
 ### 元数据
 

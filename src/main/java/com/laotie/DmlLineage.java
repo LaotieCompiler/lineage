@@ -83,6 +83,8 @@ import com.laotie.dialect.DialectRules;
 import com.laotie.identifier.Identifier;
 import com.laotie.identifier.IdentifierCase;
 import com.laotie.identifier.Identifiers;
+import com.laotie.metadata.SessionState;
+import com.laotie.metadata.MetadataResolver;
 import com.laotie.parse.ScriptSplitter;
 import com.laotie.parse.SqlParser;
 import com.laotie.model.Instruction;
@@ -936,17 +938,17 @@ public class DmlLineage {
         MetadataContext previous = this.context;
         this.context = working;
         this.tempTableNum = 0;
-        this.sessionDatabase = session.database;
-        this.sessionRawDatabase = session.rawDatabase;
-        this.sessionRawSchemas = new ArrayList<>(session.rawSchemas);
-        List<String> rawSchemas = session.rawSchemas.isEmpty()
-                ? session.schemas : session.rawSchemas;
+        this.sessionDatabase = session.getDatabase();
+        this.sessionRawDatabase = session.getRawDatabase();
+        this.sessionRawSchemas = new ArrayList<>(session.getRawSchemas());
+        List<String> rawSchemas = session.getRawSchemas().isEmpty()
+                ? session.getSchemas() : session.getRawSchemas();
         this.sessionSchema = rawSchemas.isEmpty() ? null
                 : joinIdentifierKeys(rawSchemas);
         this.pendingLearned = new HashMap<>();
         this.statementSql = sql;
-        this.ansiEnabled = session.ansiEnabled;
-        this.ansiDoubleQuotedIdentifiers = session.ansiDoubleQuotedIdentifiers;
+        this.ansiEnabled = session.isAnsiEnabled();
+        this.ansiDoubleQuotedIdentifiers = session.isAnsiDoubleQuotedIdentifiers();
         try {
             if (options.isStrictQuotedIdentifiers()) {
                 validateQuotedIdentifiers(statement);
@@ -956,7 +958,8 @@ public class DmlLineage {
             processStatement(statement);
             stackTargetTable.pop();
             LineageResult result = new LineageResult(sql, instructions, working, null,
-                    session.instance, session.database, session.schemas, tempTables,
+                    session.getInstance(), session.getDatabase(),
+                    session.getSchemas(), tempTables,
                     namedTargetOutputs(), detachedMetadata());
             publishLearned();
             return result;
@@ -974,19 +977,21 @@ public class DmlLineage {
 
     private LineageResult sessionResult(String sql, MetadataContext base, SessionState session) {
         return new LineageResult(sql, new ArrayList<Instruction>(), session.toContext(base),
-                null, session.instance, session.database, session.schemas);
+                null, session.getInstance(), session.getDatabase(),
+                session.getSchemas());
     }
 
     private LineageResult failed(String sql, MetadataContext base, SessionState session,
             Throwable error) {
         return new LineageResult(sql, new ArrayList<Instruction>(), session.toContext(base),
-                error, session.instance, session.database, session.schemas);
+                error, session.getInstance(), session.getDatabase(),
+                session.getSchemas());
     }
 
     private void applyUse(SQLUseStatement use, SessionState session) {
         if (use.getDatabase() != null) {
-            session.database = normalizeIdentifier(use.getDatabase().toString());
-            session.rawDatabase = use.getDatabase().toString().trim();
+            session.setDatabase(normalizeIdentifier(use.getDatabase().toString()));
+            session.setRawDatabase(use.getDatabase().toString().trim());
         }
     }
 
@@ -1001,17 +1006,17 @@ public class DmlLineage {
             }
             boolean enabled = "true".equalsIgnoreCase(value.toString().trim());
             if (target.equals("spark.sql.ansi.doublequotedidentifiers")) {
-                session.ansiDoubleQuotedIdentifiers = enabled;
+                session.setAnsiDoubleQuotedIdentifiers(enabled);
             } else if (target.equals("spark.sql.ansi.enabled")) {
-                session.ansiEnabled = enabled;
+                session.setAnsiEnabled(enabled);
             } else if (target.endsWith("search_path")) {
-                session.schemas = stringList(value);
-                session.rawSchemas = rawStringList(value);
+                session.setSchemas(stringList(value));
+                session.setRawSchemas(rawStringList(value));
             } else if (target.contains("schema")) {
-                session.schemas = new ArrayList<>();
-                session.schemas.add(normalizeIdentifier(value.toString()));
-                session.rawSchemas = new ArrayList<>();
-                session.rawSchemas.add(value.toString().trim());
+                session.setSchemas(new ArrayList<>());
+                session.getSchemas().add(normalizeIdentifier(value.toString()));
+                session.setRawSchemas(new ArrayList<>());
+                session.getRawSchemas().add(value.toString().trim());
             }
         }
     }
@@ -5617,254 +5622,19 @@ public class DmlLineage {
     }
 
 
+    private MetadataResolver metadataResolver() {
+        return new MetadataResolver(context, currentDialect(), sessionDatabase,
+                sessionRawDatabase,
+                context == null ? new ArrayList<String>() : context.getSchemas(),
+                sessionRawSchemas, detachedMetadata());
+    }
+
     private TableLocation resolveMetadataTable(String written) {
-        MetadataCatalog catalog = context.getCatalog();
-        DbType dialect = currentDialect();
-        String[] parts = MetadataCatalog.splitQualifiedName(written);
-        boolean explicitInstance = parts.length >= 4;
-        boolean explicitDatabase = dialect == DbType.mysql
-                || dialect == DbType.mariadb
-                        ? parts.length >= 2 : parts.length >= 3;
-        boolean explicitSchema = hasExplicitSchema(written);
-        boolean hiveFamily = dialect == DbType.hive
-                || dialect == DbType.antspark;
-
-        String instanceDefault = explicitInstance ? null
-                : context.getInstance() != null ? context.getInstance()
-                        : catalog.getDefaultInstance();
-        String databaseDefault;
-        if (explicitDatabase || hiveFamily) {
-            databaseDefault = null;
-        } else if (context.getDatabase() != null) {
-            databaseDefault = context.getDatabase();
-        } else {
-            databaseDefault = catalog.getDefaultDatabase();
-        }
-        String schemaDefault;
-        if (explicitSchema || !context.getSchemas().isEmpty()) {
-            schemaDefault = null;
-        } else if (hiveFamily) {
-            if (context.getDatabase() != null) {
-                schemaDefault = null;
-            } else if (catalog.getDefaultSchema() != null) {
-                schemaDefault = catalog.getDefaultSchema();
-            } else {
-                schemaDefault = catalog.getDefaultDatabase();
-            }
-        } else {
-            schemaDefault = catalog.getDefaultSchema();
-        }
-
-        String[] preserved = MetadataCatalog
-                .splitQualifiedNamePreservingQuotes(written);
-        String schemaRef = null;
-        if (preserved.length >= 3) {
-            schemaRef = preserved[preserved.length - 2];
-        } else if (preserved.length == 2 && !(dialect == DbType.mysql
-                || dialect == DbType.mariadb)) {
-            schemaRef = preserved[0];
-        }
-        String tableRef = preserved[preserved.length - 1];
-        boolean pgPublic = dialect == DbType.postgresql && explicitSchema
-                && isPostgresPublic(schemaRef);
-        String lookupReference = written;
-        String lookupSchemaDefault = schemaDefault;
-        if (pgPublic) {
-            lookupReference = tableRef;
-            lookupSchemaDefault = null;
-            if (preserved.length >= 4) {
-                instanceDefault = MetadataCatalog.normalizeIdentifier(
-                        preserved[preserved.length - 4]);
-                databaseDefault = MetadataCatalog.normalizeIdentifier(
-                        preserved[preserved.length - 3]);
-            } else if (preserved.length == 3) {
-                databaseDefault = MetadataCatalog.normalizeIdentifier(
-                        preserved[0]);
-            }
-        }
-
-        List<TableLocation> filtered = catalog.findAllTables(lookupReference,
-                instanceDefault, databaseDefault, lookupSchemaDefault);
-
-        if (explicitInstance && preserved.length >= 4) {
-            List<TableLocation> exact = new ArrayList<>();
-            for (TableLocation candidate : filtered) {
-                if (schemaMatches(preserved[0], candidate.getInstance())) {
-                    exact.add(candidate);
-                }
-            }
-            filtered = exact;
-        }
-        if (explicitDatabase) {
-            String databaseRef = null;
-            if (preserved.length >= 4) {
-                databaseRef = preserved[preserved.length - 3];
-            } else if (preserved.length == 3) {
-                databaseRef = preserved[0];
-            } else if (preserved.length == 2
-                    && (dialect == DbType.mysql
-                            || dialect == DbType.mariadb)) {
-                databaseRef = preserved[0];
-            }
-            if (databaseRef != null) {
-                List<TableLocation> exact = new ArrayList<>();
-                for (TableLocation candidate : filtered) {
-                    if (schemaMatches(databaseRef, candidate.getDatabase())) {
-                        exact.add(candidate);
-                    }
-                }
-                filtered = exact;
-            }
-        }
-
-        if (explicitSchema && schemaRef != null) {
-            List<TableLocation> exact = new ArrayList<>();
-            for (TableLocation candidate : filtered) {
-                if (schemaMatches(schemaRef, candidate.getSchema())) {
-                    exact.add(candidate);
-                }
-            }
-            filtered = exact;
-        }
-        if (dialect == DbType.postgresql && explicitSchema) {
-            List<TableLocation> exact = postgresTableMatches(filtered, tableRef);
-            if (!exact.isEmpty() || MetadataCatalog.isQuotedIdentifier(tableRef)) {
-                filtered = exact;
-            }
-        }
-
-        if (!explicitSchema) {
-            List<String> searchPath = !sessionRawSchemas.isEmpty()
-                    ? sessionRawSchemas : context.getSchemas();
-            if (!searchPath.isEmpty()) {
-                for (String schema : searchPath) {
-                    List<TableLocation> inSchema = new ArrayList<>();
-                    for (TableLocation candidate : filtered) {
-                        if (schemaMatches(schema, candidate.getSchema())) {
-                            inSchema.add(candidate);
-                        }
-                    }
-                    if (dialect == DbType.postgresql) {
-                        List<TableLocation> chosen = postgresTableMatches(
-                                inSchema, tableRef);
-                        if (!chosen.isEmpty()) {
-                            return chosen.get(0);
-                        }
-                    } else {
-                        for (TableLocation candidate : inSchema) {
-                            return candidate;
-                        }
-                    }
-                }
-                return missingTable(written);
-            }
-            if (hiveFamily && context.getDatabase() != null) {
-                for (TableLocation candidate : filtered) {
-                    if (schemaMatches(context.getDatabase(),
-                            candidate.getSchema())
-                            || schemaMatches(context.getDatabase(),
-                                    candidate.getDatabase())) {
-                        return candidate;
-                    }
-                }
-                return missingTable(written);
-            }
-        }
-
-        if (dialect == DbType.postgresql && !explicitSchema) {
-            List<TableLocation> exact = postgresTableMatches(filtered, tableRef);
-            if (!exact.isEmpty() || MetadataCatalog.isQuotedIdentifier(tableRef)) {
-                filtered = exact;
-            }
-        }
-        if (filtered.isEmpty()) {
-            return missingTable(written);
-        }
-        if (filtered.size() > 1) {
-            List<String> names = new ArrayList<>();
-            for (TableLocation candidate : filtered) {
-                names.add(candidate.getQualifiedName());
-            }
-            throw new AmbiguousTableException(written, names);
-        }
-        return filtered.get(0);
+        return metadataResolver().resolve(written);
     }
 
-    private static boolean isPostgresPublic(String schemaRef) {
-        if (schemaRef == null) {
-            return false;
-        }
-        String name = MetadataCatalog.normalizeIdentifier(schemaRef);
-        return MetadataCatalog.isQuotedIdentifier(schemaRef)
-                ? "public".equals(name)
-                : "public".equals(name.toLowerCase(Locale.ROOT));
-    }
-
-    private static List<TableLocation> postgresTableMatches(
-            List<TableLocation> candidates, String tableRef) {
-        String tableName = MetadataCatalog.normalizeIdentifier(tableRef);
-        boolean quoted = MetadataCatalog.isQuotedIdentifier(tableRef);
-        List<TableLocation> folded = new ArrayList<>();
-        for (TableLocation candidate : candidates) {
-            String actual = candidate.getTable().getName();
-            if (quoted ? tableName.equals(actual)
-                    : tableName.toLowerCase(Locale.ROOT).equals(actual)) {
-                folded.add(candidate);
-            }
-        }
-        if (!folded.isEmpty() || quoted) {
-            return folded;
-        }
-        List<TableLocation> lenient = new ArrayList<>();
-        for (TableLocation candidate : candidates) {
-            if (!candidate.getTable().isQuotedName()
-                    && tableName.equalsIgnoreCase(
-                            candidate.getTable().getName())) {
-                lenient.add(candidate);
-            }
-        }
-        return lenient;
-    }
-
-    private boolean schemaMatches(String reference, String actual) {
-        if (reference == null) {
-            return false;
-        }
-        DbType dialect = currentDialect();
-        if (actual == null) {
-            // An unqualified catalog table lives in the default schema.
-            if (dialect != DbType.postgresql) {
-                return false;
-            }
-            boolean quotedDefault = MetadataCatalog.isQuotedIdentifier(reference);
-            String defaultName = MetadataCatalog.normalizeIdentifier(reference);
-            return quotedDefault ? "public".equals(defaultName)
-                    : "public".equals(
-                            defaultName.toLowerCase(Locale.ROOT));
-        }
-        boolean quoted = MetadataCatalog.isQuotedIdentifier(reference);
-        String name = MetadataCatalog.normalizeIdentifier(reference);
-        if (dialect == DbType.postgresql) {
-            return quoted ? name.equals(actual)
-                    : name.toLowerCase(Locale.ROOT).equals(actual);
-        }
-        if (dialect == DbType.mysql || dialect == DbType.mariadb
-                || dialect == DbType.hive || dialect == DbType.antspark
-                || dialect == DbType.sqlserver) {
-            return foldCase(name).equals(foldCase(actual));
-        }
-        return quoted ? name.equals(actual) : name.equalsIgnoreCase(actual);
-    }
-
-    /**
-     * A table that is absent from the catalog is an error in strict mode; in optional mode
-     * it is analyzed without column information.
-     */
-    private TableLocation missingTable(String written) {
-        if (detachedMetadata()) {
-            return null;
-        }
-        throw new MetadataNotFoundException(written);
+    private String sessionPhysicalReference(String rawName) {
+        return metadataResolver().physicalReference(rawName);
     }
 
     private static boolean isSingleSegmentName(String rawName) {
@@ -6134,17 +5904,6 @@ public class DmlLineage {
             }
         }
         return null;
-    }
-
-    private boolean hasExplicitSchema(String reference) {
-        String[] parts = MetadataCatalog.splitQualifiedName(reference);
-        if (parts.length >= 3) {
-            return true;
-        }
-        if (parts.length == 2) {
-            return !isMySqlFamily();
-        }
-        return false;
     }
 
     private boolean isMySqlFamily() {
@@ -8186,65 +7945,6 @@ public class DmlLineage {
             return name;
         }
         return name.toLowerCase(Locale.ROOT);
-    }
-
-    private String canonicalPhysicalReference(String raw) {
-        String[] parts = MetadataCatalog.splitQualifiedNamePreservingQuotes(raw);
-        StringBuilder reference = new StringBuilder();
-        for (int i = 0; i < parts.length; i++) {
-            if (i > 0) {
-                reference.append('.');
-            }
-            String part = parts[i];
-            boolean quoted = MetadataCatalog.isQuotedIdentifier(part);
-            String name = MetadataCatalog.normalizeIdentifier(part);
-            if (!quoted) {
-                // PostgreSQL folds unquoted identifiers to lower case, so A and a are
-                // the same table. Other dialects keep their spelling here.
-                reference.append(currentDialect() == DbType.postgresql
-                        ? name.toLowerCase(Locale.ROOT) : name);
-                continue;
-            }
-            // A quoted identifier that folds to itself is the same as the unquoted
-            // spelling (PostgreSQL "a" and a); one that does not is a distinct name.
-            boolean special = name.contains(".") || name.contains("(") || name.contains(")");
-            boolean folds = !special && name.equals(foldName(name));
-            reference.append(folds ? name : part);
-        }
-        return reference.toString();
-    }
-
-    private String sessionPhysicalReference(String rawName) {
-        String reference = rawName;
-        String prefix = sessionReferencePrefix();
-        if (prefix != null && rawName != null
-                && isSingleSegmentName(rawName)) {
-            reference = prefix + "." + rawName;
-        }
-        return canonicalPhysicalReference(reference);
-    }
-
-    private String sessionReferencePrefix() {
-        DbType dialect = currentDialect();
-        if (dialect == DbType.postgresql && !sessionRawSchemas.isEmpty()) {
-            return sessionRawSchemas.get(0);
-        }
-        if (sessionDatabase != null) {
-            return sessionRawDatabase != null ? sessionRawDatabase
-                    : sessionDatabase;
-        }
-        if (!sessionRawSchemas.isEmpty()) {
-            return sessionRawSchemas.get(0);
-        }
-        return null;
-    }
-
-    private String foldName(String name) {
-        DbType dialect = currentDialect();
-        return dialect == DbType.mysql || dialect == DbType.mariadb
-                || dialect == DbType.postgresql
-                        ? name.toLowerCase(Locale.ROOT)
-                        : name.toUpperCase(Locale.ROOT);
     }
 
     private String lineageTableName(SourceTable source) {
@@ -10354,25 +10054,4 @@ public class DmlLineage {
         }
     }
 
-    private static final class SessionState {
-        private String instance;
-        private String database;
-        private List<String> schemas = new ArrayList<>();
-        private List<String> rawSchemas = new ArrayList<>();
-        private String rawDatabase;
-        private boolean ansiEnabled;
-        private boolean ansiDoubleQuotedIdentifiers;
-
-        private SessionState(MetadataContext base) {
-            if (base != null) {
-                this.instance = base.getInstance();
-                this.database = base.getDatabase();
-                this.schemas = new ArrayList<>(base.getSchemas());
-            }
-        }
-
-        private MetadataContext toContext(MetadataContext base) {
-            return base == null ? null : base.withSession(instance, database, schemas);
-        }
-    }
 }

@@ -1,0 +1,178 @@
+[
+  {
+    "name": "projection-and-join",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE b (c1 INT, c3 INT);",
+    "script": "SELECT a.c1, b.c3 FROM a JOIN b ON a.c1 = b.c1;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1",
+          "b.c3 -> temp0.c3"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "join-using-star",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE b (c1 INT, c3 INT);",
+    "script": "SELECT * FROM a JOIN b USING (c1);",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1",
+          "b.c1 -> temp0.c1",
+          "a.c2 -> temp0.c2",
+          "b.c3 -> temp0.c3"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "cte-chain",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "WITH x AS (SELECT c1 AS k FROM a), y AS (SELECT k FROM x) SELECT k FROM y;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> x.k",
+          "x.k -> y.k",
+          "y.k -> temp0.k"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "union-all",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT); CREATE TABLE b (c1 INT);",
+    "script": "SELECT c1 FROM a UNION ALL SELECT c1 FROM b;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1",
+          "b.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "scalar-subquery",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT); CREATE TABLE b (c1 INT, c3 INT);",
+    "script": "SELECT a.c1, (SELECT max(b.c3) FROM b WHERE b.c1 = a.c1) AS m FROM a;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1",
+          "b.c3 -> temp1.max(b.c3)",
+          "temp1.max(b.c3) -> temp0.m"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "extract-source",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE d (dt DATE, x INT);",
+    "script": "SELECT extract(year FROM dt), x FROM d;",
+    "expect": [
+      {
+        "instructions": [
+          "d.dt -> temp0.extract(year)",
+          "d.x -> temp0.x"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "ambiguous-column",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT); CREATE TABLE b (c1 INT);",
+    "script": "SELECT c1 FROM a, b;",
+    "expect": [
+      {
+        "error": "AmbiguousColumnException",
+        "instructions": []
+      }
+    ]
+  },
+  {
+    "name": "metadata-free-wildcard",
+    "dialect": "postgresql",
+    "mode": "optional",
+    "script": "SELECT * FROM missing;",
+    "expect": [
+      {
+        "instructions": [
+          "missing.* -> temp0"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "table-function-catalog-hijack",
+    "dialect": "postgresql",
+    "mode": "optional",
+    "catalog": "CREATE TABLE \"generate_series(1, 3)\" (y INT);",
+    "script": "SELECT generate_series.generate_series FROM generate_series(1, 3);",
+    "expect": [
+      {
+        "instructions": [
+          "generate_series(1, 3).generate_series -> temp0.generate_series"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "table-function-unused-cte-width",
+    "dialect": "postgresql",
+    "mode": "optional",
+    "script": "WITH \"generate_series(1, 3)\" AS (SELECT 1 AS x, 2 AS y) SELECT * FROM generate_series(0, 5) UNION ALL SELECT * FROM generate_series(1, 3) UNION ALL SELECT 1;",
+    "expect": [
+      {
+        "instructions": [
+          "generate_series(0, 5).* -> temp0",
+          "generate_series(1, 3).* -> temp0"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "strict-quoting-error",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "strictQuoting": true,
+    "catalog": "CREATE TABLE t (c1 INT);",
+    "script": "SELECT c1 FROM t;",
+    "expect": [
+      {
+        "error": "UnquotedIdentifierException",
+        "instructions": []
+      }
+    ]
+  },
+  {
+    "name": "qualified-star",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE b (c1 INT, c3 INT);",
+    "script": "SELECT a.* FROM a JOIN b ON a.c1 = b.c1;",
+    "expect": [
+      {
+        "instructions": [
+          "a.* -> temp0"
+        ]
+      }
+    ]
+  }
+]

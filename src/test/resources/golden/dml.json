@@ -1,0 +1,88 @@
+[
+  {
+    "name": "insert-select",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE t (c1 INT, c2 INT);",
+    "script": "INSERT INTO t(c1, c2) SELECT c1, c2 FROM a;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp1.c1",
+          "a.c2 -> temp1.c2",
+          "temp1.* -> t(c1,c2)"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "update-join",
+    "dialect": "mysql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT, c2 INT); CREATE TABLE b (c1 INT, c3 INT);",
+    "script": "UPDATE a JOIN b ON a.c1 = b.c1 SET a.c2 = b.c3;",
+    "expect": [
+      {
+        "instructions": [
+          "b.c3 -> a.c2"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "merge-upsert",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE s (c1 INT, c2 INT); CREATE TABLE t (c1 INT, c2 INT);",
+    "script": "MERGE INTO t USING s ON t.c1 = s.c1 WHEN MATCHED THEN UPDATE SET t.c2 = s.c2 WHEN NOT MATCHED THEN INSERT (c1, c2) VALUES (s.c1, s.c2);",
+    "expect": [
+      {
+        "instructions": [
+          "s.c2 -> t.c2",
+          "s.c1 -> t.c1",
+          "s.c2 -> t.c2"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "delete-and-truncate",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE t (c1 INT); CREATE TABLE s (c1 INT);",
+    "script": "DELETE FROM t WHERE c1 IN (SELECT c1 FROM s); TRUNCATE TABLE t;",
+    "expect": [
+      {
+        "instructions": []
+      },
+      {
+        "instructions": []
+      }
+    ]
+  },
+  {
+    "name": "session-use",
+    "dialect": "mysql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE db1.a (c1 INT); CREATE TABLE db2.a (c2 INT);",
+    "script": "USE db1; SELECT c1 FROM a; USE db2; SELECT c2 FROM a;",
+    "expect": [
+      {
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "db1.a.c1 -> temp0.c1"
+        ]
+      },
+      {
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "db2.a.c2 -> temp0.c2"
+        ]
+      }
+    ]
+  }
+]

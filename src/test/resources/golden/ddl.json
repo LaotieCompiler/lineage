@@ -1,0 +1,94 @@
+[
+  {
+    "name": "ctas",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT, c2 INT);",
+    "script": "CREATE TABLE x AS SELECT c1, c2 FROM a;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp1.c1",
+          "a.c2 -> temp1.c2",
+          "temp1.* -> x"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "create-view",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "CREATE VIEW v AS SELECT c1 FROM a;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp1.c1",
+          "temp1.* -> v"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "ddl-alter-drop",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "CREATE TABLE x (c1 INT); ALTER TABLE x ADD COLUMN c2 INT; INSERT INTO x(c1, c2) SELECT a.c1, a.c1 FROM a; DROP TABLE x;",
+    "expect": [
+      {
+        "instructions": []
+      },
+      {
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "a.c1 -> temp1.c1",
+          "a.c1 -> temp1.c1",
+          "temp1.* -> x(c1,c2)"
+        ]
+      },
+      {
+        "instructions": []
+      }
+    ]
+  },
+  {
+    "name": "hive-insert-overwrite",
+    "dialect": "hive",
+    "mode": "strict",
+    "catalog": "CREATE TABLE s (c1 INT); CREATE TABLE t (c1 INT);",
+    "script": "INSERT OVERWRITE TABLE t SELECT c1 FROM s;",
+    "expect": [
+      {
+        "instructions": [
+          "s.c1 -> temp1.c1",
+          "temp1.* -> t"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "ctas-declared-columns",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT, c2 INT);",
+    "script": "CREATE TABLE x (k, v) AS SELECT c1, c2 FROM a; SELECT k FROM x;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp1.c1",
+          "a.c2 -> temp1.c2",
+          "temp1.* -> x(k,v)"
+        ]
+      },
+      {
+        "instructions": [
+          "x.k -> temp0.k"
+        ]
+      }
+    ]
+  }
+]

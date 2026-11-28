@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.alibaba.druid.DbType;
+import com.laotie.identifier.Identifiers;
 
 /**
  * Fully qualified location of a table inside the metadata hierarchy:
@@ -68,11 +69,9 @@ public class TableLocation {
             return identifier;
         }
         if (isMySqlFamily(dialect)) {
-            return "`" + identifier.replace("`", "``") + "`";
+            return Identifiers.quoteBacktick(identifier);
         }
-        String inner = identifier.replace("\\", "\\\\")
-                .replace("\"", "\"\"");
-        return "\"" + inner + "\"";
+        return Identifiers.quoteDouble(identifier);
     }
 
     private static boolean isMySqlFamily(DbType dbType) {

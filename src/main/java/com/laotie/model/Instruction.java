@@ -11,6 +11,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import com.laotie.exception.MetadataNotFoundException;
+import com.laotie.identifier.Identifiers;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
@@ -537,11 +538,7 @@ public class Instruction {
     }
 
     private static String renderIdentifier(String name) {
-        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-            return name;
-        }
-        return "\"" + name.replace("\\", "\\\\")
-                .replace("\"", "\"\"") + "\"";
+        return Identifiers.render(name);
     }
 
     private static void putTempColumns(Map<String, List<Column>> tempColumns, String table,

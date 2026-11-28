@@ -19,7 +19,6 @@ import java.util.Stack;
 import java.util.stream.Collectors;
 
 import com.alibaba.druid.DbType;
-import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLName;
 import com.alibaba.druid.sql.ast.SQLObject;
@@ -80,6 +79,12 @@ import com.laotie.exception.AmbiguousTableException;
 import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.exception.UnquotedIdentifierException;
+import com.laotie.dialect.DialectRules;
+import com.laotie.identifier.Identifier;
+import com.laotie.identifier.IdentifierCase;
+import com.laotie.identifier.Identifiers;
+import com.laotie.parse.ScriptSplitter;
+import com.laotie.parse.SqlParser;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
@@ -798,35 +803,6 @@ public class DmlLineage {
         requireQuotedIdentifier(identifier.getName());
     }
 
-    private static final Set<String> UNIT_KEYWORDS = new HashSet<>();
-
-    private static final Set<String> SQL_TSI_UNITS = new HashSet<>();
-
-    static {
-        java.util.Collections.addAll(UNIT_KEYWORDS,
-                "YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE",
-                "SECOND", "MILLISECOND", "MICROSECOND", "NANOSECOND",
-                "DATE", "TIME", "DATETIME", "TIMESTAMP",
-                "YEAR_MONTH", "DAY_HOUR", "DAY_MINUTE", "DAY_SECOND",
-                "DAY_MICROSECOND", "HOUR_MINUTE", "HOUR_SECOND",
-                "HOUR_MICROSECOND", "MINUTE_SECOND", "MINUTE_MICROSECOND",
-                "SECOND_MICROSECOND",
-                // SQL Server date-part abbreviations.
-                "YY", "YYYY", "QQ", "Q", "MM", "M", "DY", "Y", "DD", "D",
-                "WK", "WW", "DW", "HH", "MI", "N", "SS", "S", "MS", "MCS",
-                "NS", "ISOWW", "ISO_WEEK", "WEEKDAY", "DAYOFYEAR",
-                // PostgreSQL date-part fields.
-                "EPOCH", "DOW", "ISODOW", "DOY", "ISOYEAR", "CENTURY",
-                "DECADE", "MILLENNIUM", "MICROSECONDS", "MILLISECONDS",
-                "TIMEZONE", "TIMEZONE_HOUR", "TIMEZONE_MINUTE", "JULIAN");
-        java.util.Collections.addAll(SQL_TSI_UNITS,
-                "SQL_TSI_FRAC_SECOND", "SQL_TSI_SECOND", "SQL_TSI_MINUTE",
-                "SQL_TSI_HOUR", "SQL_TSI_DAY", "SQL_TSI_WEEK",
-                "SQL_TSI_MONTH", "SQL_TSI_QUARTER", "SQL_TSI_YEAR",
-                "SQL_TSI_MILLI_SECOND", "SQL_TSI_MICRO_SECOND",
-                "SQL_TSI_NANO_SECOND");
-    }
-
     private static boolean isFunctionUnit(SQLIdentifierExpr identifier,
             DbType dialect) {
         SQLObject parent = identifier.getParent();
@@ -839,62 +815,25 @@ public class DmlLineage {
                 || call.getOwner() != null) {
             return false;
         }
+        DialectRules rules = DialectRules.of(dialect);
         String method = call.getMethodName();
-        Object escape = call.getAttribute(JDBC_ESCAPE_ATTRIBUTE);
-        boolean jdbcMarked = escape instanceof JdbcEscape
-                && ((JdbcEscape) escape).signature.equals(
-                        jdbcSignature(call));
-        boolean mysqlFamily = dialect == DbType.mysql
-                || dialect == DbType.mariadb;
-        boolean hiveFamily = dialect == DbType.hive
-                || dialect == DbType.antspark;
-        boolean sqlServerFamily = dialect == DbType.sqlserver
-                || dialect == DbType.sybase || dialect == DbType.h2;
-        boolean allowed;
-        if ("EXTRACT".equalsIgnoreCase(method)) {
-            allowed = true;
-        } else if ("TIMESTAMPDIFF".equalsIgnoreCase(method)
-                || "TIMESTAMPADD".equalsIgnoreCase(method)) {
-            allowed = mysqlFamily || hiveFamily || sqlServerFamily
-                    || dialect == DbType.derby || dialect == DbType.hsql;
-        } else if ("GET_FORMAT".equalsIgnoreCase(method)) {
-            allowed = mysqlFamily;
-        } else if (dialect == DbType.h2) {
-            allowed = "DATEADD".equalsIgnoreCase(method)
-                    || "DATEDIFF".equalsIgnoreCase(method)
-                    || "DATE_TRUNC".equalsIgnoreCase(method);
-        } else if (dialect == DbType.sybase) {
-            allowed = "DATEADD".equalsIgnoreCase(method)
-                    || "DATEDIFF".equalsIgnoreCase(method)
-                    || "DATEPART".equalsIgnoreCase(method)
-                    || "DATENAME".equalsIgnoreCase(method);
-        } else if (dialect == DbType.sqlserver) {
-            allowed = "DATEADD".equalsIgnoreCase(method)
-                    || "DATEDIFF".equalsIgnoreCase(method)
-                    || "DATEDIFF_BIG".equalsIgnoreCase(method)
-                    || "DATEPART".equalsIgnoreCase(method)
-                    || "DATENAME".equalsIgnoreCase(method)
-                    || "DATETRUNC".equalsIgnoreCase(method)
-                    || "DATE_BUCKET".equalsIgnoreCase(method);
-        } else {
-            allowed = false;
-        }
-        if (!allowed) {
+        if (!rules.allowsUnitFunction(method)) {
             return false;
         }
+        Object escape = call.getAttribute(JDBC_ESCAPE_ATTRIBUTE);
+        boolean jdbcMarked = escape instanceof JdbcEscape
+                && ((JdbcEscape) escape).signature.equals(jdbcSignature(call));
         String unit = normalizeIdentifier(identifier.getName());
         if (unit == null) {
             return false;
         }
-        String upper = unit.toUpperCase(Locale.ROOT);
         boolean timestampCall = "TIMESTAMPADD".equalsIgnoreCase(method)
                 || "TIMESTAMPDIFF".equalsIgnoreCase(method);
-        if (dialect == DbType.derby && timestampCall) {
-            // Derby only treats the JDBC escape form's unit as a keyword.
-            return jdbcMarked && SQL_TSI_UNITS.contains(upper);
+        if (rules.requiresJdbcTimestampUnit() && timestampCall) {
+            return jdbcMarked && rules.isJdbcUnitKeyword(unit);
         }
-        return SQL_TSI_UNITS.contains(upper)
-                || UNIT_KEYWORDS.contains(upper);
+        return rules.isJdbcUnitKeyword(unit)
+                || rules.isUnitKeyword(unit);
     }
 
     private static void checkProperty(SQLPropertyExpr property) {
@@ -925,18 +864,7 @@ public class DmlLineage {
     }
 
     private SQLStatement parseWithDialectFallback(String sql, DbType dialect) {
-        try {
-            return SQLUtils.parseSingleStatement(sql, dialect);
-        } catch (RuntimeException e) {
-            if (dialect == DbType.antspark) {
-                try {
-                    return SQLUtils.parseSingleStatement(sql, DbType.hive);
-                } catch (RuntimeException ignored) {
-                    // Report the original dialect's error below.
-                }
-            }
-            throw e;
-        }
+        return SqlParser.parse(sql, dialect);
     }
 
     public LineageResult parse(String sqlStr) {
@@ -1117,230 +1045,11 @@ public class DmlLineage {
     }
 
     static List<String> splitStatements(String sql, DbType dialect) {
-        List<String> statements = new ArrayList<>();
-        if (sql == null) {
-            return statements;
-        }
-        boolean mysqlFamily = dialect == DbType.mysql || dialect == DbType.mariadb;
-        boolean hiveFamily = dialect == DbType.hive || dialect == DbType.antspark;
-        boolean hashComments = mysqlFamily;
-        boolean postgres = dialect == DbType.postgresql;
-        boolean nestedComments = postgres;
-        boolean bracketQuotes = dialect == DbType.sqlserver;
-
-        StringBuilder current = new StringBuilder();
-        char quote = 0;
-        boolean escapeString = false;
-        boolean rawString = false;
-        String dollarTag = null;
-        boolean lineComment = false;
-        boolean blockComment = false;
-        int blockDepth = 0;
-
-        for (int i = 0; i < sql.length(); i++) {
-            char ch = sql.charAt(i);
-            char next = i + 1 < sql.length() ? sql.charAt(i + 1) : 0;
-
-            if (lineComment) {
-                current.append(ch);
-                if (ch == '\n') {
-                    lineComment = false;
-                }
-                continue;
-            }
-            if (blockComment) {
-                current.append(ch);
-                if (nestedComments && ch == '/' && next == '*') {
-                    current.append(next);
-                    i++;
-                    blockDepth++;
-                } else if (ch == '*' && next == '/') {
-                    current.append(next);
-                    i++;
-                    blockDepth--;
-                    if (blockDepth <= 0) {
-                        blockComment = false;
-                    }
-                }
-                continue;
-            }
-            if (dollarTag != null) {
-                if (sql.startsWith(dollarTag, i)) {
-                    current.append(dollarTag);
-                    i += dollarTag.length() - 1;
-                    dollarTag = null;
-                } else {
-                    current.append(ch);
-                }
-                continue;
-            }
-            if (quote != 0) {
-                current.append(ch);
-                if (escapeString && ch == '\\' && i + 1 < sql.length()) {
-                    current.append(sql.charAt(++i));
-                } else if (ch == quote) {
-                    if (!rawString && next == quote) {
-                        current.append(next);
-                        i++;
-                    } else {
-                        quote = 0;
-                        escapeString = false;
-                        rawString = false;
-                    }
-                }
-                continue;
-            }
-            if (ch == '\'' || ch == '"' || ch == '`'
-                    || (bracketQuotes && ch == '[')) {
-                quote = ch == '[' ? ']' : ch;
-                rawString = dialect == DbType.antspark
-                        && (ch == '\'' || ch == '"')
-                        && isRawStringPrefix(sql, i);
-                boolean backslashQuotes = mysqlFamily || hiveFamily;
-                escapeString = !rawString && (backslashQuotes
-                        ? (ch == '\'' || ch == '"')
-                        : (ch == '\'' && isEscapeStringPrefix(sql, i)));
-                current.append(ch);
-            } else if (ch == '$' && postgres && isDollarQuoteStart(sql, i)) {
-                String tag = dollarTagAt(sql, i);
-                if (tag != null) {
-                    dollarTag = tag;
-                    current.append(tag);
-                    i += tag.length() - 1;
-                } else {
-                    current.append(ch);
-                }
-            } else if (ch == '-' && next == '-'
-                    && (!mysqlFamily || i + 2 >= sql.length()
-                            || Character.isWhitespace(sql.charAt(i + 2)))) {
-                lineComment = true;
-                current.append(ch);
-            } else if (hashComments && ch == '#') {
-                lineComment = true;
-                current.append(ch);
-            } else if (ch == '/' && next == '*') {
-                blockComment = true;
-                blockDepth = 1;
-                current.append(ch);
-            } else if (ch == ';') {
-                addStatement(statements, current, hashComments, nestedComments);
-            } else {
-                current.append(ch);
-            }
-        }
-        addStatement(statements, current, hashComments, nestedComments);
-        return statements;
+        return ScriptSplitter.split(sql, dialect);
     }
 
     private static boolean isIdentifierChar(char ch) {
-        return Character.isLetterOrDigit(ch) || ch == '_' || ch == '$';
-    }
-
-    private static boolean isDollarQuoteStart(String sql, int index) {
-        return index == 0 || !isIdentifierChar(sql.charAt(index - 1));
-    }
-
-    private static boolean isRawStringPrefix(String sql, int quoteIndex) {
-        if (quoteIndex == 0) {
-            return false;
-        }
-        char prefix = sql.charAt(quoteIndex - 1);
-        if (prefix != 'r' && prefix != 'R') {
-            return false;
-        }
-        return quoteIndex - 1 == 0 || !isIdentifierChar(sql.charAt(quoteIndex - 2));
-    }
-
-    private static boolean isEscapeStringPrefix(String sql, int quoteIndex) {
-        if (quoteIndex == 0) {
-            return false;
-        }
-        char prefix = sql.charAt(quoteIndex - 1);
-        if (prefix != 'E' && prefix != 'e') {
-            return false;
-        }
-        return quoteIndex - 1 == 0 || !isIdentifierChar(sql.charAt(quoteIndex - 2));
-    }
-
-    private static String dollarTagAt(String sql, int start) {
-        if (start + 1 < sql.length() && sql.charAt(start + 1) == '$') {
-            return "$$";
-        }
-        int end = sql.indexOf('$', start + 1);
-        if (end < 0) {
-            return null;
-        }
-        String tag = sql.substring(start, end + 1);
-        if (!tag.matches("\\$[A-Za-z_][A-Za-z0-9_]*\\$")) {
-            return null;
-        }
-        return tag;
-    }
-
-    private static void addStatement(List<String> statements, StringBuilder current,
-            boolean hashComments, boolean nestedComments) {
-        String statement = current.toString().trim();
-        current.setLength(0);
-        if (!statement.isEmpty()
-                && !isCommentOnly(statement, hashComments, nestedComments)) {
-            statements.add(statement);
-        }
-    }
-
-    private static boolean isCommentOnly(String statement, boolean hashComments,
-            boolean nestedComments) {
-        boolean lineComment = false;
-        boolean blockComment = false;
-        int blockDepth = 0;
-        char quote = 0;
-        StringBuilder visible = new StringBuilder();
-
-        for (int i = 0; i < statement.length(); i++) {
-            char ch = statement.charAt(i);
-            char next = i + 1 < statement.length() ? statement.charAt(i + 1) : 0;
-            if (lineComment) {
-                if (ch == '\n') {
-                    lineComment = false;
-                }
-                continue;
-            }
-            if (blockComment) {
-                if (nestedComments && ch == '/' && next == '*') {
-                    i++;
-                    blockDepth++;
-                } else if (ch == '*' && next == '/') {
-                    i++;
-                    blockDepth--;
-                    if (blockDepth <= 0) {
-                        blockComment = false;
-                    }
-                }
-                continue;
-            }
-            if (quote != 0) {
-                visible.append(ch);
-                if (ch == quote) {
-                    quote = 0;
-                }
-                continue;
-            }
-            if (ch == '\'' || ch == '"' || ch == '`') {
-                quote = ch;
-                visible.append(ch);
-            } else if (ch == '-' && next == '-') {
-                lineComment = true;
-                i++;
-            } else if (hashComments && ch == '#') {
-                lineComment = true;
-            } else if (ch == '/' && next == '*') {
-                blockComment = true;
-                blockDepth = 1;
-                i++;
-            } else if (!Character.isWhitespace(ch)) {
-                visible.append(ch);
-            }
-        }
-        return visible.length() == 0;
+        return ScriptSplitter.isIdentifierChar(ch);
     }
 
     private DbType resolveDialect() {
@@ -6163,39 +5872,13 @@ public class DmlLineage {
     }
 
     private String canonicalIdentifier(String rawName) {
-        if (rawName == null) {
-            return null;
-        }
-        boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName);
-        String name = normalizeIdentifier(rawName);
-        DbType dialect = currentDialect();
-        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
-            return name;
-        }
-        if (dialect == DbType.postgresql) {
-            return quoted ? name : name.toLowerCase();
-        }
-        return quoted ? name : name.toUpperCase();
+        return DialectRules.of(currentDialect())
+                .canonical(Identifier.of(rawName));
     }
 
     private String identifierKey(String rawName) {
-        if (rawName == null) {
-            return null;
-        }
-        boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName);
-        String name = normalizeIdentifier(rawName);
-        DbType dialect = currentDialect();
-        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
-            return name.toLowerCase(Locale.ROOT);
-        }
-        if (dialect == DbType.postgresql) {
-            return quoted ? name : name.toLowerCase(Locale.ROOT);
-        }
-        if (dialect == DbType.hive || dialect == DbType.antspark) {
-            // Hive/Spark identifiers are case-insensitive even when quoted.
-            return foldCase(name);
-        }
-        return quoted ? name : name.toUpperCase(Locale.ROOT);
+        return DialectRules.of(currentDialect())
+                .key(Identifier.of(rawName));
     }
 
     private Map<String, List<String>> namedTargetOutputs() {
@@ -6772,11 +6455,7 @@ public class DmlLineage {
     }
 
     private String quoteForLearning(String name) {
-        DbType dialect = currentDialect();
-        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
-            return "`" + name.replace("`", "``") + "`";
-        }
-        return quoteIdentifierValue(name);
+        return DialectRules.of(currentDialect()).quoteForLearning(name);
     }
 
     private void learnExplicitReference(SQLPropertyExpr property) {
@@ -9282,16 +8961,11 @@ public class DmlLineage {
     }
 
     private static String quoteIdentifierValue(String name) {
-        return "\"" + name.replace("\\", "\\\\")
-                .replace("\"", "\"\"") + "\"";
+        return Identifiers.quoteDouble(name);
     }
 
     private static String renderIdentifier(String name) {
-        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-            return name;
-        }
-        return "\"" + name.replace("\\", "\\\\")
-                .replace("\"", "\"\"") + "\"";
+        return Identifiers.render(name);
     }
 
     private List<SourceTable> currentSources() {
@@ -10056,10 +9730,7 @@ public class DmlLineage {
      * upper-then-lower, independent of the JVM locale.
      */
     private static String foldCase(String value) {
-        if (value == null) {
-            return null;
-        }
-        return MetadataCatalog.caseFold(value);
+        return IdentifierCase.fold(value);
     }
 
     /** Strip one Hive SQL identifier layer, keeping inner quote characters. */

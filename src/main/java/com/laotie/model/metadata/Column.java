@@ -1,5 +1,7 @@
 package com.laotie.model.metadata;
 
+import com.laotie.identifier.Identifiers;
+
 import java.util.Objects;
 
 /**
@@ -150,11 +152,7 @@ public class Column {
     }
 
     private static String renderIdentifier(String name) {
-        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-            return name;
-        }
-        return "\"" + name.replace("\\", "\\\\")
-                .replace("\"", "\"\"") + "\"";
+        return Identifiers.render(name);
     }
 
     @Override

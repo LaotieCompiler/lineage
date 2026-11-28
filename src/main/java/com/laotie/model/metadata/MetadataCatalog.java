@@ -25,6 +25,8 @@ import com.alibaba.druid.sql.ast.statement.SQLTableElement;
 import com.laotie.exception.AmbiguousTableException;
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.exception.MetadataPersistenceException;
+import com.laotie.identifier.IdentifierCase;
+import com.laotie.identifier.Identifiers;
 
 /**
  * In-memory metadata catalog with the hierarchy
@@ -747,11 +749,9 @@ public class MetadataCatalog {
 
     private String quoteAlways(String identifier) {
         if (isMySqlFamily()) {
-            return "`" + identifier.replace("`", "``") + "`";
+            return Identifiers.quoteBacktick(identifier);
         }
-        String inner = identifier.replace("\\", "\\\\")
-                .replace("\"", "\"\"");
-        return "\"" + inner + "\"";
+        return Identifiers.quoteDouble(identifier);
     }
 
     private String quote(String identifier) {
@@ -835,17 +835,7 @@ public class MetadataCatalog {
      * {@link String#equalsIgnoreCase} semantics.
      */
     public static String caseFold(String value) {
-        if (value == null) {
-            return null;
-        }
-        StringBuilder folded = new StringBuilder(value.length());
-        for (int i = 0; i < value.length(); ) {
-            int codePoint = value.codePointAt(i);
-            folded.appendCodePoint(Character.toLowerCase(
-                    Character.toUpperCase(codePoint)));
-            i += Character.charCount(codePoint);
-        }
-        return folded.toString();
+        return IdentifierCase.fold(value);
     }
 
     public static String normalizeIdentifier(String identifier) {
@@ -861,7 +851,7 @@ public class MetadataCatalog {
                     || (first == '[' && last == ']')) {
                 String inner = value.substring(1, value.length() - 1);
                 if (first == '"') {
-                    return decodeDoubleQuoted(inner);
+                    return Identifiers.decodeDoubleQuoted(inner);
                 }
                 if (first == '`') {
                     return inner.replace("``", "`");
@@ -873,27 +863,6 @@ public class MetadataCatalog {
             }
         }
         return value;
-    }
-
-    private static String decodeDoubleQuoted(String inner) {
-        StringBuilder decoded = new StringBuilder(inner.length());
-        for (int i = 0; i < inner.length(); i++) {
-            char ch = inner.charAt(i);
-            char next = i + 1 < inner.length() ? inner.charAt(i + 1) : 0;
-            if (ch == '\\' && next == '\\') {
-                decoded.append('\\');
-                i++;
-            } else if (ch == '\\' && next == '"') {
-                decoded.append('"');
-                i++;
-            } else if (ch == '"' && next == '"') {
-                decoded.append('"');
-                i++;
-            } else {
-                decoded.append(ch);
-            }
-        }
-        return decoded.toString();
     }
 
     /**

@@ -203,35 +203,32 @@ table-level edges instead of guessing.
 1. build lineage graph by direct relations
 2. export global lineage for each target fields
 
-## TODO
+## Implementation status
 
-### select parser
+The former TODO list is complete:
 
-1. select * from A,B
-2. select c1,c2 from A,B //c1 from A or B
-3. select A.c1,B.c2 from A,B
-4. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column or strict string pattern.
-5. select c1,c2,c3 from A where ci in (select ...)
-6. specify default database/schema
-7. update ...
-
-### metadata
-
-Cross-database and cross-schema lineage, including default database/schema selected via
-`USE` or `search_path`, is covered by `CrossDatabaseSchemaTest`.
-
-#### steps
-
-1. generate relations and tables from raw SQL query.
-2. import metadata information from real database.
-3. execute relations with metadata to get exactly relations. Meanwhile update metadata for middle tables.
-4. build lineage map.
+- `select * from A,B`, `select c1,c2 from A,B`, and `select A.c1,B.c2 from A,B` are
+  covered by `ColumnResolutionTest`, including ambiguity errors and metadata inference.
+- Derived tables expose bare output names: `select * from (select A.c1, B.c2 from A,B) as T`
+  maps to `T.c1` / `T.c2`.
+- `where ... in (select ...)` collects source tables without emitting output mappings.
+- Default database/schema selected via `USE` or `search_path` is covered by
+  `CrossDatabaseSchemaTest`.
+- `UPDATE` statements, including joins and scalar subqueries, are covered by
+  `AdvancedDmlTest`.
+- Metadata is imported from a real database (`JdbcMetadataScanner`), merged with
+  DDL/inferred metadata, and consumed by the second analysis pass; global lineage is
+  exported from `ScanResult`.
 
 ### support DB
 
 Hive and Spark are covered by the catalog and wildcard regression tests. Spark
 statements fall back to the Hive parser only when the Spark parser rejects them, so
 Hive-compatible DML such as `INSERT OVERWRITE TABLE` is analyzed normally.
+
+The remaining open items are the bounded-contract edge cases documented under
+[Known limitations](#known-limitations). They are recorded deliberately and are not
+tracked as TODOs.
 
 ## License
 

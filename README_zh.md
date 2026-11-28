@@ -190,34 +190,28 @@ catalog 的表 `ext.missing` 中得到列名 `p`；在无元数据契约下该�
 1. 通过直接关系构建血缘地图
 2. 为每个目标字段导出全局血缘
 
-## TODO
+## 实现状态
 
-### 待开发的 select 语法
+原 TODO 清单已全部完成：
 
-1. select * from A,B
-2. select c1,c2 from A,B //c1 from A or B
-3. select A.c1,B.c2 from A,B
-4. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column or strict string pattern.
-5. select c1,c2,c3 from A where ci in (select ...)
-6. specify default database/schema
-7. update ...
-
-### 元数据
-
-跨数据库、跨 schema 的血缘（包括通过 `USE` 或 `search_path` 选择的默认数据库/schema）
-由 `CrossDatabaseSchemaTest` 覆盖。
-
-#### 步骤
-
-1. 从原始SQL查询中生成列之间的直接关系和涉及的数据库表。
-2. 从真实数据库导入元数据信息。
-3. 使用元数据二次编译，以获取确切的列的关系。同时更新中间表的元数据。
-4. 构建血缘地图。
+- `select * from A,B`、`select c1,c2 from A,B`、`select A.c1,B.c2 from A,B` 由
+  `ColumnResolutionTest` 覆盖，包括歧义报错与元数据推导。
+- 派生表输出裸列名：`select * from (select A.c1, B.c2 from A,B) as T` 映射为
+  `T.c1` / `T.c2`。
+- `where ... in (select ...)` 会收集源表，但不产生输出映射。
+- 通过 `USE` 或 `search_path` 选择的默认数据库/schema 由 `CrossDatabaseSchemaTest`
+  覆盖。
+- `UPDATE` 语句（包括 join 与标量子查询）由 `AdvancedDmlTest` 覆盖。
+- 元数据可从真实数据库导入（`JdbcMetadataScanner`），与 DDL/推导元数据合并后供第二轮
+  分析使用；全局血缘从 `ScanResult` 导出。
 
 ### 支持的数据库
 
 Hive 与 Spark 已有 catalog 与通配符回归测试覆盖。Spark 语句仅在 Spark 解析器拒绝时才回退到
 Hive 解析器，因此 `INSERT OVERWRITE TABLE` 等 Hive 兼容 DML 可以正常分析。
+
+目前仍然开放的事项是有界契约的边界情况，记录在"已知限制"一节；它们是有意保留的说明，
+不再作为 TODO 跟踪。
 
 ## 许可证
 

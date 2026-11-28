@@ -56,7 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 910 个测试通过、2 个跳过。
+当前为 911 个测试通过、2 个跳过。
 
 Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 `JdbcMetadataScannerDockerTest`：
@@ -131,10 +131,14 @@ LineageScanner.withoutMetadata(
 强制引用模式还会校验表别名与 CTE 名，并覆盖 PostgreSQL 的 `RETURNING`/`ON CONFLICT`、
 MySQL 的 `ON DUPLICATE KEY UPDATE` 以及 SQL Server 的日期部分。
 
-已知限制：Druid 的 AST 不保留 Derby JDBC 转义语法（`{fn TIMESTAMPADD(...)}`）。严格模式
-在解析后的调用节点上记录转义来源。未修改的 AST 或其克隆可以正确处理，但如果手工编辑
-AST，把转义调用的参数替换为等价普通调用的参数，二者无法区分，可能继承单位关键字豁免。
-严格语法的审核批次在该对抗性 AST 编辑场景失败 22 轮后关闭；普通 SQL 不受影响。
+永久限制（不在修复计划内）：Druid 的 AST 不保留 Derby JDBC 转义语法
+（`{fn TIMESTAMPADD(...)}`），也不携带源码位置。
+
+严格模式因此以"渲染后的调用签名"记录转义来源。未修改的 AST 或其克隆可以正确处理，但
+如果手工编辑 AST，把转义调用的参数替换为等价普通调用的参数，签名相同，二者无法区分，
+可能继承单位关键字豁免。在不改变契约的前提下这两个要求无法同时满足：拒绝这类编辑也会
+拒绝本应通过的未修改克隆。严格语法审核批次在该对抗性场景失败 22 轮后关闭；普通 SQL
+不受影响。
 
 
 

@@ -52,7 +52,7 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 910 tests, 2 skipped).
+Run the full unit suite with `mvn test` (currently 911 tests, 2 skipped).
 
 The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
 run `JdbcMetadataScannerDockerTest`:
@@ -128,12 +128,16 @@ LineageScanner.withoutMetadata(
 Strict quoting also validates table aliases and CTE names, and covers PostgreSQL
 `RETURNING`/`ON CONFLICT`, MySQL `ON DUPLICATE KEY UPDATE`, and SQL Server date parts.
 
-Known limitation: Derby JDBC escape syntax (`{fn TIMESTAMPADD(...)}`) is not represented in
-Druid's AST. Strict mode records escape provenance on the parsed call node. An untouched
-AST or a clone is handled correctly, but a hand-edited AST that replaces an escape call's
-arguments with those of an equivalent ordinary call can be indistinguishable from the
-escape and may inherit the unit exemption. The review batch for strict syntax was closed
-after 22 failed rounds on this adversarial AST-editing case; ordinary SQL is unaffected.
+Permanent limitation (not planned): Derby JDBC escape syntax (`{fn TIMESTAMPADD(...)}`) is
+not represented in Druid's AST and carries no source span.
+
+Strict mode therefore records escape provenance as the rendered call signature on the parsed
+call node. An untouched AST or a clone is handled correctly, but a hand-edited AST that
+replaces an escape call's arguments with those of an equivalent ordinary call produces the
+same signature and may inherit the unit exemption. The two requirements cannot be separated
+without changing the contract: rejecting those edits would also reject untouched clones.
+The strict-syntax review batch was closed after 22 failed rounds on this adversarial case;
+ordinary SQL is unaffected.
 
 
 

@@ -776,6 +776,41 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
+    public void equivalentArgumentReplacementKeepsTheExemptionAsDocumented() {
+        // Druid drops the `{fn ...}` escape and keeps no source span, so escape
+        // provenance is keyed by the rendered call signature. Substituting an
+        // equivalent plain call's arguments yields the same signature and cannot be
+        // told apart from an untouched (or cloned) escape. Rejecting it would also
+        // reject clones, so this is the documented, accepted limitation.
+        DmlLineage lineage = new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+        com.alibaba.druid.sql.ast.SQLStatement escaped = lineage.parseStatement(
+                "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
+                        + " FROM \"t\";");
+        com.alibaba.druid.sql.ast.SQLStatement plain = lineage.parseStatement(
+                "SELECT TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\") FROM \"t\";");
+        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr escapedCall =
+                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                        escaped).getSelect().getQuery())
+                                .getSelectList().get(0).getExpr();
+        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr plainCall =
+                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
+                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
+                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
+                                        plain).getSelect().getQuery())
+                                .getSelectList().get(0).getExpr();
+        escapedCall.getArguments().clear();
+        for (com.alibaba.druid.sql.ast.SQLExpr argument
+                : plainCall.getArguments()) {
+            escapedCall.addArgument(argument);
+        }
+
+        lineage.getLineage(escaped);
+    }
+
+    @Test
     public void strictQuotingIsOffByDefault() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, optional()).scan("SELECT c1 FROM t;");

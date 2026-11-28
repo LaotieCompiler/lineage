@@ -31,6 +31,14 @@ public final class StrictQuotedIdentifierValidator {
     private StrictQuotedIdentifierValidator() {
     }
 
+    /*
+     * Provenance is stored as a rendered-call signature because Druid drops the
+     * `{fn ...}` escape from the AST and keeps no source span. An untouched or
+     * cloned node keeps its signature; an edit that substitutes an equivalent
+     * call's arguments produces the same signature and is indistinguishable from
+     * the original. This is a documented permanent limitation: rejecting that edit
+     * would also reject untouched clones, which the contract requires to validate.
+     */
     private static final String JDBC_ESCAPE_ATTRIBUTE =
             "com.laotie.jdbcEscape";
 

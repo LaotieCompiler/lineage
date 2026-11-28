@@ -79,6 +79,7 @@ import com.laotie.exception.AmbiguousTableException;
 import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.exception.UnquotedIdentifierException;
+import com.laotie.analysis.AnalysisContext;
 import com.laotie.dialect.DialectRules;
 import com.laotie.identifier.Identifier;
 import com.laotie.identifier.IdentifierCase;
@@ -107,71 +108,7 @@ public class DmlLineage {
 
     private Set<String> tables;
     private List<Instruction> instructions;
-    private Stack<String> stackTargetTable;
-    private Stack<String> stackSourceTable;
-    private Stack<String> stackTargetColumn;
-    private Stack<List<SourceTable>> stackSources;
-    private Stack<Map<String, List<SourceTable>>> stackUsing;
-    private Stack<Map<String, SourceNode>> stackJoinBindings;
-    private Map<Map<String, List<SourceTable>>, Map<String, List<SourceTable>>>
-            usingParticipantsByIdentity;
-    private Stack<Set<SourceTable>> stackHiddenSources;
-
-    private boolean inTargetExpression = false;
-    private int tempTableNum = 0;
-    private int currentOrdinal = -1;
-    private int uncertainOrdinal = -1;
-    private int currentStarBudget = -1;
-    /**
-     * When true the traversal still learns metadata but emits no lineage
-     * instructions, used for the metadata-discovery pass of a two-pass scan.
-     */
-    private boolean learningOnly;
-    /**
-     * Metadata-discovery mode: only explicit references are learned, and a statement
-     * that fails elsewhere still publishes what it named explicitly.
-     */
-    private boolean metadataPass;
-    /**
-     * Lineage mode: read the learned metadata but do not change it, so every
-     * statement sees the same picture.
-     */
-    private boolean learningDisabled;
-    /** JOIN alias bindings visible while discovering a query block. */
-    private Map<String, Object> learningBindings = new HashMap<>();
-    /** The exact plan built for each JOIN table source, including its alias. */
-    private Map<SQLTableSource, SourceNode> tableSourceBindings = new IdentityHashMap<>();
-    /** Depth of scalar-subquery analysis; outer scopes stay visible inside it. */
-    private int scalarSubqueryDepth;
-    private Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
-
-    private Set<String> tempTables;
-    private Set<String> usedTargets;
-    private Stack<Map<String, String>> cteScopes;
-    private Stack<Set<String>> collectCteScopes;
-    private Stack<Boolean> lateralScopes;
-    private Stack<Map<String, List<String>>> targetColumnAliases;
-    private Map<String, List<String>> cteDeclaredColumns;
-    private Map<String, List<String>> cteDeclaredKeys;
-    private Map<String, List<String>> targetOutputs;
-    private Map<String, List<String>> targetOutputKeys;
-    private Set<String> intermediateTargets;
-    private Set<String> unionTargets;
-    private Map<String, Boolean> targetWidthKnown;
-    private Map<String, Boolean> targetNamesKnown;
-    private Map<String, List<SourceTable>> targetOutputUnknownGroup;
-    private Map<String, Boolean> targetWildcardContribution;
-    private Map<String, List<WildcardSpan>> targetWildcardSpans;
-    private Map<String, List<Boolean>> targetOutputNameKnown;
-    private Map<String, Integer> targetMinWidth;
-    private Map<String, Integer> targetWidthOverride;
-    private Map<String, Integer> nonAuthoritativeDepth;
-    private int lastQueryBlockWidth;
-    private boolean lastQueryBlockWidthKnown;
-    private boolean lastQueryBlockNamesKnown;
-    private int lastQueryBlockMinWidth;
-    private Stack<List<StarOutput>> stackStarPlan;
-    private Stack<SourceNode> stackSourceNode;
+    private final AnalysisContext state = new AnalysisContext();
 
     private final DbType dbType;
     private final boolean explicitDialect;
@@ -234,15 +171,15 @@ public class DmlLineage {
      * Analyze only to discover metadata: instructions are discarded.
      */
     public void setLearningOnly(boolean learningOnly) {
-        this.learningOnly = learningOnly;
+        this.state.learningOnly = learningOnly;
     }
 
     public void setMetadataPass(boolean metadataPass) {
-        this.metadataPass = metadataPass;
+        this.state.metadataPass = metadataPass;
     }
 
     public void setLearningDisabled(boolean learningDisabled) {
-        this.learningDisabled = learningDisabled;
+        this.state.learningDisabled = learningDisabled;
     }
 
     public void setLearnedMetadata(LearnedMetadata learnedMetadata) {
@@ -258,10 +195,10 @@ public class DmlLineage {
     }
 
     private void learnColumn(SourceTable source, String columnName, boolean explicit) {
-        if (learningDisabled || learnedMetadata == null || source == null
+        if (state.learningDisabled || learnedMetadata == null || source == null
                 || source.temporary || !source.learnable
                 || source.rawName == null || columnName == null
-                || metadataPass && !explicit) {
+                || state.metadataPass && !explicit) {
             return;
         }
         String key = learnedTableKey(source.rawName);
@@ -301,7 +238,7 @@ public class DmlLineage {
      * teach anything.
      */
     private void publishLearned() {
-        if (learningDisabled) {
+        if (state.learningDisabled) {
             pendingLearned = new HashMap<>();
             return;
         }
@@ -330,9 +267,9 @@ public class DmlLineage {
                 validateQuotedIdentifiers(statement);
             }
             init(true);
-            stackTargetTable.push(getTempTableName());
+            state.stackTargetTable.push(getTempTableName());
             processStatement(statement);
-            stackTargetTable.pop();
+            state.stackTargetTable.pop();
             return instructions;
         } finally {
             this.context = previous;
@@ -937,7 +874,7 @@ public class DmlLineage {
         MetadataContext working = session.toContext(base);
         MetadataContext previous = this.context;
         this.context = working;
-        this.tempTableNum = 0;
+        state.tempTableNum = 0;
         this.sessionDatabase = session.getDatabase();
         this.sessionRawDatabase = session.getRawDatabase();
         this.sessionRawSchemas = new ArrayList<>(session.getRawSchemas());
@@ -954,17 +891,17 @@ public class DmlLineage {
                 validateQuotedIdentifiers(statement);
             }
             init(true);
-            stackTargetTable.push(getTempTableName());
+            state.stackTargetTable.push(getTempTableName());
             processStatement(statement);
-            stackTargetTable.pop();
+            state.stackTargetTable.pop();
             LineageResult result = new LineageResult(sql, instructions, working, null,
                     session.getInstance(), session.getDatabase(),
-                    session.getSchemas(), tempTables,
+                    session.getSchemas(), state.tempTables,
                     namedTargetOutputs(), detachedMetadata());
             publishLearned();
             return result;
         } catch (Throwable t) {
-            if (metadataPass) {
+            if (state.metadataPass) {
                 // Discovery keeps the explicit references it already saw.
                 publishLearned();
             }
@@ -1112,12 +1049,12 @@ public class DmlLineage {
             processSelectQuery(select.getQuery());
             return;
         }
-        cteScopes.push(new HashMap<String, String>());
+        state.cteScopes.push(new HashMap<String, String>());
         try {
             processWithSubQuery(with);
             processSelectQuery(select.getQuery());
         } finally {
-            cteScopes.pop();
+            state.cteScopes.pop();
         }
     }
 
@@ -1289,10 +1226,10 @@ public class DmlLineage {
                     continue;
                 }
                 String target = uniqueTarget(normalizeIdentifier(alias));
-                tempTables.add(target);
+                state.tempTables.add(target);
                 prebound.put(entry, target);
-                if (!cteScopes.isEmpty()) {
-                    cteScopes.peek().put(identifierKey(alias), target);
+                if (!state.cteScopes.isEmpty()) {
+                    state.cteScopes.peek().put(identifierKey(alias), target);
                 }
             }
             // A sibling's columns are visible to earlier bodies too, so derive the
@@ -1408,9 +1345,9 @@ public class DmlLineage {
                     }
                     // Make the sibling's shape visible before its body is analyzed;
                     // recordTargetShape overwrites this with the analyzed result.
-                    targetWidthKnown.put(target, widthKnown);
-                    targetNamesKnown.put(target, widthKnown && namesKnown);
-                    targetMinWidth.put(target, names.size());
+                    state.targetWidthKnown.put(target, widthKnown);
+                    state.targetNamesKnown.put(target, widthKnown && namesKnown);
+                    state.targetMinWidth.put(target, names.size());
                 }
             }
         }
@@ -1425,7 +1362,7 @@ public class DmlLineage {
                             ? uniqueTarget(normalizeIdentifier(alias))
                             : getTempTableName();
             if (!prebound.containsKey(entry)) {
-                tempTables.add(target);
+                state.tempTables.add(target);
             }
 
             List<String> declaredColumns = new ArrayList<>();
@@ -1440,21 +1377,21 @@ public class DmlLineage {
             Map<String, List<String>> aliases = new HashMap<>();
             if (!declaredColumns.isEmpty()) {
                 aliases.put(target, declaredColumns);
-                cteDeclaredColumns.put(target, declaredColumns);
-                cteDeclaredKeys.put(target, declaredKeys);
+                state.cteDeclaredColumns.put(target, declaredColumns);
+                state.cteDeclaredKeys.put(target, declaredKeys);
             }
-            targetColumnAliases.push(aliases);
+            state.targetColumnAliases.push(aliases);
 
             try {
-                stackTargetTable.push(target);
+                state.stackTargetTable.push(target);
                 processSelect(entry.getSubQuery());
-                stackTargetTable.pop();
+                state.stackTargetTable.pop();
                 recordTargetShape(target);
             } finally {
-                targetColumnAliases.pop();
+                state.targetColumnAliases.pop();
             }
-            if (!recursive && alias != null && !cteScopes.isEmpty()) {
-                cteScopes.peek().put(identifierKey(alias), target);
+            if (!recursive && alias != null && !state.cteScopes.isEmpty()) {
+                state.cteScopes.peek().put(identifierKey(alias), target);
             }
         }
     }
@@ -1464,22 +1401,22 @@ public class DmlLineage {
             processQueryBlock((SQLSelectQueryBlock) query);
         } else if (query instanceof SQLUnionQuery) {
             SQLUnionQuery union = (SQLUnionQuery) query;
-            String target = stackTargetTable.peek();
-            boolean added = unionTargets.add(target);
-            Integer previousOverride = targetWidthOverride.get(target);
+            String target = state.stackTargetTable.peek();
+            boolean added = state.unionTargets.add(target);
+            Integer previousOverride = state.targetWidthOverride.get(target);
             int staticWidth = staticUnionWidth(union, currentCteWidthScope());
             if (staticWidth > 0) {
-                targetWidthOverride.put(target, staticWidth);
+                state.targetWidthOverride.put(target, staticWidth);
             }
             try {
                 processSelectQuery(union.getLeft());
-                int leftWidth = lastQueryBlockWidth;
-                boolean leftKnown = lastQueryBlockWidthKnown;
-                boolean leftNamesKnown = lastQueryBlockNamesKnown;
-                int leftMinWidth = lastQueryBlockMinWidth;
-                Integer overrideBeforeRight = targetWidthOverride.get(target);
+                int leftWidth = state.lastQueryBlockWidth;
+                boolean leftKnown = state.lastQueryBlockWidthKnown;
+                boolean leftNamesKnown = state.lastQueryBlockNamesKnown;
+                int leftMinWidth = state.lastQueryBlockMinWidth;
+                Integer overrideBeforeRight = state.targetWidthOverride.get(target);
                 if (leftKnown && leftWidth > 0) {
-                    targetWidthOverride.put(target, leftWidth);
+                    state.targetWidthOverride.put(target, leftWidth);
                 }
                 incrementNonAuthoritative(target);
                 try {
@@ -1487,14 +1424,14 @@ public class DmlLineage {
                 } finally {
                     decrementNonAuthoritative(target);
                     if (overrideBeforeRight == null) {
-                        targetWidthOverride.remove(target);
+                        state.targetWidthOverride.remove(target);
                     } else {
-                        targetWidthOverride.put(target, overrideBeforeRight);
+                        state.targetWidthOverride.put(target, overrideBeforeRight);
                     }
                 }
-                int rightWidth = lastQueryBlockWidth;
-                boolean rightKnown = lastQueryBlockWidthKnown;
-                int rightMinWidth = lastQueryBlockMinWidth;
+                int rightWidth = state.lastQueryBlockWidth;
+                boolean rightKnown = state.lastQueryBlockWidthKnown;
+                int rightMinWidth = state.lastQueryBlockMinWidth;
                 if (leftKnown && rightKnown && leftWidth != rightWidth) {
                     throw new IllegalStateException(
                             "UNION column count mismatch: " + leftWidth + " vs " + rightWidth);
@@ -1509,20 +1446,20 @@ public class DmlLineage {
                 }
                 // Keep a known width from any branch so a later known branch that
                 // conflicts with it still fails even when another branch is unknown.
-                lastQueryBlockWidth = leftKnown ? leftWidth : rightWidth;
-                lastQueryBlockWidthKnown = leftKnown || rightKnown;
+                state.lastQueryBlockWidth = leftKnown ? leftWidth : rightWidth;
+                state.lastQueryBlockWidthKnown = leftKnown || rightKnown;
                 // A UNION takes its output names from the first branch, even when the
                 // width is established by another branch.
-                lastQueryBlockNamesKnown = leftNamesKnown;
-                lastQueryBlockMinWidth = Math.max(leftMinWidth, lastQueryBlockMinWidth);
+                state.lastQueryBlockNamesKnown = leftNamesKnown;
+                state.lastQueryBlockMinWidth = Math.max(leftMinWidth, state.lastQueryBlockMinWidth);
             } finally {
                 if (previousOverride == null) {
-                    targetWidthOverride.remove(target);
+                    state.targetWidthOverride.remove(target);
                 } else {
-                    targetWidthOverride.put(target, previousOverride);
+                    state.targetWidthOverride.put(target, previousOverride);
                 }
                 if (added) {
-                    unionTargets.remove(target);
+                    state.unionTargets.remove(target);
                 }
             }
         }
@@ -1530,15 +1467,15 @@ public class DmlLineage {
 
     private Map<String, Integer> currentCteWidthScope() {
         Map<String, Integer> scope = new HashMap<>();
-        for (Map<String, String> frame : cteScopes) {
+        for (Map<String, String> frame : state.cteScopes) {
             for (Map.Entry<String, String> entry : frame.entrySet()) {
                 String target = entry.getValue();
-                List<String> outputs = target == null ? null : targetOutputs.get(target);
+                List<String> outputs = target == null ? null : state.targetOutputs.get(target);
                 boolean known = target != null
-                        && Boolean.TRUE.equals(targetWidthKnown.get(target));
+                        && Boolean.TRUE.equals(state.targetWidthKnown.get(target));
                 int width = outputs == null ? 0 : outputs.size();
                 if (known) {
-                    Integer min = targetMinWidth.get(target);
+                    Integer min = state.targetMinWidth.get(target);
                     if (min != null && min > 0) {
                         width = Math.max(width, min);
                     }
@@ -2184,12 +2121,12 @@ public class DmlLineage {
             String cteTarget = findCteTarget(key);
             if (cteTarget != null) {
                 // A CTE shadows any catalog table with the same name.
-                if (!Boolean.TRUE.equals(targetWidthKnown.get(cteTarget))) {
+                if (!Boolean.TRUE.equals(state.targetWidthKnown.get(cteTarget))) {
                     return -1;
                 }
-                List<String> outputs = targetOutputs.get(cteTarget);
+                List<String> outputs = state.targetOutputs.get(cteTarget);
                 int width = outputs == null ? 0 : outputs.size();
-                Integer min = targetMinWidth.get(cteTarget);
+                Integer min = state.targetMinWidth.get(cteTarget);
                 if (min != null && min > 0) {
                     width = Math.max(width, min);
                 }
@@ -2206,11 +2143,11 @@ public class DmlLineage {
     }
 
     private void processQueryBlock(SQLSelectQueryBlock queryBlock) {
-        currentStarBudget = -1;
-        currentExpandedSourceNodes = new HashMap<>();
+        state.currentStarBudget = -1;
+        state.currentExpandedSourceNodes = new HashMap<>();
         SQLTableSource fromItem = queryBlock.getFrom();
         if (fromItem == null) {
-            if (metadataPass) {
+            if (state.metadataPass) {
                 learnNoFromExplicitReferences(queryBlock, outerBlockLocals(true));
             }
             int position = 0;
@@ -2277,34 +2214,34 @@ public class DmlLineage {
                 position += width;
                 minWidth += minimumOutputColumns(item.getExpr());
             }
-            lastQueryBlockWidth = position;
-            lastQueryBlockWidthKnown = widthKnown;
-            lastQueryBlockNamesKnown = namesKnown;
-            lastQueryBlockMinWidth = minWidth;
+            state.lastQueryBlockWidth = position;
+            state.lastQueryBlockWidthKnown = widthKnown;
+            state.lastQueryBlockNamesKnown = namesKnown;
+            state.lastQueryBlockMinWidth = minWidth;
             return;
         }
 
         Map<String, List<SourceTable>> using = new LinkedHashMap<>();
-        stackJoinBindings.push(new HashMap<String, SourceNode>());
-        stackHiddenSources.push(new HashSet<SourceTable>());
+        state.stackJoinBindings.push(new HashMap<String, SourceNode>());
+        state.stackHiddenSources.push(new HashSet<SourceTable>());
         SourceNode node = buildSourceNode(fromItem, using);
         List<SourceTable> sources = node.sources;
         if (sources.isEmpty()) {
-            stackHiddenSources.pop();
-            stackJoinBindings.pop();
+            state.stackHiddenSources.pop();
+            state.stackJoinBindings.pop();
             return;
         }
 
         collectTablesFromExpression(queryBlock.getWhere());
 
-        stackSources.push(sources);
-        lateralScopes.push(Boolean.FALSE);
-        stackUsing.push(using);
-        stackStarPlan.push(node.plan);
-        stackSourceNode.push(node);
-        stackSourceTable.push(sources.get(0).displayName);
-        targetOutputs.computeIfAbsent(stackTargetTable.peek(), k -> new ArrayList<String>());
-        if (metadataPass) {
+        state.stackSources.push(sources);
+        state.lateralScopes.push(Boolean.FALSE);
+        state.stackUsing.push(using);
+        state.stackStarPlan.push(node.plan);
+        state.stackSourceNode.push(node);
+        state.stackSourceTable.push(sources.get(0).displayName);
+        state.targetOutputs.computeIfAbsent(state.stackTargetTable.peek(), k -> new ArrayList<String>());
+        if (state.metadataPass) {
             learnBlockExplicitReferences(queryBlock, outerBlockLocals(false));
         }
 
@@ -2315,7 +2252,7 @@ public class DmlLineage {
         for (int i = 0; i < startOverride.length; i++) {
             startOverride[i] = -1;
         }
-        List<String> declaredWidths = currentTargetColumnAliases(stackTargetTable.peek());
+        List<String> declaredWidths = currentTargetColumnAliases(state.stackTargetTable.peek());
         DbType dialect = currentDialect();
         boolean declaredExact = declaredWidths != null
                 && (dialect == DbType.mysql || dialect == DbType.mariadb);
@@ -2323,7 +2260,7 @@ public class DmlLineage {
         if (declaredExact) {
             positionalWidth = declaredWidths.size();
         } else {
-            Integer overrideWidth = targetWidthOverride.get(stackTargetTable.peek());
+            Integer overrideWidth = state.targetWidthOverride.get(state.stackTargetTable.peek());
             if (overrideWidth != null && overrideWidth > 0) {
                 positionalWidth = overrideWidth;
             }
@@ -2375,7 +2312,7 @@ public class DmlLineage {
                 positionalWidth = -1;
             }
         }
-        currentStarBudget = inferredUnknownWidth;
+        state.currentStarBudget = inferredUnknownWidth;
         if (!detachedMetadata() && inferredUnknownWidth > 0 && unknownItemIndex >= 0) {
             SourceNode targetNode = node;
             SQLExpr unknownExpr = selectItems.get(unknownItemIndex).getExpr();
@@ -2388,7 +2325,7 @@ public class DmlLineage {
                     SourceTable source = findByOwner(owner);
                     if (source != null && !sourceColumnsKnown(source)) {
                         SourceNode sourceNode = sourcePlanNode(source);
-                        currentExpandedSourceNodes.put(source, sourceNode);
+                        state.currentExpandedSourceNodes.put(source, sourceNode);
                         targetNode = sourceNode;
                     }
                 }
@@ -2552,7 +2489,7 @@ public class DmlLineage {
                     && hasUnknownStarSource(itemExpr);
             // Contract: a projection that follows an unknown-width wildcard has an
             // undetermined position, so no column-level edge may be guessed for it.
-            uncertainOrdinal = positionalWidth > 0 && !positionCertain
+            state.uncertainOrdinal = positionalWidth > 0 && !positionCertain
                     || detachedMetadata() && unknownStarSeen ? start : -1;
             boolean inferredWidth = itemIndex == unknownItemIndex
                     && inferredUnknownWidth > 0;
@@ -2560,12 +2497,12 @@ public class DmlLineage {
                 // Only an unknown-width wildcard leaves later positions undetermined.
                 unknownStarSeen = true;
             }
-            currentOrdinal = start;
+            state.currentOrdinal = start;
             int advanced;
             try {
                 advanced = processSelectItem(item);
             } catch (RuntimeException e) {
-                if (!metadataPass) {
+                if (!state.metadataPass) {
                     throw e;
                 }
                 // Discovery keeps walking the statement so explicit references
@@ -2576,7 +2513,7 @@ public class DmlLineage {
                 // The UNION width pins this wildcard exactly once; it must not leak
                 // into the next projection's width.
                 advanced = Math.max(advanced, inferredUnknownWidth);
-                currentStarBudget = -1;
+                state.currentStarBudget = -1;
             }
             position = start + advanced;
             minWidth += minimumOutputColumns(item.getExpr());
@@ -2589,25 +2526,25 @@ public class DmlLineage {
                 namesKnown = false;
             }
         }
-        uncertainOrdinal = -1;
-        currentOrdinal = -1;
-        lastQueryBlockWidth = position;
-        lastQueryBlockWidthKnown = widthKnown;
-        lastQueryBlockNamesKnown = namesKnown;
-        lastQueryBlockMinWidth = minWidth;
+        state.uncertainOrdinal = -1;
+        state.currentOrdinal = -1;
+        state.lastQueryBlockWidth = position;
+        state.lastQueryBlockWidthKnown = widthKnown;
+        state.lastQueryBlockNamesKnown = namesKnown;
+        state.lastQueryBlockMinWidth = minWidth;
 
-        stackSourceTable.pop();
-        stackSourceNode.pop();
-        stackStarPlan.pop();
-        stackUsing.pop();
-        stackSources.pop();
-        lateralScopes.pop();
-        stackHiddenSources.pop();
-        stackJoinBindings.pop();
+        state.stackSourceTable.pop();
+        state.stackSourceNode.pop();
+        state.stackStarPlan.pop();
+        state.stackUsing.pop();
+        state.stackSources.pop();
+        state.lateralScopes.pop();
+        state.stackHiddenSources.pop();
+        state.stackJoinBindings.pop();
     }
 
     private int recordUncertainOuterStar(SQLPropertyExpr star, int position) {
-        String target = stackTargetTable.peek();
+        String target = state.stackTargetTable.peek();
         CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
         if (correlated == null) {
             throw new MetadataNotFoundException(star.getOwner() == null
@@ -2630,7 +2567,7 @@ public class DmlLineage {
         if (expr == null) {
             return;
         }
-        String target = stackTargetTable.peek();
+        String target = state.stackTargetTable.peek();
         recordUncertainOuterExpression(expr, target, position);
     }
 
@@ -2773,8 +2710,8 @@ public class DmlLineage {
         if (expr == null) {
             return;
         }
-        String target = stackTargetTable.peek();
-        List<String> outputs = targetOutputs.get(target);
+        String target = state.stackTargetTable.peek();
+        List<String> outputs = state.targetOutputs.get(target);
         String name = outputs != null && position < outputs.size()
                 && outputs.get(position) != null
                         ? outputs.get(position)
@@ -2931,7 +2868,7 @@ public class DmlLineage {
     }
 
     private int recordOuterStar(SQLPropertyExpr star, int position) {
-        String target = stackTargetTable.peek();
+        String target = state.stackTargetTable.peek();
         CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
         SourceTable source = correlated == null ? null : correlated.source;
         if (source != null) {
@@ -2948,14 +2885,14 @@ public class DmlLineage {
                         Instruction wildcard = new Instruction(
                                 OperationType.COLUMNS_INJECT,
                                 lineageTableName(source), target, position,
-                                source.temporary, tempTables.contains(target));
+                                source.temporary, state.tempTables.contains(target));
                         wildcard.setPositionalWildcard(true);
                         wildcard.setWildcardWidthKnown(true);
                         wildcard.setWildcardWidth(width);
                         instructions.add(wildcard);
                         recordWildcardSpan(target, position, position + width,
                                 lineageTableName(source), source.temporary);
-                        targetWildcardContribution.put(target, Boolean.TRUE);
+                        state.targetWildcardContribution.put(target, Boolean.TRUE);
                         return width;
                     }
                     int limit = width;
@@ -2995,14 +2932,14 @@ public class DmlLineage {
                             Instruction wildcard = new Instruction(
                                     OperationType.COLUMNS_INJECT, ref.name, target,
                                     position + i, ref.temporary,
-                                    tempTables.contains(target));
+                                    state.tempTables.contains(target));
                             wildcard.setPositionalWildcard(true);
                             wildcard.setWildcardWidthKnown(true);
                             wildcard.setWildcardWidth(1);
                             instructions.add(wildcard);
                             recordWildcardSpan(target, position + i,
                                     position + i + 1, ref.name, ref.temporary);
-                            targetWildcardContribution.put(target, Boolean.TRUE);
+                            state.targetWildcardContribution.put(target, Boolean.TRUE);
                         }
                     }
                     return limit;
@@ -3045,7 +2982,7 @@ public class DmlLineage {
                         Instruction wildcard = new Instruction(
                                 OperationType.COLUMNS_INJECT, span.source, target,
                                 position + span.start, span.temporary,
-                                tempTables.contains(target));
+                                state.tempTables.contains(target));
                         wildcard.setPositionalWildcard(true);
                         if (span.end != Integer.MAX_VALUE) {
                             wildcard.setWildcardWidthKnown(true);
@@ -3056,17 +2993,17 @@ public class DmlLineage {
                                 span.end == Integer.MAX_VALUE ? Integer.MAX_VALUE
                                         : position + span.end,
                                 span.source, span.temporary);
-                        targetWildcardContribution.put(target, Boolean.TRUE);
+                        state.targetWildcardContribution.put(target, Boolean.TRUE);
                     }
                 } else {
                     Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                             lineageTableName(source), target, position,
-                            source.temporary, tempTables.contains(target));
+                            source.temporary, state.tempTables.contains(target));
                     wildcard.setPositionalWildcard(true);
                     recordWildcardSpan(target, position, Integer.MAX_VALUE,
                             lineageTableName(source), source.temporary);
                     instructions.add(wildcard);
-                    targetWildcardContribution.put(target, Boolean.TRUE);
+                    state.targetWildcardContribution.put(target, Boolean.TRUE);
                 }
                 int minimum = Math.max(Math.max(knownPrefix, source.minOutputColumns),
                         maxSpanEnd(spans));
@@ -3111,7 +3048,7 @@ public class DmlLineage {
             }
             Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                     lineageTableName(source), target, position,
-                    source.temporary, tempTables.contains(target));
+                    source.temporary, state.tempTables.contains(target));
             wildcard.setPositionalWildcard(true);
             if (width > 0) {
                 wildcard.setWildcardWidthKnown(true);
@@ -3123,7 +3060,7 @@ public class DmlLineage {
                         lineageTableName(source), source.temporary);
             }
             instructions.add(wildcard);
-            targetWildcardContribution.put(target, Boolean.TRUE);
+            state.targetWildcardContribution.put(target, Boolean.TRUE);
             return width > 0 ? width : -1;
         }
         SourceNode binding = correlated == null ? null : correlated.binding;
@@ -3139,7 +3076,7 @@ public class DmlLineage {
                     Instruction wildcard = new Instruction(
                             OperationType.COLUMNS_INJECT,
                             lineageTableName(candidate), target, position,
-                            candidate.temporary, tempTables.contains(target));
+                            candidate.temporary, state.tempTables.contains(target));
                     wildcard.setPositionalWildcard(true);
                     wildcard.setWildcardWidthKnown(true);
                     wildcard.setWildcardWidth(Math.max(binding.width, 1));
@@ -3147,7 +3084,7 @@ public class DmlLineage {
                     recordWildcardSpan(target, position,
                             position + Math.max(binding.width, 1),
                             lineageTableName(candidate), candidate.temporary);
-                    targetWildcardContribution.put(target, Boolean.TRUE);
+                    state.targetWildcardContribution.put(target, Boolean.TRUE);
                 }
                 return binding.width;
             }
@@ -3207,14 +3144,14 @@ public class DmlLineage {
                                 column, rel)) {
                             Instruction wildcard = new Instruction(
                                     OperationType.COLUMNS_INJECT, ref.name, target,
-                                    pos, ref.temporary, tempTables.contains(target));
+                                    pos, ref.temporary, state.tempTables.contains(target));
                             wildcard.setPositionalWildcard(true);
                             wildcard.setWildcardWidthKnown(true);
                             wildcard.setWildcardWidth(1);
                             instructions.add(wildcard);
                             recordWildcardSpan(target, pos, pos + 1, ref.name,
                                     ref.temporary);
-                            targetWildcardContribution.put(target, Boolean.TRUE);
+                            state.targetWildcardContribution.put(target, Boolean.TRUE);
                         }
                     } else {
                         addOuterWildcard(column.source, target, pos);
@@ -3317,7 +3254,7 @@ public class DmlLineage {
         instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                 lineageTableName(source) + "." + rendered,
                 target + "." + renderIdentifier(targetName), position,
-                source.temporary, tempTables.contains(target)));
+                source.temporary, state.tempTables.contains(target)));
         if (source.wildcardContribution && source.temporary) {
             int relative = -1;
             String key = quoted != null && quoted
@@ -3346,23 +3283,23 @@ public class DmlLineage {
             boolean temporary) {
         Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                 sourceName, target, position, temporary,
-                tempTables.contains(target));
+                state.tempTables.contains(target));
         wildcard.setPositionalWildcard(true);
         wildcard.setWildcardWidthKnown(true);
         wildcard.setWildcardWidth(1);
         instructions.add(wildcard);
         recordWildcardSpan(target, position, position + 1, sourceName, temporary);
-        targetWildcardContribution.put(target, Boolean.TRUE);
+        state.targetWildcardContribution.put(target, Boolean.TRUE);
     }
 
     private void addOuterWildcardOpen(SourceTable source, String target,
             int position) {
         Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                 lineageTableName(source), target, position,
-                source.temporary, tempTables.contains(target));
+                source.temporary, state.tempTables.contains(target));
         wildcard.setPositionalWildcard(true);
         instructions.add(wildcard);
-        targetWildcardContribution.put(target, Boolean.TRUE);
+        state.targetWildcardContribution.put(target, Boolean.TRUE);
         recordWildcardSpan(target, position, Integer.MAX_VALUE,
                 lineageTableName(source), source.temporary);
     }
@@ -3370,12 +3307,12 @@ public class DmlLineage {
     private void addOuterWildcard(SourceTable source, String target, int position) {
         Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                 lineageTableName(source), target, position,
-                source.temporary, tempTables.contains(target));
+                source.temporary, state.tempTables.contains(target));
         wildcard.setPositionalWildcard(true);
         wildcard.setWildcardWidthKnown(true);
         wildcard.setWildcardWidth(1);
         instructions.add(wildcard);
-        targetWildcardContribution.put(target, Boolean.TRUE);
+        state.targetWildcardContribution.put(target, Boolean.TRUE);
         recordWildcardSpan(target, position, position + 1,
                 lineageTableName(source), source.temporary);
     }
@@ -3383,8 +3320,8 @@ public class DmlLineage {
     private void recordOuterIdentifier(String rawName, String target,
             String targetName, int position) {
         String key = identifierKey(rawName);
-        Map<String, List<SourceTable>> using = stackUsing.isEmpty()
-                ? null : stackUsing.peek();
+        Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
+                ? null : state.stackUsing.peek();
         if (using != null && using.containsKey(key)) {
             List<SourceTable> participants = using.get(key);
             List<SourceTable> sides = participantsForCurrentUsing(key);
@@ -3411,9 +3348,9 @@ public class DmlLineage {
             return;
         }
         List<StarOutput> matchedOutputs = new ArrayList<>();
-        List<StarOutput> planned = stackStarPlan.isEmpty()
+        List<StarOutput> planned = state.stackStarPlan.isEmpty()
                 ? java.util.Collections.<StarOutput>emptyList()
-                : stackStarPlan.peek();
+                : state.stackStarPlan.peek();
         for (StarOutput output : planned) {
             for (StarColumn column : output.sources) {
                 if (key != null && key.equals(column.key)) {
@@ -3517,14 +3454,14 @@ public class DmlLineage {
     }
 
     private List<SourceTable> participantsForCurrentUsing(String key) {
-        if (stackUsing.isEmpty() || usingParticipantsByIdentity.isEmpty()) {
+        if (state.stackUsing.isEmpty() || state.usingParticipantsByIdentity.isEmpty()) {
             return new ArrayList<>();
         }
-        Map<String, List<SourceTable>> using = stackUsing.peek();
+        Map<String, List<SourceTable>> using = state.stackUsing.peek();
         if (using == null) {
             return new ArrayList<>();
         }
-        Map<String, List<SourceTable>> sides = usingParticipantsByIdentity.get(using);
+        Map<String, List<SourceTable>> sides = state.usingParticipantsByIdentity.get(using);
         if (sides == null || !sides.containsKey(key)) {
             return new ArrayList<>();
         }
@@ -3532,14 +3469,14 @@ public class DmlLineage {
     }
 
     private List<SourceTable> currentUsingParticipants(String key) {
-        if (stackUsing.isEmpty()) {
+        if (state.stackUsing.isEmpty()) {
             return new ArrayList<>();
         }
-        Map<String, List<SourceTable>> using = stackUsing.peek();
-        if (using == null || usingParticipantsByIdentity.isEmpty()) {
+        Map<String, List<SourceTable>> using = state.stackUsing.peek();
+        if (using == null || state.usingParticipantsByIdentity.isEmpty()) {
             return new ArrayList<>();
         }
-        Map<String, List<SourceTable>> participants = usingParticipantsByIdentity.get(using);
+        Map<String, List<SourceTable>> participants = state.usingParticipantsByIdentity.get(using);
         if (participants == null || !participants.containsKey(key)) {
             return new ArrayList<>();
         }
@@ -3648,7 +3585,7 @@ public class DmlLineage {
             }
         }
         for (String table : tables) {
-            if (targetColumn != null && !tempTables.contains(targetTable)) {
+            if (targetColumn != null && !state.tempTables.contains(targetTable)) {
                 String rendered = targetColumn;
                 Instruction edge = new Instruction(OperationType.COLUMNS_INJECT,
                         table, targetTable + "(" + rendered + ")", -1, false, false);
@@ -3659,50 +3596,50 @@ public class DmlLineage {
             } else {
                 Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
                         table, targetTable, position, false,
-                        tempTables.contains(targetTable));
+                        state.tempTables.contains(targetTable));
                 wildcard.setPositionalWildcard(true);
                 wildcard.setWildcardWidthKnown(true);
                 wildcard.setWildcardWidth(1);
                 instructions.add(wildcard);
                 recordWildcardSpan(targetTable, position, position + 1, table, false);
-                targetWildcardContribution.put(targetTable, Boolean.TRUE);
+                state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
             }
         }
     }
 
     private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr,
             int position) {
-        String targetTable = stackTargetTable.peek();
-        int savedOrdinal = currentOrdinal;
-        currentOrdinal = position;
+        String targetTable = state.stackTargetTable.peek();
+        int savedOrdinal = state.currentOrdinal;
+        state.currentOrdinal = position;
         try {
             return processScalarSubqueryProjection(item, expr);
         } finally {
-            currentOrdinal = savedOrdinal;
+            state.currentOrdinal = savedOrdinal;
         }
     }
 
     private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr) {
-        String targetTable = stackTargetTable.peek();
+        String targetTable = state.stackTargetTable.peek();
         ScalarSubquery inner = analyzeScalarSubquery(expr);
         if (inner == null) {
             return 1;
         }
         if (inner.columns.isEmpty()) {
-            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal, null);
+            recordScalarTableLevel(inner, state.stackTargetTable.peek(), state.currentOrdinal, null);
             return 1;
         }
         List<String> declaredColumns = currentTargetColumnAliases(targetTable);
-        String lockedName = lockedOutputName(targetTable, currentOrdinal);
-        String lockedKey = lockedOutputKey(targetTable, currentOrdinal);
+        String lockedName = lockedOutputName(targetTable, state.currentOrdinal);
+        String lockedKey = lockedOutputKey(targetTable, state.currentOrdinal);
         String targetColumn;
         String targetKey;
         if (lockedName != null) {
             targetColumn = lockedName;
             targetKey = lockedKey != null ? lockedKey : identifierKey(lockedName);
-        } else if (declaredColumns != null && currentOrdinal >= 0
-                && currentOrdinal < declaredColumns.size()) {
-            targetColumn = declaredColumns.get(currentOrdinal);
+        } else if (declaredColumns != null && state.currentOrdinal >= 0
+                && state.currentOrdinal < declaredColumns.size()) {
+            targetColumn = declaredColumns.get(state.currentOrdinal);
             targetKey = identifierKey(targetColumn);
         } else if (item.getAlias() != null) {
             targetColumn = normalizeIdentifier(item.getAlias());
@@ -3711,9 +3648,9 @@ public class DmlLineage {
             targetColumn = inner.columns.get(0);
             targetKey = identifierKey(targetColumn);
         }
-        setTargetOutput(targetTable, currentOrdinal, targetColumn, targetKey);
-        markOutputNameKnown(targetTable, currentOrdinal, true);
-        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+        setTargetOutput(targetTable, state.currentOrdinal, targetColumn, targetKey);
+        markOutputNameKnown(targetTable, state.currentOrdinal, true);
+        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
             // The position follows an unknown-width wildcard, so no edge may be
             // pinned to a column, exactly like an ordinary projection there.
             return 1;
@@ -3721,8 +3658,8 @@ public class DmlLineage {
         for (int i = 0; i < inner.columns.size(); i++) {
             String source = inner.references.get(i);
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
-                    targetTable + "." + renderIdentifier(targetColumn), currentOrdinal,
-                    true, tempTables.contains(targetTable)));
+                    targetTable + "." + renderIdentifier(targetColumn), state.currentOrdinal,
+                    true, state.tempTables.contains(targetTable)));
         }
         return 1;
     }
@@ -3810,8 +3747,8 @@ public class DmlLineage {
     }
 
     private void recordUnboundScalarMappings(SQLSelectItem item, int position) {
-        String targetTable = stackTargetTable.peek();
-        List<String> outputs = copyOutputs(targetOutputs.get(targetTable));
+        String targetTable = state.stackTargetTable.peek();
+        List<String> outputs = copyOutputs(state.targetOutputs.get(targetTable));
         String name = outputs != null && position < outputs.size() && outputs.get(position) != null
                 ? outputs.get(position) : "col" + (position + 1);
         recordUnboundScalarExpression(item.getExpr(), targetTable, name, position);
@@ -3834,7 +3771,7 @@ public class DmlLineage {
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                     inner.references.get(0),
                     targetTable + "." + renderIdentifier(targetName), position, true,
-                    tempTables.contains(targetTable)));
+                    state.tempTables.contains(targetTable)));
             return;
         }
         if (expr instanceof SQLBinaryOpExpr) {
@@ -3911,7 +3848,7 @@ public class DmlLineage {
         while (base instanceof SQLCastExpr) {
             base = ((SQLCastExpr) base).getExpr();
         }
-        String targetTable = stackTargetTable.peek();
+        String targetTable = state.stackTargetTable.peek();
         String lockedName = lockedOutputName(targetTable, position);
         String lockedKey = lockedOutputKey(targetTable, position);
         if (lockedName != null) {
@@ -3944,8 +3881,8 @@ public class DmlLineage {
             name = item.getExpr().toString();
             key = identifierKey(name);
         }
-        setTargetOutput(stackTargetTable.peek(), position, name, key);
-        markOutputNameKnown(stackTargetTable.peek(), position, true);
+        setTargetOutput(state.stackTargetTable.peek(), position, name, key);
+        markOutputNameKnown(state.stackTargetTable.peek(), position, true);
         return 1;
     }
 
@@ -3980,26 +3917,26 @@ public class DmlLineage {
             return null;
         }
         String target = getTempTableName();
-        tempTables.add(target);
-        int savedOrdinal = currentOrdinal;
-        int savedUncertain = uncertainOrdinal;
-        int savedBudget = currentStarBudget;
-        boolean savedInTarget = inTargetExpression;
-        scalarSubqueryDepth++;
+        state.tempTables.add(target);
+        int savedOrdinal = state.currentOrdinal;
+        int savedUncertain = state.uncertainOrdinal;
+        int savedBudget = state.currentStarBudget;
+        boolean savedInTarget = state.inTargetExpression;
+        state.scalarSubqueryDepth++;
         try {
-            stackTargetTable.push(target);
+            state.stackTargetTable.push(target);
             processSelect(select);
-            stackTargetTable.pop();
+            state.stackTargetTable.pop();
         } finally {
-            scalarSubqueryDepth--;
-            currentOrdinal = savedOrdinal;
-            uncertainOrdinal = savedUncertain;
-            currentStarBudget = savedBudget;
-            inTargetExpression = savedInTarget;
+            state.scalarSubqueryDepth--;
+            state.currentOrdinal = savedOrdinal;
+            state.uncertainOrdinal = savedUncertain;
+            state.currentStarBudget = savedBudget;
+            state.inTargetExpression = savedInTarget;
         }
         recordTargetShape(target);
-        List<String> outputs = copyOutputs(targetOutputs.get(target));
-        boolean widthKnown = Boolean.TRUE.equals(targetWidthKnown.get(target));
+        List<String> outputs = copyOutputs(state.targetOutputs.get(target));
+        boolean widthKnown = Boolean.TRUE.equals(state.targetWidthKnown.get(target));
         int minimum = targetMinimumColumns(target, widthKnown, outputs.size());
         int width = Math.max(outputs.size(), minimum);
         if (width > 1) {
@@ -4040,23 +3977,23 @@ public class DmlLineage {
         }
         if (baseExpr instanceof SQLQueryExpr) {
             return processScalarSubqueryProjection(item, (SQLQueryExpr) baseExpr,
-                    currentOrdinal);
+                    state.currentOrdinal);
         }
 
-        String targetTable = stackTargetTable.peek();
+        String targetTable = state.stackTargetTable.peek();
         List<String> declaredColumns = currentTargetColumnAliases(targetTable);
 
-        String lockedName = lockedOutputName(targetTable, currentOrdinal);
-        String lockedKey = lockedOutputKey(targetTable, currentOrdinal);
+        String lockedName = lockedOutputName(targetTable, state.currentOrdinal);
+        String lockedKey = lockedOutputKey(targetTable, state.currentOrdinal);
 
         String targetColumn;
         boolean identifierTarget;
         if (lockedName != null) {
             targetColumn = lockedName;
             identifierTarget = true;
-        } else if (declaredColumns != null && currentOrdinal >= 0
-                && currentOrdinal < declaredColumns.size()) {
-            targetColumn = declaredColumns.get(currentOrdinal);
+        } else if (declaredColumns != null && state.currentOrdinal >= 0
+                && state.currentOrdinal < declaredColumns.size()) {
+            targetColumn = declaredColumns.get(state.currentOrdinal);
             identifierTarget = true;
         } else if (item.getAlias() != null) {
             targetColumn = normalizeIdentifier(item.getAlias());
@@ -4077,17 +4014,17 @@ public class DmlLineage {
 
         if (item.getExpr() instanceof SQLAllColumnExpr) {
             if (detachedMetadata()) {
-                int width = emitDetachedStar(targetTable, currentSources(), currentOrdinal);
+                int width = emitDetachedStar(targetTable, currentSources(), state.currentOrdinal);
                 return Math.max(width, 1);
             }
-            Map<String, List<SourceTable>> using = stackUsing.isEmpty()
-                    ? null : stackUsing.peek();
-            SourceNode node = stackSourceNode.isEmpty() ? null : stackSourceNode.peek();
+            Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
+                    ? null : state.stackUsing.peek();
+            SourceNode node = state.stackSourceNode.isEmpty() ? null : state.stackSourceNode.peek();
             if (context == null && node != null && !node.plan.isEmpty()
-                    && (using != null && !using.isEmpty() || currentStarBudget > 0)) {
-                recordBindingStar(targetTable, node, currentOrdinal);
+                    && (using != null && !using.isEmpty() || state.currentStarBudget > 0)) {
+                recordBindingStar(targetTable, node, state.currentOrdinal);
             } else {
-                recordStarOutputs(targetTable, currentSources(), currentOrdinal);
+                recordStarOutputs(targetTable, currentSources(), state.currentOrdinal);
             }
         } else if (isStarProperty(item.getExpr())) {
             SQLExpr owner = ((SQLPropertyExpr) item.getExpr()).getOwner();
@@ -4113,33 +4050,33 @@ public class DmlLineage {
                 }
                 SourceNode planNode = source != null ? null : binding;
                 int width = emitDetachedPlan(targetTable, plan, planSources, planNode,
-                        currentOrdinal);
+                        state.currentOrdinal);
                 return Math.max(width, 1);
             }
             if (source != null) {
-                SourceNode expanded = currentExpandedSourceNodes.get(source);
-                SourceNode leafNode = stackSourceNode.isEmpty()
-                        ? null : stackSourceNode.peek();
+                SourceNode expanded = state.currentExpandedSourceNodes.get(source);
+                SourceNode leafNode = state.stackSourceNode.isEmpty()
+                        ? null : state.stackSourceNode.peek();
                 if (expanded != null) {
-                    recordBindingStar(targetTable, expanded, currentOrdinal);
-                } else if (context == null && currentStarBudget > 0 && leafNode != null
+                    recordBindingStar(targetTable, expanded, state.currentOrdinal);
+                } else if (context == null && state.currentStarBudget > 0 && leafNode != null
                         && leafNode.sources.size() == 1
                         && leafNode.sources.get(0) == source
                         && !sourceColumnsKnown(source)) {
-                    recordBindingStar(targetTable, leafNode, currentOrdinal);
+                    recordBindingStar(targetTable, leafNode, state.currentOrdinal);
                 } else {
-                    recordSourceStarOutputs(targetTable, source, currentOrdinal);
+                    recordSourceStarOutputs(targetTable, source, state.currentOrdinal);
                 }
             } else if (binding != null) {
-                recordBindingStar(targetTable, binding, currentOrdinal);
+                recordBindingStar(targetTable, binding, state.currentOrdinal);
             }
         } else {
             List<String> declaredKeys = currentDeclaredKeys(targetTable);
             String targetKey;
             if (lockedKey != null) {
                 targetKey = lockedKey;
-            } else if (declaredKeys != null && currentOrdinal < declaredKeys.size()) {
-                targetKey = declaredKeys.get(currentOrdinal);
+            } else if (declaredKeys != null && state.currentOrdinal < declaredKeys.size()) {
+                targetKey = declaredKeys.get(state.currentOrdinal);
             } else if (item.getAlias() != null) {
                 targetKey = identifierKey(item.getAlias());
             } else if (baseExpr instanceof SQLIdentifierExpr) {
@@ -4149,35 +4086,35 @@ public class DmlLineage {
             } else {
                 targetKey = identifierKey(item.getExpr().toString());
             }
-            setTargetOutput(targetTable, currentOrdinal, normalizeIdentifier(targetColumn),
+            setTargetOutput(targetTable, state.currentOrdinal, normalizeIdentifier(targetColumn),
                     targetKey);
             if (lockedName == null) {
-                markOutputNameKnown(targetTable, currentOrdinal, true);
+                markOutputNameKnown(targetTable, state.currentOrdinal, true);
             }
         }
 
-        stackTargetColumn.push(targetColumn);
+        state.stackTargetColumn.push(targetColumn);
         int before = instructions.size();
-        inTargetExpression = true;
+        state.inTargetExpression = true;
         visitExpr(item.getExpr());
-        inTargetExpression = false;
-        boolean uncertain = uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal;
+        state.inTargetExpression = false;
+        boolean uncertain = state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal;
         if (instructions.size() == before && !uncertain) {
             instructions.add(new Instruction(OperationType.EXPR_MAPPING,
                     item.getExpr().toString(), targetTable + "." + targetColumn,
-                    currentOrdinal, false, tempTables.contains(targetTable)));
+                    state.currentOrdinal, false, state.tempTables.contains(targetTable)));
         }
-        stackTargetColumn.pop();
+        state.stackTargetColumn.pop();
 
         return outputColumnCount(item.getExpr());
     }
 
     private int outputColumnCount(SQLExpr expr) {
         if (expr instanceof SQLAllColumnExpr) {
-            Map<String, List<SourceTable>> using = stackUsing.isEmpty()
-                    ? null : stackUsing.peek();
-            if (!stackSourceNode.isEmpty()) {
-                SourceNode node = stackSourceNode.peek();
+            Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
+                    ? null : state.stackUsing.peek();
+            if (!state.stackSourceNode.isEmpty()) {
+                SourceNode node = state.stackSourceNode.peek();
                 if (node.widthKnown) {
                     return Math.max(node.width, 1);
                 }
@@ -4214,12 +4151,12 @@ public class DmlLineage {
 
     private int minimumOutputColumns(SQLExpr expr) {
         if (expr instanceof SQLAllColumnExpr) {
-            if (!stackSourceNode.isEmpty()) {
-                SourceNode node = stackSourceNode.peek();
+            if (!state.stackSourceNode.isEmpty()) {
+                SourceNode node = state.stackSourceNode.peek();
                 return node.widthKnown ? node.width : node.minWidth;
             }
-            Map<String, List<SourceTable>> using = stackUsing.isEmpty()
-                    ? null : stackUsing.peek();
+            Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
+                    ? null : state.stackUsing.peek();
             if (useVisiblePlan(currentSources(), using)) {
                 return currentStarPlan(currentSources()).size();
             }
@@ -4256,8 +4193,8 @@ public class DmlLineage {
 
     private boolean starOutputWidthKnown(SQLExpr expr) {
         if (expr instanceof SQLAllColumnExpr) {
-            if (!stackSourceNode.isEmpty()) {
-                return stackSourceNode.peek().widthKnown;
+            if (!state.stackSourceNode.isEmpty()) {
+                return state.stackSourceNode.peek().widthKnown;
             }
             List<SourceTable> sources = currentSources();
             if (sources.isEmpty()) {
@@ -4278,7 +4215,7 @@ public class DmlLineage {
                     return true;
                 }
                 return source.temporary
-                        && Boolean.TRUE.equals(targetWidthKnown.get(source.displayName));
+                        && Boolean.TRUE.equals(state.targetWidthKnown.get(source.displayName));
             }
             SourceNode binding = joinBinding(owner);
             return binding != null && binding.widthKnown;
@@ -4301,8 +4238,8 @@ public class DmlLineage {
             return false;
         }
         if (expr instanceof SQLAllColumnExpr) {
-            if (!stackSourceNode.isEmpty()) {
-                return bindingNamesKnown(stackSourceNode.peek());
+            if (!state.stackSourceNode.isEmpty()) {
+                return bindingNamesKnown(state.stackSourceNode.peek());
             }
             for (SourceTable source : currentSources()) {
                 if (!sourceNamesKnown(source)) {
@@ -4395,40 +4332,40 @@ public class DmlLineage {
             Map<String, List<SourceTable>> using) {
         if (tableSource instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) tableSource;
-            Map<String, SourceNode> bindingsBefore = stackJoinBindings.isEmpty() ? null
-                    : new HashMap<>(stackJoinBindings.peek());
+            Map<String, SourceNode> bindingsBefore = state.stackJoinBindings.isEmpty() ? null
+                    : new HashMap<>(state.stackJoinBindings.peek());
             SourceNode left = buildSourceNode(join.getLeft(), using);
             boolean lateralRight = isLateralSource(join.getRight());
             if (lateralRight) {
                 // A correlated LATERAL body can read the left side's columns,
                 // bindings, and hidden-name set.
-                stackSources.push(left.sources);
-                lateralScopes.push(Boolean.TRUE);
-                stackUsing.push(using);
-                stackStarPlan.push(left.plan);
-                stackSourceNode.push(left);
-                stackSourceTable.push(left.sources.isEmpty()
+                state.stackSources.push(left.sources);
+                state.lateralScopes.push(Boolean.TRUE);
+                state.stackUsing.push(using);
+                state.stackStarPlan.push(left.plan);
+                state.stackSourceNode.push(left);
+                state.stackSourceTable.push(left.sources.isEmpty()
                         ? "" : left.sources.get(0).displayName);
-                stackHiddenSources.push(stackHiddenSources.isEmpty()
+                state.stackHiddenSources.push(state.stackHiddenSources.isEmpty()
                         ? new HashSet<SourceTable>()
-                        : new HashSet<>(stackHiddenSources.peek()));
-                stackJoinBindings.push(stackJoinBindings.isEmpty()
+                        : new HashSet<>(state.stackHiddenSources.peek()));
+                state.stackJoinBindings.push(state.stackJoinBindings.isEmpty()
                         ? new HashMap<String, SourceNode>()
-                        : new HashMap<>(stackJoinBindings.peek()));
+                        : new HashMap<>(state.stackJoinBindings.peek()));
             }
             SourceNode right;
             try {
                 right = buildSourceNode(join.getRight(), using);
             } finally {
                 if (lateralRight) {
-                    stackJoinBindings.pop();
-                    stackHiddenSources.pop();
-                    stackSourceTable.pop();
-                    stackSourceNode.pop();
-                    stackStarPlan.pop();
-                    stackUsing.pop();
-                    stackSources.pop();
-                    lateralScopes.pop();
+                    state.stackJoinBindings.pop();
+                    state.stackHiddenSources.pop();
+                    state.stackSourceTable.pop();
+                    state.stackSourceNode.pop();
+                    state.stackStarPlan.pop();
+                    state.stackUsing.pop();
+                    state.stackSources.pop();
+                    state.lateralScopes.pop();
                 }
             }
             List<SourceTable> sources = new ArrayList<>();
@@ -4489,7 +4426,7 @@ public class DmlLineage {
                         join.getUsing(), leftNamesKnown, rightNamesKnown,
                         left.sources, right.sources, left.widthKnown);
                 Map<String, List<SourceTable>> participants =
-                        usingParticipantsByIdentity.computeIfAbsent(using,
+                        state.usingParticipantsByIdentity.computeIfAbsent(using,
                                 key -> new HashMap<String, List<SourceTable>>());
                 for (SQLExpr expr : join.getUsing()) {
                     String column = identifierKey(expr.toString());
@@ -4566,8 +4503,8 @@ public class DmlLineage {
                     joinUsingCount, rightBoundary, leftUnknownSources, rightUnknownSources,
                     unknownSectionEnd, left, right);
             if (join.getAlias() != null) {
-                if (!stackJoinBindings.isEmpty()) {
-                    Map<String, SourceNode> bindings = stackJoinBindings.peek();
+                if (!state.stackJoinBindings.isEmpty()) {
+                    Map<String, SourceNode> bindings = state.stackJoinBindings.peek();
                     if (bindingsBefore != null) {
                         // Restore every binding the subtree changed, then expose only
                         // this join's alias.
@@ -4583,11 +4520,11 @@ public class DmlLineage {
                         }
                     }
                     bindings.put(identifierKey(join.getAlias()), joined);
-                    tableSourceBindings.put(join, joined);
+                    state.tableSourceBindings.put(join, joined);
                 }
-                if (!stackHiddenSources.isEmpty()) {
+                if (!state.stackHiddenSources.isEmpty()) {
                     // An alias hides every qualifier inside its join subtree.
-                    stackHiddenSources.peek().addAll(sources);
+                    state.stackHiddenSources.peek().addAll(sources);
                 }
             }
             return joined;
@@ -4600,9 +4537,9 @@ public class DmlLineage {
             SQLSelect body = queryExpressionSelect(lateral.getExpr());
             String alias = lateral.getAlias();
             String target = alias != null ? uniqueTarget(alias) : getTempTableName();
-            tempTables.add(target);
+            state.tempTables.add(target);
             processDerivedBody(target, body, lateral.getColumns());
-            List<String> derivedOutputs = copyOutputs(targetOutputs.get(target));
+            List<String> derivedOutputs = copyOutputs(state.targetOutputs.get(target));
             boolean widthKnown = isOutputWidthKnown(target, derivedOutputs);
             boolean namesKnown = isOutputNamesKnown(target, derivedOutputs);
             int derivedWidth = derivedWidth(target, derivedOutputs, widthKnown);
@@ -4625,9 +4562,9 @@ public class DmlLineage {
             SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) tableSource;
             String alias = subquery.getAlias();
             String target = alias != null ? uniqueTarget(alias) : getTempTableName();
-            tempTables.add(target);
+            state.tempTables.add(target);
             processDerivedBody(target, subquery.getSelect(), subquery.getColumns());
-            List<String> derivedOutputs = copyOutputs(targetOutputs.get(target));
+            List<String> derivedOutputs = copyOutputs(state.targetOutputs.get(target));
             boolean widthKnown = isOutputWidthKnown(target, derivedOutputs);
             boolean namesKnown = isOutputNamesKnown(target, derivedOutputs);
             int derivedWidth = derivedWidth(target, derivedOutputs, widthKnown);
@@ -4650,9 +4587,9 @@ public class DmlLineage {
             SQLUnionQueryTableSource union = (SQLUnionQueryTableSource) tableSource;
             String alias = union.getAlias();
             String target = alias != null ? uniqueTarget(alias) : getTempTableName();
-            tempTables.add(target);
+            state.tempTables.add(target);
             processDerivedUnion(target, union.getUnion(), union.getColumns());
-            List<String> derivedOutputs = copyOutputs(targetOutputs.get(target));
+            List<String> derivedOutputs = copyOutputs(state.targetOutputs.get(target));
             boolean widthKnown = isOutputWidthKnown(target, derivedOutputs);
             boolean namesKnown = isOutputNamesKnown(target, derivedOutputs);
             int derivedWidth = derivedWidth(target, derivedOutputs, widthKnown);
@@ -4694,12 +4631,12 @@ public class DmlLineage {
             List<com.alibaba.druid.sql.ast.SQLName> columns) {
         pushDerivedAliases(target, columns);
         try {
-            stackTargetTable.push(target);
+            state.stackTargetTable.push(target);
             processSelect(select);
-            stackTargetTable.pop();
+            state.stackTargetTable.pop();
             recordTargetShape(target);
         } finally {
-            targetColumnAliases.pop();
+            state.targetColumnAliases.pop();
         }
     }
 
@@ -4707,19 +4644,19 @@ public class DmlLineage {
             List<com.alibaba.druid.sql.ast.SQLName> columns) {
         pushDerivedAliases(target, columns);
         try {
-            stackTargetTable.push(target);
+            state.stackTargetTable.push(target);
             processSelectQuery(union);
-            stackTargetTable.pop();
+            state.stackTargetTable.pop();
             recordTargetShape(target);
         } finally {
-            targetColumnAliases.pop();
+            state.targetColumnAliases.pop();
         }
     }
 
     private void recordTargetShape(String target) {
-        boolean widthKnown = lastQueryBlockWidthKnown;
-        boolean namesKnown = lastQueryBlockNamesKnown;
-        int width = lastQueryBlockWidth;
+        boolean widthKnown = state.lastQueryBlockWidthKnown;
+        boolean namesKnown = state.lastQueryBlockNamesKnown;
+        int width = state.lastQueryBlockWidth;
         List<String> declared = currentTargetColumnAliases(target);
         if (declared != null) {
             DbType dialect = currentDialect();
@@ -4741,10 +4678,10 @@ public class DmlLineage {
             } else if (exactCount) {
                 // MySQL/MariaDB require an explicit list to match the projection, so
                 // the declaration itself fixes both width and names.
-                if (declared.size() < lastQueryBlockMinWidth) {
+                if (declared.size() < state.lastQueryBlockMinWidth) {
                     throw new IllegalStateException("Column alias count mismatch: "
                             + declared.size() + " vs at least "
-                            + lastQueryBlockMinWidth);
+                            + state.lastQueryBlockMinWidth);
                 }
                 widthKnown = true;
                 namesKnown = true;
@@ -4752,9 +4689,9 @@ public class DmlLineage {
                 fillDeclaredOutputs(target, declared.size());
             }
         }
-        targetWidthKnown.put(target, widthKnown);
-        targetNamesKnown.put(target, namesKnown);
-        targetMinWidth.put(target, widthKnown ? width : lastQueryBlockMinWidth);
+        state.targetWidthKnown.put(target, widthKnown);
+        state.targetNamesKnown.put(target, namesKnown);
+        state.targetMinWidth.put(target, widthKnown ? width : state.lastQueryBlockMinWidth);
     }
 
     private void fillDeclaredOutputs(String target, int width) {
@@ -4763,7 +4700,7 @@ public class DmlLineage {
             return;
         }
         List<String> declaredKeys = currentDeclaredKeys(target);
-        List<String> outputs = targetOutputs.get(target);
+        List<String> outputs = state.targetOutputs.get(target);
         for (int i = 0; i < width; i++) {
             if (outputs != null && i < outputs.size() && outputs.get(i) != null) {
                 continue;
@@ -4790,10 +4727,10 @@ public class DmlLineage {
         Map<String, List<String>> aliases = new HashMap<>();
         if (!displays.isEmpty()) {
             aliases.put(target, displays);
-            cteDeclaredColumns.put(target, displays);
-            cteDeclaredKeys.put(target, keys);
+            state.cteDeclaredColumns.put(target, displays);
+            state.cteDeclaredKeys.put(target, keys);
         }
-        targetColumnAliases.push(aliases);
+        state.targetColumnAliases.push(aliases);
     }
 
     private List<StarOutput> planFromSource(SourceTable source) {
@@ -5400,7 +5337,7 @@ public class DmlLineage {
 
         List<String> outputColumns = cteTarget == null
                 ? java.util.Collections.<String>emptyList()
-                : copyOutputs(targetOutputs.get(cteTarget));
+                : copyOutputs(state.targetOutputs.get(cteTarget));
         boolean widthKnown = metadataTable != null || cteTarget != null
                 && isOutputWidthKnown(cteTarget, outputColumns);
         boolean namesKnown = metadataTable != null || cteTarget != null
@@ -5425,7 +5362,7 @@ public class DmlLineage {
         if (widthKnown) {
             return outputCount;
         }
-        Integer minimum = target == null ? null : targetMinWidth.get(target);
+        Integer minimum = target == null ? null : state.targetMinWidth.get(target);
         return minimum == null ? 0 : minimum;
     }
 
@@ -5434,13 +5371,13 @@ public class DmlLineage {
         if (target == null || start < 0) {
             return;
         }
-        targetWildcardSpans.computeIfAbsent(target,
+        state.targetWildcardSpans.computeIfAbsent(target,
                 key -> new ArrayList<WildcardSpan>())
                 .add(new WildcardSpan(start, end, source, temporary));
     }
 
     private List<WildcardSpan> wildcardSpansOf(String target) {
-        List<WildcardSpan> spans = targetWildcardSpans.get(target);
+        List<WildcardSpan> spans = state.targetWildcardSpans.get(target);
         return spans == null ? java.util.Collections.<WildcardSpan>emptyList()
                 : new ArrayList<>(spans);
     }
@@ -5559,7 +5496,7 @@ public class DmlLineage {
         }
     }
 
-    private static final class WildcardSpan {
+    public static final class WildcardSpan {
         private final int start;
         private final int end;
         private final String source;
@@ -5580,12 +5517,12 @@ public class DmlLineage {
     }
 
     private boolean hasWildcardContribution(String target) {
-        return target != null && Boolean.TRUE.equals(targetWildcardContribution.get(target));
+        return target != null && Boolean.TRUE.equals(state.targetWildcardContribution.get(target));
     }
 
     private List<SourceTable> copyUnknownGroups(String target, int size) {
         List<SourceTable> groups = target == null ? null
-                : targetOutputUnknownGroup.get(target);
+                : state.targetOutputUnknownGroup.get(target);
         List<SourceTable> result = new ArrayList<>();
         for (int i = 0; i < size; i++) {
             result.add(groups != null && i < groups.size() ? groups.get(i) : null);
@@ -5594,7 +5531,7 @@ public class DmlLineage {
     }
 
     private List<Boolean> copyNameKnown(String target, int size) {
-        List<Boolean> flags = target == null ? null : targetOutputNameKnown.get(target);
+        List<Boolean> flags = target == null ? null : state.targetOutputNameKnown.get(target);
         List<Boolean> result = new ArrayList<>();
         for (int i = 0; i < size; i++) {
             result.add(flags != null && i < flags.size() && Boolean.TRUE.equals(flags.get(i)));
@@ -5603,11 +5540,11 @@ public class DmlLineage {
     }
 
     private boolean isOutputWidthKnown(String target, List<String> outputs) {
-        return Boolean.TRUE.equals(targetWidthKnown.get(target));
+        return Boolean.TRUE.equals(state.targetWidthKnown.get(target));
     }
 
     private boolean isOutputNamesKnown(String target, List<String> outputs) {
-        return !outputs.isEmpty() && Boolean.TRUE.equals(targetNamesKnown.get(target));
+        return !outputs.isEmpty() && Boolean.TRUE.equals(state.targetNamesKnown.get(target));
     }
 
     private static List<String> copyOutputs(List<String> outputs) {
@@ -5616,7 +5553,7 @@ public class DmlLineage {
     }
 
     private List<String> copyKeys(String target) {
-        List<String> keys = target == null ? null : targetOutputKeys.get(target);
+        List<String> keys = target == null ? null : state.targetOutputKeys.get(target);
         return keys == null ? java.util.Collections.<String>emptyList()
                 : new ArrayList<>(keys);
     }
@@ -5653,8 +5590,8 @@ public class DmlLineage {
 
     private Map<String, List<String>> namedTargetOutputs() {
         Map<String, List<String>> named = new HashMap<>();
-        for (Map.Entry<String, List<String>> entry : targetOutputs.entrySet()) {
-            if (!intermediateTargets.contains(entry.getKey())) {
+        for (Map.Entry<String, List<String>> entry : state.targetOutputs.entrySet()) {
+            if (!state.intermediateTargets.contains(entry.getKey())) {
                 named.put(entry.getKey(), copyOutputs(entry.getValue()));
             }
         }
@@ -5662,32 +5599,32 @@ public class DmlLineage {
     }
 
     private String lockedOutputName(String target, int position) {
-        if (!unionTargets.contains(target)) {
+        if (!state.unionTargets.contains(target)) {
             return null;
         }
-        List<String> outputs = targetOutputs.get(target);
+        List<String> outputs = state.targetOutputs.get(target);
         return outputs != null && position < outputs.size() ? outputs.get(position) : null;
     }
 
     private String lockedOutputKey(String target, int position) {
-        if (!unionTargets.contains(target)) {
+        if (!state.unionTargets.contains(target)) {
             return null;
         }
-        List<String> keys = targetOutputKeys.get(target);
+        List<String> keys = state.targetOutputKeys.get(target);
         return keys != null && position < keys.size() ? keys.get(position) : null;
     }
 
     private void incrementNonAuthoritative(String target) {
-        Integer depth = nonAuthoritativeDepth.get(target);
-        nonAuthoritativeDepth.put(target, depth == null ? 1 : depth + 1);
+        Integer depth = state.nonAuthoritativeDepth.get(target);
+        state.nonAuthoritativeDepth.put(target, depth == null ? 1 : depth + 1);
     }
 
     private void decrementNonAuthoritative(String target) {
-        Integer depth = nonAuthoritativeDepth.get(target);
+        Integer depth = state.nonAuthoritativeDepth.get(target);
         if (depth == null || depth <= 1) {
-            nonAuthoritativeDepth.remove(target);
+            state.nonAuthoritativeDepth.remove(target);
         } else {
-            nonAuthoritativeDepth.put(target, depth - 1);
+            state.nonAuthoritativeDepth.put(target, depth - 1);
         }
     }
 
@@ -5695,7 +5632,7 @@ public class DmlLineage {
         if (target == null || source == null || position < 0) {
             return;
         }
-        List<SourceTable> groups = targetOutputUnknownGroup.computeIfAbsent(target,
+        List<SourceTable> groups = state.targetOutputUnknownGroup.computeIfAbsent(target,
                 k -> new ArrayList<SourceTable>());
         while (groups.size() <= position) {
             groups.add(null);
@@ -5708,11 +5645,11 @@ public class DmlLineage {
             return;
         }
         // Only the first (left-most) UNION branch names the result columns.
-        Integer depth = nonAuthoritativeDepth.get(target);
+        Integer depth = state.nonAuthoritativeDepth.get(target);
         if (depth != null && depth > 0) {
             return;
         }
-        List<Boolean> flags = targetOutputNameKnown.computeIfAbsent(target,
+        List<Boolean> flags = state.targetOutputNameKnown.computeIfAbsent(target,
                 k -> new ArrayList<Boolean>());
         while (flags.size() <= position) {
             flags.add(Boolean.FALSE);
@@ -5725,9 +5662,9 @@ public class DmlLineage {
     }
 
     private void setTargetOutput(String target, int position, String name, String key) {
-        List<String> outputs = targetOutputs.computeIfAbsent(target,
+        List<String> outputs = state.targetOutputs.computeIfAbsent(target,
                 k -> new ArrayList<String>());
-        List<String> keys = targetOutputKeys.computeIfAbsent(target,
+        List<String> keys = state.targetOutputKeys.computeIfAbsent(target,
                 k -> new ArrayList<String>());
         while (outputs.size() <= position) {
             outputs.add(null);
@@ -5738,8 +5675,8 @@ public class DmlLineage {
     }
 
     private void recordStarOutputs(String target, List<SourceTable> sources, int startPosition) {
-        Map<String, List<SourceTable>> using = stackUsing.isEmpty()
-                ? null : stackUsing.peek();
+        Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
+                ? null : state.stackUsing.peek();
         if (useVisiblePlan(sources, using)) {
             List<String> declared = currentTargetColumnAliases(target);
             List<String> declaredKeys = currentDeclaredKeys(target);
@@ -5758,12 +5695,12 @@ public class DmlLineage {
                             ? declared.get(position) : output.sources.get(0).column;
                     key = declaredKeys != null && position < declaredKeys.size()
                             ? declaredKeys.get(position) : output.sources.get(0).key;
-                    if (isExistingOutput(targetOutputs.get(target), name, position)) {
+                    if (isExistingOutput(state.targetOutputs.get(target), name, position)) {
                         int suffix = position + 1;
                         do {
                             name = "col" + suffix++;
                             key = identifierKey(name);
-                        } while (isExistingOutput(targetOutputs.get(target), name, position));
+                        } while (isExistingOutput(state.targetOutputs.get(target), name, position));
                         declaredName = true;
                     }
                     markOutputNameKnown(target, position, declaredName || output.nameKnown);
@@ -5792,7 +5729,7 @@ public class DmlLineage {
             int startPosition) {
         List<String> declared = currentTargetColumnAliases(target);
         List<String> declaredKeys = currentDeclaredKeys(target);
-        List<String> existing = targetOutputs.get(target);
+        List<String> existing = state.targetOutputs.get(target);
         List<OutputName> entries = new ArrayList<>();
         Set<String> used = new HashSet<>();
         int position = startPosition;
@@ -5838,9 +5775,9 @@ public class DmlLineage {
     }
 
     private List<String> currentDeclaredKeys(String target) {
-        for (int i = targetColumnAliases.size() - 1; i >= 0; i--) {
-            if (targetColumnAliases.get(i).containsKey(target)) {
-                List<String> keys = cteDeclaredKeys.get(target);
+        for (int i = state.targetColumnAliases.size() - 1; i >= 0; i--) {
+            if (state.targetColumnAliases.get(i).containsKey(target)) {
+                List<String> keys = state.cteDeclaredKeys.get(target);
                 return keys == null ? java.util.Collections.<String>emptyList() : keys;
             }
         }
@@ -5874,8 +5811,8 @@ public class DmlLineage {
     }
 
     private List<StarOutput> currentStarPlan(List<SourceTable> sources) {
-        if (!stackStarPlan.isEmpty() && !stackStarPlan.peek().isEmpty()) {
-            return stackStarPlan.peek();
+        if (!state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty()) {
+            return state.stackStarPlan.peek();
         }
         List<StarOutput> plan = new ArrayList<>();
         for (SourceTable source : sources) {
@@ -5887,8 +5824,8 @@ public class DmlLineage {
 
 
     private List<String> currentTargetColumnAliases(String target) {
-        for (int i = targetColumnAliases.size() - 1; i >= 0; i--) {
-            Map<String, List<String>> aliases = targetColumnAliases.get(i);
+        for (int i = state.targetColumnAliases.size() - 1; i >= 0; i--) {
+            Map<String, List<String>> aliases = state.targetColumnAliases.get(i);
             if (aliases.containsKey(target)) {
                 return aliases.get(target);
             }
@@ -5897,8 +5834,8 @@ public class DmlLineage {
     }
 
     private String findCteTarget(String key) {
-        for (int i = cteScopes.size() - 1; i >= 0; i--) {
-            String target = cteScopes.get(i).get(key);
+        for (int i = state.cteScopes.size() - 1; i >= 0; i--) {
+            String target = state.cteScopes.get(i).get(key);
             if (target != null) {
                 return target;
             }
@@ -6187,7 +6124,7 @@ public class DmlLineage {
     }
 
     private void learnThroughBinding(String marker, String rawName) {
-        Object resolved = learningBindings.get(marker);
+        Object resolved = state.learningBindings.get(marker);
         if (!(resolved instanceof SourceNode)) {
             return;
         }
@@ -6311,11 +6248,11 @@ public class DmlLineage {
             collectLocalNames(block.getFrom(), frameLocals, ctes);
             // A local table shadows an inherited short name.
             locals.putAll(frameLocals);
-            Map<String, Object> savedBindings = new HashMap<>(learningBindings);
+            Map<String, Object> savedBindings = new HashMap<>(state.learningBindings);
             for (Map.Entry<String, String> local : frameLocals.entrySet()) {
                 if (LOCAL_BINDING.equals(local.getValue())) {
                     // A same-named local join alias has its own plan.
-                    learningBindings.put(local.getKey(), null);
+                    state.learningBindings.put(local.getKey(), null);
                 }
             }
             try {
@@ -6330,7 +6267,7 @@ public class DmlLineage {
                 }
                 learnExplicitReferences(block.getWhere(), locals, ctes);
             } finally {
-                learningBindings = savedBindings;
+                state.learningBindings = savedBindings;
             }
         } else if (query instanceof SQLUnionQuery) {
             SQLUnionQuery union = (SQLUnionQuery) query;
@@ -6363,7 +6300,7 @@ public class DmlLineage {
 
     private Set<String> currentCteKeys() {
         Set<String> ctes = new HashSet<>();
-        for (Map<String, String> frame : cteScopes) {
+        for (Map<String, String> frame : state.cteScopes) {
             ctes.addAll(frame.keySet());
         }
         return ctes;
@@ -6371,15 +6308,15 @@ public class DmlLineage {
 
     private Map<String, String> outerBlockLocals(boolean includeCurrentFrame) {
         Map<String, String> locals = new HashMap<>();
-        int top = includeCurrentFrame ? stackSources.size() - 1
-                : stackSources.size() - 2;
+        int top = includeCurrentFrame ? state.stackSources.size() - 1
+                : state.stackSources.size() - 2;
         // Far frames first, so a nearer binding overrides an outer one.
         for (int frame = 0; frame <= top; frame++) {
             Map<String, String> frameLocals = new HashMap<>();
-            Set<SourceTable> hidden = frame < stackHiddenSources.size()
-                    ? stackHiddenSources.get(frame)
+            Set<SourceTable> hidden = frame < state.stackHiddenSources.size()
+                    ? state.stackHiddenSources.get(frame)
                     : java.util.Collections.<SourceTable>emptySet();
-            for (SourceTable source : stackSources.get(frame)) {
+            for (SourceTable source : state.stackSources.get(frame)) {
                 if (hidden.contains(source)) {
                     continue;
                 }
@@ -6402,9 +6339,9 @@ public class DmlLineage {
                             learnedTable);
                 }
             }
-            if (frame < stackJoinBindings.size()) {
+            if (frame < state.stackJoinBindings.size()) {
                 for (Map.Entry<String, SourceNode> binding
-                        : stackJoinBindings.get(frame).entrySet()) {
+                        : state.stackJoinBindings.get(frame).entrySet()) {
                     putLocal(frameLocals, binding.getKey(),
                             bindingToken(binding.getValue()));
                 }
@@ -6416,7 +6353,7 @@ public class DmlLineage {
 
     private String bindingToken(SourceNode binding) {
         String token = LOCAL_BINDING + "#" + (++learningBindingSeq);
-        learningBindings.put(token, binding);
+        state.learningBindings.put(token, binding);
         return token;
     }
 
@@ -6436,9 +6373,9 @@ public class DmlLineage {
 
     private void learnNoFromExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
-        Map<String, Object> savedBindings = new HashMap<>(learningBindings);
-        if (!stackJoinBindings.isEmpty()) {
-            learningBindings.putAll(stackJoinBindings.peek());
+        Map<String, Object> savedBindings = new HashMap<>(state.learningBindings);
+        if (!state.stackJoinBindings.isEmpty()) {
+            state.learningBindings.putAll(state.stackJoinBindings.peek());
         }
         try {
             Set<String> ctes = currentCteKeys();
@@ -6447,20 +6384,20 @@ public class DmlLineage {
             }
             learnExplicitReferences(block.getWhere(), inherited, ctes);
         } finally {
-            learningBindings = savedBindings;
+            state.learningBindings = savedBindings;
         }
     }
 
     private void learnBlockExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
-        Map<String, Object> savedBindings = new HashMap<>(learningBindings);
-        if (!stackJoinBindings.isEmpty()) {
-            learningBindings.putAll(stackJoinBindings.peek());
+        Map<String, Object> savedBindings = new HashMap<>(state.learningBindings);
+        if (!state.stackJoinBindings.isEmpty()) {
+            state.learningBindings.putAll(state.stackJoinBindings.peek());
         }
         try {
             learnBlockExplicitReferencesInScope(block, inherited);
         } finally {
-            learningBindings = savedBindings;
+            state.learningBindings = savedBindings;
         }
     }
 
@@ -6580,7 +6517,7 @@ public class DmlLineage {
             if (join.getAlias() != null) {
                 String key = qualifiedKey(join.getAlias());
                 String value = locals.get(key);
-                SourceNode binding = tableSourceBindings.get(join);
+                SourceNode binding = state.tableSourceBindings.get(join);
                 if (binding != null && value != null
                         && (LOCAL_BINDING.equals(value)
                                 || value.startsWith(LOCAL_BINDING_USING))) {
@@ -6764,25 +6701,25 @@ public class DmlLineage {
             return;
         }
         if (inner.columns.isEmpty()) {
-            recordScalarTableLevel(inner, stackTargetTable.peek(), currentOrdinal,
-                    stackTargetColumn.peek());
+            recordScalarTableLevel(inner, state.stackTargetTable.peek(), state.currentOrdinal,
+                    state.stackTargetColumn.peek());
             return;
         }
-        String targetTable = stackTargetTable.peek();
-        String targetColumn = stackTargetColumn.peek();
-        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+        String targetTable = state.stackTargetTable.peek();
+        String targetColumn = state.stackTargetColumn.peek();
+        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
             return;
         }
         for (int i = 0; i < inner.columns.size(); i++) {
             String source = inner.references.get(i);
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
-                    targetTable + "." + targetColumn, currentOrdinal, true,
-                    tempTables.contains(targetTable)));
+                    targetTable + "." + targetColumn, state.currentOrdinal, true,
+                    state.tempTables.contains(targetTable)));
         }
     }
 
     private void visitIdentifier(SQLIdentifierExpr identifier) {
-        if (!inTargetExpression) {
+        if (!state.inTargetExpression) {
             return;
         }
         String rawName = identifier.getName();
@@ -6805,15 +6742,15 @@ public class DmlLineage {
     }
 
     private List<SourceTable> participantsForFrame(int frame, String key) {
-        if (frame >= stackUsing.size() || usingParticipantsByIdentity.isEmpty()) {
+        if (frame >= state.stackUsing.size() || state.usingParticipantsByIdentity.isEmpty()) {
             return new ArrayList<>();
         }
-        Map<String, List<SourceTable>> using = stackUsing.get(frame);
+        Map<String, List<SourceTable>> using = state.stackUsing.get(frame);
         if (using == null) {
             return new ArrayList<>();
         }
         Map<String, List<SourceTable>> participants =
-                usingParticipantsByIdentity.get(using);
+                state.usingParticipantsByIdentity.get(using);
         if (participants == null || !participants.containsKey(key)) {
             return new ArrayList<>();
         }
@@ -6822,11 +6759,11 @@ public class DmlLineage {
 
     private List<SourceTable> frameCandidates(int frame, String key,
             List<SourceTable> participants, List<SourceTable> excluded) {
-        Set<SourceTable> hidden = frame < stackHiddenSources.size()
-                ? stackHiddenSources.get(frame)
+        Set<SourceTable> hidden = frame < state.stackHiddenSources.size()
+                ? state.stackHiddenSources.get(frame)
                 : java.util.Collections.<SourceTable>emptySet();
         List<SourceTable> candidates = new ArrayList<>();
-        for (SourceTable source : stackSources.get(frame)) {
+        for (SourceTable source : state.stackSources.get(frame)) {
             if (hidden.contains(source) || participants.contains(source)
                     || excluded.contains(source)) {
                 continue;
@@ -6839,20 +6776,20 @@ public class DmlLineage {
     }
 
     private boolean lateralScopeActive() {
-        int current = stackSources.size() - 1;
-        return current >= 0 && current < lateralScopes.size()
-                && Boolean.TRUE.equals(lateralScopes.get(current))
+        int current = state.stackSources.size() - 1;
+        return current >= 0 && current < state.lateralScopes.size()
+                && Boolean.TRUE.equals(state.lateralScopes.get(current))
                 || hasLateralAncestorScope();
     }
 
     private boolean hasOuterScopeFallback() {
-        return hasLateralAncestorScope() || scalarSubqueryDepth > 0;
+        return hasLateralAncestorScope() || state.scalarSubqueryDepth > 0;
     }
 
     private boolean hasLateralAncestorScope() {
-        for (int frame = 0; frame < stackSources.size() - 1; frame++) {
-            if (frame < lateralScopes.size()
-                    && Boolean.TRUE.equals(lateralScopes.get(frame))) {
+        for (int frame = 0; frame < state.stackSources.size() - 1; frame++) {
+            if (frame < state.lateralScopes.size()
+                    && Boolean.TRUE.equals(state.lateralScopes.get(frame))) {
                 return true;
             }
         }
@@ -6862,18 +6799,18 @@ public class DmlLineage {
     private List<SourceTable> resolveCorrelatedUnqualified(String rawName) {
         String key = identifierKey(rawName);
         boolean lateralScope = false;
-        for (int frame = stackSources.size() - 2; frame >= 0; frame--) {
-            boolean lateralFrame = frame < lateralScopes.size()
-                    && Boolean.TRUE.equals(lateralScopes.get(frame));
-            if (!lateralFrame && scalarSubqueryDepth == 0) {
+        for (int frame = state.stackSources.size() - 2; frame >= 0; frame--) {
+            boolean lateralFrame = frame < state.lateralScopes.size()
+                    && Boolean.TRUE.equals(state.lateralScopes.get(frame));
+            if (!lateralFrame && state.scalarSubqueryDepth == 0) {
                 continue;
             }
             lateralScope = true;
-            Map<String, List<SourceTable>> using = frame < stackUsing.size()
-                    ? stackUsing.get(frame) : null;
+            Map<String, List<SourceTable>> using = frame < state.stackUsing.size()
+                    ? state.stackUsing.get(frame) : null;
             if (using != null && using.containsKey(key)) {
-                List<StarOutput> framePlan = frame < stackStarPlan.size()
-                        ? stackStarPlan.get(frame)
+                List<StarOutput> framePlan = frame < state.stackStarPlan.size()
+                        ? state.stackStarPlan.get(frame)
                         : java.util.Collections.<StarOutput>emptyList();
                 List<StarOutput> planMatches = new ArrayList<>();
                 for (StarOutput output : framePlan) {
@@ -6908,8 +6845,8 @@ public class DmlLineage {
                 }
                 return participants;
             }
-            List<StarOutput> plan = frame < stackStarPlan.size()
-                    ? stackStarPlan.get(frame)
+            List<StarOutput> plan = frame < state.stackStarPlan.size()
+                    ? state.stackStarPlan.get(frame)
                     : java.util.Collections.<StarOutput>emptyList();
             List<StarOutput> matches = new ArrayList<>();
             for (StarOutput output : plan) {
@@ -6950,12 +6887,12 @@ public class DmlLineage {
                 }
                 return owners;
             }
-            Set<SourceTable> hidden = frame < stackHiddenSources.size()
-                    ? stackHiddenSources.get(frame)
+            Set<SourceTable> hidden = frame < state.stackHiddenSources.size()
+                    ? state.stackHiddenSources.get(frame)
                     : java.util.Collections.<SourceTable>emptySet();
             List<SourceTable> owners = new ArrayList<>();
             List<SourceTable> unknown = new ArrayList<>();
-            for (SourceTable source : stackSources.get(frame)) {
+            for (SourceTable source : state.stackSources.get(frame)) {
                 if (hidden.contains(source)) {
                     continue;
                 }
@@ -7018,19 +6955,19 @@ public class DmlLineage {
         }
         String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
         String aliasKey = isSingleSegmentName(rawOwner) ? identifierKey(rawOwner) : null;
-        for (int frame = stackSources.size() - 1; frame >= 0; frame--) {
-            if (frame < stackJoinBindings.size() && aliasKey != null) {
-                SourceNode binding = stackJoinBindings.get(frame).get(aliasKey);
+        for (int frame = state.stackSources.size() - 1; frame >= 0; frame--) {
+            if (frame < state.stackJoinBindings.size() && aliasKey != null) {
+                SourceNode binding = state.stackJoinBindings.get(frame).get(aliasKey);
                 if (binding != null) {
                     return new CorrelatedOwner(null, binding);
                 }
             }
-            Set<SourceTable> hidden = frame < stackHiddenSources.size()
-                    ? stackHiddenSources.get(frame)
+            Set<SourceTable> hidden = frame < state.stackHiddenSources.size()
+                    ? state.stackHiddenSources.get(frame)
                     : java.util.Collections.<SourceTable>emptySet();
             // An explicit alias wins over a same-spelled table name in this frame.
             List<SourceTable> aliasMatches = new ArrayList<>();
-            for (SourceTable source : stackSources.get(frame)) {
+            for (SourceTable source : state.stackSources.get(frame)) {
                 if (!hidden.contains(source) && source.alias != null
                         && qualifiedKey(source.alias).equals(ownerKey)) {
                     aliasMatches.add(source);
@@ -7045,7 +6982,7 @@ public class DmlLineage {
                 return new CorrelatedOwner(aliasMatches.get(0), null);
             }
             List<SourceTable> frameMatches = new ArrayList<>();
-            for (SourceTable source : stackSources.get(frame)) {
+            for (SourceTable source : state.stackSources.get(frame)) {
                 if (!hidden.contains(source) && source.alias == null
                         && matchesOwner(source, ownerKey, ownerParts)) {
                     frameMatches.add(source);
@@ -7189,11 +7126,11 @@ public class DmlLineage {
 
     private SourceNode exactJoinBinding(SQLExpr owner) {
         if (owner == null || !isSingleSegmentName(owner.toString())
-                || stackJoinBindings.isEmpty()) {
+                || state.stackJoinBindings.isEmpty()) {
             return null;
         }
         String key = identifierKey(owner.toString());
-        return key == null ? null : stackJoinBindings.peek().get(key);
+        return key == null ? null : state.stackJoinBindings.peek().get(key);
     }
 
     private boolean matchesOwner(SourceTable source, String ownerKey,
@@ -7257,7 +7194,7 @@ public class DmlLineage {
         String rawName = property.getName();
         String name = normalizeIdentifier(rawName);
         if ("*".equals(name) && !MetadataCatalog.isQuotedIdentifier(rawName)) {
-            if (!inTargetExpression) {
+            if (!state.inTargetExpression) {
                 return;
             }
             CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
@@ -7265,7 +7202,7 @@ public class DmlLineage {
             if (source == null) {
                 SourceNode binding = correlated == null ? null : correlated.binding;
                 if (binding != null) {
-                    mapBindingStar(stackTargetTable.peek(), binding, currentOrdinal);
+                    mapBindingStar(state.stackTargetTable.peek(), binding, state.currentOrdinal);
                     return;
                 }
                 if (context != null) {
@@ -7274,38 +7211,38 @@ public class DmlLineage {
                 }
                 return;
             }
-            String targetTable = stackTargetTable.peek();
+            String targetTable = state.stackTargetTable.peek();
             if (detachedMetadata()) {
                 emitDetachedPlan(targetTable, planFromSource(source),
-                        java.util.Collections.singletonList(source), null, currentOrdinal);
+                        java.util.Collections.singletonList(source), null, state.currentOrdinal);
                 return;
             }
-            SourceNode expanded = currentExpandedSourceNodes.get(source);
+            SourceNode expanded = state.currentExpandedSourceNodes.get(source);
             if (expanded != null) {
-                mapBindingStar(targetTable, expanded, currentOrdinal);
+                mapBindingStar(targetTable, expanded, state.currentOrdinal);
                 return;
             }
-            SourceNode leafNode = stackSourceNode.isEmpty()
-                    ? null : stackSourceNode.peek();
-            if (context == null && currentStarBudget > 0 && leafNode != null
+            SourceNode leafNode = state.stackSourceNode.isEmpty()
+                    ? null : state.stackSourceNode.peek();
+            if (context == null && state.currentStarBudget > 0 && leafNode != null
                     && leafNode.sources.size() == 1
                     && leafNode.sources.get(0) == source
                     && !sourceColumnsKnown(source)) {
-                mapBindingStar(targetTable, leafNode, currentOrdinal);
+                mapBindingStar(targetTable, leafNode, state.currentOrdinal);
                 return;
             }
             if (context == null && sourceNamesKnown(source)
                     && !source.outputColumns.isEmpty()) {
-                mapSourceStar(source, targetTable, currentOrdinal);
+                mapSourceStar(source, targetTable, state.currentOrdinal);
                 return;
             }
             instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                    source.displayName, targetTable, currentOrdinal, source.temporary,
-                    tempTables.contains(targetTable)));
+                    source.displayName, targetTable, state.currentOrdinal, source.temporary,
+                    state.tempTables.contains(targetTable)));
             return;
         }
 
-        if (!inTargetExpression) {
+        if (!state.inTargetExpression) {
             return;
         }
         CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
@@ -7372,12 +7309,12 @@ public class DmlLineage {
             List<StarColumn> known = knownColumns(matches.get(0));
             if (!known.isEmpty()) {
                 emitBindingColumns(known);
-            } else if (uncertainOrdinal < 0 || currentOrdinal != uncertainOrdinal) {
-                String targetTable = stackTargetTable.peek();
+            } else if (state.uncertainOrdinal < 0 || state.currentOrdinal != state.uncertainOrdinal) {
+                String targetTable = state.stackTargetTable.peek();
                 for (SourceTable source : starOutputSources(matches.get(0))) {
                     instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                            source.displayName, targetTable, currentOrdinal,
-                            source.temporary, tempTables.contains(targetTable)));
+                            source.displayName, targetTable, state.currentOrdinal,
+                            source.temporary, state.tempTables.contains(targetTable)));
                 }
             }
             return;
@@ -7404,9 +7341,9 @@ public class DmlLineage {
                 } else {
                     for (SourceTable source : starOutputSources(output)) {
                         instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                                source.displayName, stackTargetTable.peek(), currentOrdinal,
+                                source.displayName, state.stackTargetTable.peek(), state.currentOrdinal,
                                 source.temporary,
-                                tempTables.contains(stackTargetTable.peek())));
+                                state.tempTables.contains(state.stackTargetTable.peek())));
                     }
                 }
                 return;
@@ -7450,23 +7387,23 @@ public class DmlLineage {
         if (columns.isEmpty()) {
             return;
         }
-        String targetTable = stackTargetTable.peek();
-        String targetColumn = stackTargetColumn.peek();
+        String targetTable = state.stackTargetTable.peek();
+        String targetColumn = state.stackTargetColumn.peek();
         for (StarColumn column : columns) {
             if (!column.source.wildcardContribution) {
                 continue;
             }
             Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                    lineageTableName(column.source), targetTable, currentOrdinal,
-                    column.source.temporary, tempTables.contains(targetTable));
+                    lineageTableName(column.source), targetTable, state.currentOrdinal,
+                    column.source.temporary, state.tempTables.contains(targetTable));
             wildcard.setPositionalWildcard(true);
             // The contribution only covers the named column's own position.
             wildcard.setWildcardWidthKnown(true);
             wildcard.setWildcardWidth(1);
             instructions.add(wildcard);
-            targetWildcardContribution.put(targetTable, Boolean.TRUE);
+            state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
         }
-        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
             // The position is unknown: the table-level contribution above is enough.
             return;
         }
@@ -7489,8 +7426,8 @@ public class DmlLineage {
             }
             instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                     lineageTableName(column.source) + "." + sourceColumn,
-                    targetTable + "." + targetColumn, currentOrdinal,
-                    column.source.temporary, tempTables.contains(targetTable)));
+                    targetTable + "." + targetColumn, state.currentOrdinal,
+                    column.source.temporary, state.tempTables.contains(targetTable)));
         }
     }
 
@@ -7525,12 +7462,12 @@ public class DmlLineage {
                 key = declaredName && declaredKeys != null
                         && position < declaredKeys.size() ? declaredKeys.get(position)
                         : stableName ? output.sources.get(0).key : identifierKey(name);
-                if (isExistingOutput(targetOutputs.get(target), name, position)) {
+                if (isExistingOutput(state.targetOutputs.get(target), name, position)) {
                     int suffix = position + 1;
                     do {
                         name = "col" + suffix++;
                         key = identifierKey(name);
-                    } while (isExistingOutput(targetOutputs.get(target), name, position));
+                    } while (isExistingOutput(state.targetOutputs.get(target), name, position));
                 }
                 markOutputNameKnown(target, position, declaredName || stableName);
             }
@@ -7540,9 +7477,9 @@ public class DmlLineage {
 
     private void mapBindingStar(String targetTable, SourceNode binding, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
-        List<String> registered = targetOutputs.get(targetTable);
-        boolean uncertain = uncertainOrdinal >= 0 && uncertainOrdinal == startPosition;
-        boolean targetTemporary = tempTables.contains(targetTable);
+        List<String> registered = state.targetOutputs.get(targetTable);
+        boolean uncertain = state.uncertainOrdinal >= 0 && state.uncertainOrdinal == startPosition;
+        boolean targetTemporary = state.tempTables.contains(targetTable);
         int position = startPosition;
         for (StarOutput output : binding.plan) {
             if (output.sources.isEmpty()) {
@@ -7598,7 +7535,7 @@ public class DmlLineage {
 
     private int emitDetachedStar(String targetTable, List<SourceTable> sources,
             int startPosition) {
-        SourceNode node = stackSourceNode.isEmpty() ? null : stackSourceNode.peek();
+        SourceNode node = state.stackSourceNode.isEmpty() ? null : state.stackSourceNode.peek();
         return emitDetachedPlan(targetTable, currentStarPlan(sources), sources, node,
                 startPosition);
     }
@@ -7606,10 +7543,10 @@ public class DmlLineage {
     private int emitDetachedPlan(String targetTable, List<StarOutput> template,
             List<SourceTable> sources, SourceNode node, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
-        boolean targetTemporary = tempTables.contains(targetTable);
+        boolean targetTemporary = state.tempTables.contains(targetTable);
 
-        boolean uncertainPosition = uncertainOrdinal >= 0
-                && uncertainOrdinal == startPosition;
+        boolean uncertainPosition = state.uncertainOrdinal >= 0
+                && state.uncertainOrdinal == startPosition;
         boolean determinate = !sources.isEmpty() && !uncertainPosition;
         for (SourceTable source : sources) {
             if (!sourceNamesKnown(source)) {
@@ -7618,7 +7555,7 @@ public class DmlLineage {
             }
         }
         if (!determinate) {
-            targetWildcardContribution.put(targetTable, Boolean.TRUE);
+            state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
             // Contract: positions cannot be derived from column names. Propagate the
             // unknown sources recorded at each visible position instead of guessing.
             if (sources.size() == 1 && sources.get(0).temporary
@@ -7628,7 +7565,7 @@ public class DmlLineage {
                 int sourceWidth = uncertainPosition ? -1
                         : sourceWidthKnown(source)
                                 ? Math.max(sourceKnownWidth(source), maxSpanEnd(spans))
-                                : currentStarBudget > 0 ? currentStarBudget : -1;
+                                : state.currentStarBudget > 0 ? state.currentStarBudget : -1;
                 for (WildcardSpan span : spans) {
                     if (uncertainPosition
                             || sourceWidth <= 0 && span.end == Integer.MAX_VALUE) {
@@ -7763,7 +7700,7 @@ public class DmlLineage {
             boolean allKnown = !planAmbiguous && !pendingShape && !uncertainPosition
                     && !sources.isEmpty() && allWidthKnown(sources);
             boolean budgetBounded = !allKnown && !ambiguousBounded
-                    && !uncertainPosition && currentStarBudget > 0;
+                    && !uncertainPosition && state.currentStarBudget > 0;
             int position = startPosition;
             for (int index = 0; index < sources.size(); index++) {
                 SourceTable source = sources.get(index);
@@ -7809,7 +7746,7 @@ public class DmlLineage {
                 } else if (budgetBounded) {
                     // The UNION width pins the whole star; every source keeps a
                     // table-level claim on that range.
-                    sourceWidth = currentStarBudget;
+                    sourceWidth = state.currentStarBudget;
                 }
                 if (sourceWidth > 0) {
                     wildcard.setWildcardWidthKnown(true);
@@ -7832,7 +7769,7 @@ public class DmlLineage {
                 // ownership is unknown, so later projections keep their place.
                 advance = node.width;
             } else if (budgetBounded) {
-                advance = currentStarBudget;
+                advance = state.currentStarBudget;
             } else if (uncertainPosition) {
                 advance = knownWidthSum(sources);
             } else {
@@ -7865,7 +7802,7 @@ public class DmlLineage {
             if (exact && !used.add(name)) {
                 exact = false;
             }
-            if (exact && isExistingOutput(targetOutputs.get(targetTable), name, position)) {
+            if (exact && isExistingOutput(state.targetOutputs.get(targetTable), name, position)) {
                 exact = false;
             }
             if (exact) {
@@ -7912,7 +7849,7 @@ public class DmlLineage {
             // branch contributes unknown rows.
             wildcard.setWildcardWidthKnown(true);
             instructions.add(wildcard);
-            targetWildcardContribution.put(targetTable, Boolean.TRUE);
+            state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
         }
         return position - startPosition;
     }
@@ -7960,7 +7897,7 @@ public class DmlLineage {
     private boolean uniqueOutputNames(SourceTable source, String targetTable, int position) {
         List<String> names = sourceColumnNames(source);
         Set<String> seen = new HashSet<>();
-        List<String> existing = targetOutputs.get(targetTable);
+        List<String> existing = state.targetOutputs.get(targetTable);
         for (String name : names) {
             if (!seen.add(name)) {
                 return false;
@@ -7974,8 +7911,8 @@ public class DmlLineage {
 
     private void mapSourceStar(SourceTable source, String targetTable, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
-        boolean uncertain = uncertainOrdinal >= 0 && uncertainOrdinal == startPosition;
-        boolean targetTemporary = tempTables.contains(targetTable);
+        boolean uncertain = state.uncertainOrdinal >= 0 && state.uncertainOrdinal == startPosition;
+        boolean targetTemporary = state.tempTables.contains(targetTable);
         int position = startPosition;
         for (StarOutput output : planFromSource(source)) {
             if (output.sources.isEmpty()) {
@@ -7998,33 +7935,33 @@ public class DmlLineage {
     }
 
     private void visitAllColumn() {
-        if (!inTargetExpression) {
+        if (!state.inTargetExpression) {
             return;
         }
         List<SourceTable> sources = currentSources();
         if (sources.isEmpty()) {
             return;
         }
-        String targetTable = stackTargetTable.peek();
+        String targetTable = state.stackTargetTable.peek();
         if (detachedMetadata()) {
-            emitDetachedStar(targetTable, sources, currentOrdinal);
+            emitDetachedStar(targetTable, sources, state.currentOrdinal);
             return;
         }
-        boolean targetTemporary = tempTables.contains(targetTable);
-        Map<String, List<SourceTable>> using = stackUsing.isEmpty()
-                ? null : stackUsing.peek();
-        if (context == null && !stackSourceNode.isEmpty()
-                && !stackSourceNode.peek().plan.isEmpty()
-                && (using != null && !using.isEmpty() || currentStarBudget > 0)) {
-            mapBindingStar(targetTable, stackSourceNode.peek(), currentOrdinal);
+        boolean targetTemporary = state.tempTables.contains(targetTable);
+        Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
+                ? null : state.stackUsing.peek();
+        if (context == null && !state.stackSourceNode.isEmpty()
+                && !state.stackSourceNode.peek().plan.isEmpty()
+                && (using != null && !using.isEmpty() || state.currentStarBudget > 0)) {
+            mapBindingStar(targetTable, state.stackSourceNode.peek(), state.currentOrdinal);
             return;
         }
         boolean planComplete = context == null && allSourceNamesKnown(sources)
-                && !stackStarPlan.isEmpty() && !stackStarPlan.peek().isEmpty();
+                && !state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty();
         if (useVisiblePlan(sources, using) || planComplete) {
             List<String> declared = currentTargetColumnAliases(targetTable);
-            boolean uncertain = uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal;
-            int position = currentOrdinal;
+            boolean uncertain = state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal;
+            int position = state.currentOrdinal;
             for (StarOutput output : currentStarPlan(sources)) {
                 if (output.sources.isEmpty()) {
                     continue;
@@ -8048,11 +7985,11 @@ public class DmlLineage {
         }
         if (context == null) {
             instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                    sources.get(0).displayName, targetTable, currentOrdinal,
+                    sources.get(0).displayName, targetTable, state.currentOrdinal,
                     sources.get(0).temporary, targetTemporary));
             return;
         }
-        int position = currentOrdinal;
+        int position = state.currentOrdinal;
         for (SourceTable source : sources) {
             instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
                     source.displayName, targetTable, position, source.temporary,
@@ -8069,10 +8006,10 @@ public class DmlLineage {
         String columnName = normalizeIdentifier(rawColumn);
         String columnKey = identifierKey(rawColumn);
 
-        if (context != null && !stackStarPlan.isEmpty() && !stackStarPlan.peek().isEmpty()) {
+        if (context != null && !state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty()) {
             List<StarOutput> matches = new ArrayList<>();
             List<SourceTable> matchedSources = new ArrayList<>();
-            for (StarOutput output : stackStarPlan.peek()) {
+            for (StarOutput output : state.stackStarPlan.peek()) {
                 boolean matched = false;
                 for (StarColumn column : output.sources) {
                     if (column.key != null && column.key.equals(columnKey)) {
@@ -8092,8 +8029,8 @@ public class DmlLineage {
                     // unless the learned metadata proves it cannot.
                     List<SourceTable> unknown = refineWithLearned(
                             unknownColumnSources(sources, matchedSources), rawColumn);
-                    Map<String, List<SourceTable>> participants = stackUsing.isEmpty()
-                            ? null : usingParticipantsByIdentity.get(stackUsing.peek());
+                    Map<String, List<SourceTable>> participants = state.stackUsing.isEmpty()
+                            ? null : state.usingParticipantsByIdentity.get(state.stackUsing.peek());
                     if (participants != null && participants.containsKey(columnKey)) {
                         unknown.removeAll(participants.get(columnKey));
                     }
@@ -8125,12 +8062,12 @@ public class DmlLineage {
             }
         }
 
-        if (context == null && !stackStarPlan.isEmpty()
-                && !stackStarPlan.peek().isEmpty()) {
+        if (context == null && !state.stackStarPlan.isEmpty()
+                && !state.stackStarPlan.peek().isEmpty()) {
             // Ambiguity between fully known outputs is decided by the visible plan even
             // when another joined source is unknown.
             List<StarOutput> definite = new ArrayList<>();
-            for (StarOutput output : stackStarPlan.peek()) {
+            for (StarOutput output : state.stackStarPlan.peek()) {
                 boolean matched = false;
                 for (StarColumn column : output.sources) {
                     if (column.key != null && column.key.equals(columnKey)) {
@@ -8150,14 +8087,14 @@ public class DmlLineage {
             }
         }
 
-        boolean nodeNamesComplete = context == null && !stackSourceNode.isEmpty()
-                && nodeNamesKnown(stackSourceNode.peek());
+        boolean nodeNamesComplete = context == null && !state.stackSourceNode.isEmpty()
+                && nodeNamesKnown(state.stackSourceNode.peek());
         if (context == null && (allSourceNamesKnown(sources) || nodeNamesComplete)
-                && !stackStarPlan.isEmpty() && !stackStarPlan.peek().isEmpty()) {
+                && !state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty()) {
             // The visible JOIN output plan already applies USING merge rules, so it is
             // authoritative once every source names its columns.
             List<StarOutput> matches = new ArrayList<>();
-            for (StarOutput output : stackStarPlan.peek()) {
+            for (StarOutput output : state.stackStarPlan.peek()) {
                 for (StarColumn column : output.sources) {
                     if (column.key != null && column.key.equals(columnKey)) {
                         matches.add(output);
@@ -8186,8 +8123,8 @@ public class DmlLineage {
             throw new ColumnNotFoundException(columnName, displayNames(sources));
         }
 
-        Map<String, List<SourceTable>> using = stackUsing.isEmpty()
-                ? null : stackUsing.peek();
+        Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
+                ? null : state.stackUsing.peek();
         if (using != null && using.containsKey(columnKey)) {
             List<SourceTable> participants = using.get(columnKey);
             List<SourceTable> sides = participantsForCurrentUsing(columnKey);
@@ -8296,11 +8233,11 @@ public class DmlLineage {
     }
 
     private SourceNode joinBinding(SQLExpr owner) {
-        if (owner == null || stackJoinBindings.isEmpty()) {
+        if (owner == null || state.stackJoinBindings.isEmpty()) {
             return null;
         }
         String key = identifierKey(lastSegment(owner.toString()));
-        return key == null ? null : stackJoinBindings.peek().get(key);
+        return key == null ? null : state.stackJoinBindings.peek().get(key);
     }
 
     private boolean isJoinAlias(SQLExpr owner) {
@@ -8321,13 +8258,13 @@ public class DmlLineage {
             return true;
         }
         return source.temporary
-                && Boolean.TRUE.equals(targetWidthKnown.get(source.displayName));
+                && Boolean.TRUE.equals(state.targetWidthKnown.get(source.displayName));
     }
 
     private int derivedWidth(String target, List<String> outputs, boolean widthKnown) {
         int width = outputs.size();
         if (widthKnown) {
-            Integer known = targetMinWidth.get(target);
+            Integer known = state.targetMinWidth.get(target);
             if (known != null && known > 0) {
                 width = Math.max(width, known);
             }
@@ -8341,8 +8278,8 @@ public class DmlLineage {
         }
         int width = source.outputColumns.size();
         if (source.temporary
-                && Boolean.TRUE.equals(targetWidthKnown.get(source.displayName))) {
-            Integer known = targetMinWidth.get(source.displayName);
+                && Boolean.TRUE.equals(state.targetWidthKnown.get(source.displayName))) {
+            Integer known = state.targetMinWidth.get(source.displayName);
             if (known != null && known > 0) {
                 width = Math.max(width, known);
             }
@@ -8495,7 +8432,7 @@ public class DmlLineage {
     }
 
     private String canonicalColumnName(String table, String rawColumn) {
-        if (context == null || tempTables.contains(table)) {
+        if (context == null || state.tempTables.contains(table)) {
             return normalizeIdentifier(rawColumn);
         }
         try {
@@ -8576,17 +8513,17 @@ public class DmlLineage {
         if (source.wildcardContribution && source.temporary) {
             // Reading one named column from a derived table that also carries unknown
             // rows must not cut the table-level lineage.
-            String target = stackTargetTable.peek();
+            String target = state.stackTargetTable.peek();
             Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                    lineageTableName(source), target, currentOrdinal,
-                    source.temporary, tempTables.contains(target));
+                    lineageTableName(source), target, state.currentOrdinal,
+                    source.temporary, state.tempTables.contains(target));
             wildcard.setPositionalWildcard(true);
             wildcard.setWildcardWidthKnown(true);
             wildcard.setWildcardWidth(1);
             instructions.add(wildcard);
-            recordWildcardSpan(target, currentOrdinal, currentOrdinal + 1,
+            recordWildcardSpan(target, state.currentOrdinal, state.currentOrdinal + 1,
                     lineageTableName(source), source.temporary);
-            targetWildcardContribution.put(target, Boolean.TRUE);
+            state.targetWildcardContribution.put(target, Boolean.TRUE);
         }
         if (!source.outputColumns.isEmpty()) {
             String key = identifierKey(columnName);
@@ -8635,29 +8572,29 @@ public class DmlLineage {
             columnName = normalizeIdentifier(columnName);
         }
 
-        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
             // The projection's position cannot be derived from the declaration, so a
             // positional edge would be a guess.
             return;
         }
-        String targetTable = stackTargetTable.peek();
+        String targetTable = state.stackTargetTable.peek();
         instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                 sourceTable + "." + renderIdentifier(columnName),
-                targetTable + "." + stackTargetColumn.peek(), currentOrdinal,
-                sourceTemporary, tempTables.contains(targetTable)));
+                targetTable + "." + state.stackTargetColumn.peek(), state.currentOrdinal,
+                sourceTemporary, state.tempTables.contains(targetTable)));
     }
 
     /** Write an edge for a name that is already the catalog/derived spelling. */
     private void addResolvedColumnMapping(String sourceTable, String columnName,
             boolean sourceTemporary) {
-        if (uncertainOrdinal >= 0 && currentOrdinal == uncertainOrdinal) {
+        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
             return;
         }
-        String targetTable = stackTargetTable.peek();
+        String targetTable = state.stackTargetTable.peek();
         instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
                 sourceTable + "." + renderIdentifier(columnName),
-                targetTable + "." + stackTargetColumn.peek(), currentOrdinal,
-                sourceTemporary, tempTables.contains(targetTable)));
+                targetTable + "." + state.stackTargetColumn.peek(), state.currentOrdinal,
+                sourceTemporary, state.tempTables.contains(targetTable)));
     }
 
     private static String quoteIdentifierValue(String name) {
@@ -8669,15 +8606,15 @@ public class DmlLineage {
     }
 
     private List<SourceTable> currentSources() {
-        return stackSources.isEmpty() ? new ArrayList<SourceTable>() : stackSources.peek();
+        return state.stackSources.isEmpty() ? new ArrayList<SourceTable>() : state.stackSources.peek();
     }
 
     private List<SourceTable> visibleSources() {
         List<SourceTable> sources = currentSources();
-        if (stackHiddenSources.isEmpty() || stackHiddenSources.peek().isEmpty()) {
+        if (state.stackHiddenSources.isEmpty() || state.stackHiddenSources.peek().isEmpty()) {
             return sources;
         }
-        Set<SourceTable> hidden = stackHiddenSources.peek();
+        Set<SourceTable> hidden = state.stackHiddenSources.peek();
         List<SourceTable> visible = new ArrayList<>();
         for (SourceTable source : sources) {
             if (!hidden.contains(source)) {
@@ -9152,22 +9089,22 @@ public class DmlLineage {
             Map<String, List<SourceTable>> using,
             Map<String, SourceNode> bindings, Set<SourceTable> hidden,
             List<StarOutput> plan) {
-        stackSources.push(sources);
-        lateralScopes.push(Boolean.FALSE);
-        stackUsing.push(using);
-        stackStarPlan.push(plan == null ? new ArrayList<StarOutput>()
+        state.stackSources.push(sources);
+        state.lateralScopes.push(Boolean.FALSE);
+        state.stackUsing.push(using);
+        state.stackStarPlan.push(plan == null ? new ArrayList<StarOutput>()
                 : new ArrayList<>(plan));
-        stackHiddenSources.push(new HashSet<>(hidden));
-        stackJoinBindings.push(new HashMap<>(bindings));
+        state.stackHiddenSources.push(new HashSet<>(hidden));
+        state.stackJoinBindings.push(new HashMap<>(bindings));
     }
 
     private void popClauseScope() {
-        stackJoinBindings.pop();
-        stackHiddenSources.pop();
-        stackStarPlan.pop();
-        stackUsing.pop();
-        lateralScopes.pop();
-        stackSources.pop();
+        state.stackJoinBindings.pop();
+        state.stackHiddenSources.pop();
+        state.stackStarPlan.pop();
+        state.stackUsing.pop();
+        state.lateralScopes.pop();
+        state.stackSources.pop();
     }
 
     private void processMerge(SQLMergeStatement merge) {
@@ -9195,8 +9132,8 @@ public class DmlLineage {
         // to both clauses.
         Map<String, SourceNode> usingBindings = new HashMap<>();
         Set<SourceTable> usingHidden = new HashSet<>();
-        stackJoinBindings.push(usingBindings);
-        stackHiddenSources.push(usingHidden);
+        state.stackJoinBindings.push(usingBindings);
+        state.stackHiddenSources.push(usingHidden);
         List<StarOutput> usingPlan = new ArrayList<>();
         try {
             if (merge.getUsing() instanceof SQLTableSource) {
@@ -9206,8 +9143,8 @@ public class DmlLineage {
                 usingPlan.addAll(usingNode.plan);
             }
         } finally {
-            stackHiddenSources.pop();
-            stackJoinBindings.pop();
+            state.stackHiddenSources.pop();
+            state.stackJoinBindings.pop();
         }
         Table targetTableMetadata = null;
         if (context != null) {
@@ -9216,9 +9153,9 @@ public class DmlLineage {
                 targetTableMetadata = location.getTable();
             }
         }
-        stackTargetTable.push(tableName);
-        stackSourceTable.push(tableName);
-        inTargetExpression = true;
+        state.stackTargetTable.push(tableName);
+        state.stackSourceTable.push(tableName);
+        state.inTargetExpression = true;
         try {
             SQLMergeStatement.MergeUpdateClause update = merge.getUpdateClause();
             if (update != null) {
@@ -9228,12 +9165,12 @@ public class DmlLineage {
                 pushClauseScope(scope, using, usingBindings, usingHidden, usingPlan);
                 try {
                     for (SQLUpdateSetItem item : update.getItems()) {
-                        stackTargetColumn.push(renderIdentifier(
+                        state.stackTargetColumn.push(renderIdentifier(
                                 mergeTargetColumn(targetTableMetadata, tableName,
                                         item.getColumn())));
-                        currentOrdinal = -1;
+                        state.currentOrdinal = -1;
                         visitExpr(item.getValue());
-                        stackTargetColumn.pop();
+                        state.stackTargetColumn.pop();
                     }
                 } finally {
                     popClauseScope();
@@ -9263,10 +9200,10 @@ public class DmlLineage {
                         } else {
                             column = targetColumns.get(i);
                         }
-                        stackTargetColumn.push(renderIdentifier(column));
-                        currentOrdinal = -1;
+                        state.stackTargetColumn.push(renderIdentifier(column));
+                        state.currentOrdinal = -1;
                         visitExpr(values.get(i));
-                        stackTargetColumn.pop();
+                        state.stackTargetColumn.pop();
                     }
                 } finally {
                     popClauseScope();
@@ -9274,9 +9211,9 @@ public class DmlLineage {
                 collectTablesFromExpression(insert.getWhere());
             }
         } finally {
-            inTargetExpression = false;
-            stackSourceTable.pop();
-            stackTargetTable.pop();
+            state.inTargetExpression = false;
+            state.stackSourceTable.pop();
+            state.stackTargetTable.pop();
         }
         collectTablesFromExpression(merge.getOn());
     }
@@ -9363,7 +9300,7 @@ public class DmlLineage {
 
         boolean scoped = with != null;
         if (scoped) {
-            cteScopes.push(new HashMap<String, String>());
+            state.cteScopes.push(new HashMap<String, String>());
         }
         try {
             if (with != null) {
@@ -9371,15 +9308,15 @@ public class DmlLineage {
             }
 
             String insertTemp = getTempTableName();
-            stackTargetTable.push(insertTemp);
-            intermediateTargets.add(insertTemp);
+            state.stackTargetTable.push(insertTemp);
+            state.intermediateTargets.add(insertTemp);
 
             if (select != null) {
                 processSelect(select);
             }
 
-            String fromTable = stackTargetTable.peek();
-            boolean fromTemporary = tempTables.contains(fromTable);
+            String fromTable = state.stackTargetTable.peek();
+            boolean fromTemporary = state.tempTables.contains(fromTable);
             List<SQLExpr> columns = insertColumns;
             if (partitionTargets != null) {
                 Instruction insertEdge = new Instruction(OperationType.COLUMNS_INJECT,
@@ -9404,10 +9341,10 @@ public class DmlLineage {
                 instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
                         fromTable, tableName, -1, fromTemporary, false));
             }
-            stackTargetTable.pop();
+            state.stackTargetTable.pop();
         } finally {
             if (scoped) {
-                cteScopes.pop();
+                state.cteScopes.pop();
             }
         }
     }
@@ -9532,8 +9469,8 @@ public class DmlLineage {
         Map<String, List<SourceTable>> using = new LinkedHashMap<>();
         List<SourceTable> sources = new ArrayList<>();
         List<StarOutput> plan = new ArrayList<>();
-        stackJoinBindings.push(new HashMap<String, SourceNode>());
-        stackHiddenSources.push(new HashSet<SourceTable>());
+        state.stackJoinBindings.push(new HashMap<String, SourceNode>());
+        state.stackHiddenSources.push(new HashSet<SourceTable>());
         try {
             if (update.getTableSource() != null) {
                 SourceNode node = buildSourceNode(update.getTableSource(), using);
@@ -9550,34 +9487,34 @@ public class DmlLineage {
             }
 
             String target = sources.get(0).displayName;
-            stackTargetTable.push(target);
-            stackSources.push(sources);
-            lateralScopes.push(Boolean.FALSE);
-            stackUsing.push(using);
-            stackStarPlan.push(plan);
-            stackSourceTable.push(target);
-            inTargetExpression = true;
+            state.stackTargetTable.push(target);
+            state.stackSources.push(sources);
+            state.lateralScopes.push(Boolean.FALSE);
+            state.stackUsing.push(using);
+            state.stackStarPlan.push(plan);
+            state.stackSourceTable.push(target);
+            state.inTargetExpression = true;
             try {
                 for (SQLUpdateSetItem item : update.getItems()) {
                     String targetColumn = canonicalColumnName(target,
                             rawColumnName(item.getColumn()));
-                    stackTargetColumn.push(renderIdentifier(targetColumn));
-                    currentOrdinal = -1;
+                    state.stackTargetColumn.push(renderIdentifier(targetColumn));
+                    state.currentOrdinal = -1;
                     visitExpr(item.getValue());
-                    stackTargetColumn.pop();
+                    state.stackTargetColumn.pop();
                 }
             } finally {
-                inTargetExpression = false;
-                stackSourceTable.pop();
-                stackStarPlan.pop();
-                stackUsing.pop();
-                lateralScopes.pop();
-                stackSources.pop();
-                stackTargetTable.pop();
+                state.inTargetExpression = false;
+                state.stackSourceTable.pop();
+                state.stackStarPlan.pop();
+                state.stackUsing.pop();
+                state.lateralScopes.pop();
+                state.stackSources.pop();
+                state.stackTargetTable.pop();
             }
         } finally {
-            stackHiddenSources.pop();
-            stackJoinBindings.pop();
+            state.stackHiddenSources.pop();
+            state.stackJoinBindings.pop();
         }
         collectTablesFromExpression(update.getWhere());
     }
@@ -9642,7 +9579,7 @@ public class DmlLineage {
         SQLWithSubqueryClause with = select.getWithSubQuery();
         if (with != null) {
             Set<String> local = new HashSet<>();
-            collectCteScopes.push(local);
+            state.collectCteScopes.push(local);
             try {
                 boolean recursive = Boolean.TRUE.equals(with.getRecursive());
                 if (recursive) {
@@ -9660,7 +9597,7 @@ public class DmlLineage {
                 }
                 collectTablesFromQuery(select.getQuery());
             } finally {
-                collectCteScopes.pop();
+                state.collectCteScopes.pop();
             }
             return;
         }
@@ -9668,7 +9605,7 @@ public class DmlLineage {
     }
 
     private boolean collectCteNameVisible(String key) {
-        for (Set<String> frame : collectCteScopes) {
+        for (Set<String> frame : state.collectCteScopes) {
             if (frame.contains(key)) {
                 return true;
             }
@@ -9722,34 +9659,8 @@ public class DmlLineage {
 
     protected void init(boolean allowColumnProcessing) {
         tables = new HashSet<>();
-        tempTables = new HashSet<>();
-        usedTargets = new HashSet<>();
-        cteScopes = new Stack<>();
-        collectCteScopes = new Stack<>();
-        lateralScopes = new Stack<>();
-        targetColumnAliases = new Stack<>();
-        cteDeclaredColumns = new HashMap<>();
-        cteDeclaredKeys = new HashMap<>();
-        targetOutputs = new HashMap<>();
-        targetOutputKeys = new HashMap<>();
-        intermediateTargets = new HashSet<>();
-        unionTargets = new HashSet<>();
-        targetWidthKnown = new HashMap<>();
-        targetNamesKnown = new HashMap<>();
-        targetOutputUnknownGroup = new HashMap<>();
-        targetWildcardContribution = new HashMap<>();
-        targetWildcardSpans = new HashMap<>();
-        targetOutputNameKnown = new HashMap<>();
-        targetMinWidth = new HashMap<>();
-        targetWidthOverride = new HashMap<>();
-        nonAuthoritativeDepth = new HashMap<>();
-        lastQueryBlockWidth = 0;
-        lastQueryBlockWidthKnown = true;
-        lastQueryBlockNamesKnown = true;
-        lastQueryBlockMinWidth = 0;
-        stackStarPlan = new Stack<>();
-        stackSourceNode = new Stack<>();
-        instructions = learningOnly
+        state.reset();
+        instructions = state.learningOnly
                 ? new java.util.AbstractList<Instruction>() {
                     @Override
                     public Instruction get(int index) {
@@ -9771,25 +9682,12 @@ public class DmlLineage {
                     }
                 }
                 : new ArrayList<>();
-        stackSourceTable = new Stack<>();
-        stackTargetTable = new Stack<>();
-        stackTargetColumn = new Stack<>();
-        stackSources = new Stack<>();
-        stackUsing = new Stack<>();
-        stackJoinBindings = new Stack<>();
-        usingParticipantsByIdentity = new IdentityHashMap<>();
-        tableSourceBindings = new IdentityHashMap<>();
-        stackHiddenSources = new Stack<>();
-        inTargetExpression = false;
-        currentOrdinal = -1;
-        uncertainOrdinal = -1;
-        currentStarBudget = -1;
     }
 
     public String getTempTableName() {
-        String name = uniqueTarget(String.format("temp%d", tempTableNum++));
-        if (tempTables != null) {
-            tempTables.add(name);
+        String name = uniqueTarget(String.format("temp%d", state.tempTableNum++));
+        if (state.tempTables != null) {
+            state.tempTables.add(name);
         }
         return name;
     }
@@ -9797,10 +9695,10 @@ public class DmlLineage {
     private String uniqueTarget(String preferred) {
         String candidate = preferred;
         int suffix = 1;
-        while (usedTargets.contains(candidate)) {
+        while (state.usedTargets.contains(candidate)) {
             candidate = preferred + "#" + suffix++;
         }
-        usedTargets.add(candidate);
+        state.usedTargets.add(candidate);
         return candidate;
     }
 
@@ -9848,7 +9746,7 @@ public class DmlLineage {
         return idx >= 0 ? value.substring(idx + 1) : value;
     }
 
-    private static final class SourceTable {
+    public static final class SourceTable {
         private final String displayName;
         private final String writtenName;
         private final String rawName;
@@ -9929,7 +9827,7 @@ public class DmlLineage {
         }
     }
 
-    private static final class StarOutput {
+    public static final class StarOutput {
         private final List<StarColumn> sources;
         private final boolean nameKnown;
         private final boolean stable;
@@ -9975,7 +9873,7 @@ public class DmlLineage {
         }
     }
 
-    private static final class SourceNode {
+    public static final class SourceNode {
         private final List<SourceTable> sources;
         private final List<StarOutput> plan;
         private final boolean knownColumns;

@@ -758,4 +758,229 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         }
     }
 
+    List<SourceTable> resolveUnqualified(String rawColumn) {
+        List<SourceTable> sources = host.currentSources();
+        if (sources.isEmpty()) {
+            return sources;
+        }
+        String columnName = host.normalizeIdentifier(rawColumn);
+        String columnKey = host.identifierKey(rawColumn);
+
+        if (host.analysisContext() != null && !host.state().stackStarPlan.isEmpty() && !host.state().stackStarPlan.peek().isEmpty()) {
+            List<StarOutput> matches = new ArrayList<>();
+            List<SourceTable> matchedSources = new ArrayList<>();
+            for (StarOutput output : host.state().stackStarPlan.peek()) {
+                boolean matched = false;
+                for (StarColumn column : output.sources) {
+                    if (column.key != null && column.key.equals(columnKey)) {
+                        matched = true;
+                        if (!matchedSources.contains(column.source)) {
+                            matchedSources.add(column.source);
+                        }
+                    }
+                }
+                if (matched) {
+                    matches.add(output);
+                }
+            }
+            if (matches.size() == 1) {
+                if (host.detachedMetadata()) {
+                    // A source whose column set is unknown may also own the column,
+                    // unless the learned metadata proves it cannot.
+                    List<SourceTable> unknown = host.refineWithLearned(
+                            host.unknownColumnSources(sources, matchedSources), rawColumn);
+                    Map<String, List<SourceTable>> participants = host.state().stackUsing.isEmpty()
+                            ? null : host.state().usingParticipantsByIdentity.get(host.state().stackUsing.peek());
+                    if (participants != null && participants.containsKey(columnKey)) {
+                        unknown.removeAll(participants.get(columnKey));
+                    }
+                    if (!unknown.isEmpty()) {
+                        throw new AmbiguousColumnException(columnName,
+                                host.displayNames(DmlLineage.allSources(matchedSources, unknown)));
+                    }
+                    List<SourceTable> extras = new ArrayList<>();
+                    List<SourceTable> usingSides = host.participantsForCurrentUsing(columnKey);
+                    for (SourceTable source : sources) {
+                        if (matchedSources.contains(source)
+                                || usingSides.contains(source)
+                                || !host.sourceColumnNamesKnown(source)) {
+                            continue;
+                        }
+                        if (host.ownsOuterColumn(source, columnKey)) {
+                            extras.add(source);
+                        }
+                    }
+                    if (!extras.isEmpty()) {
+                        throw new AmbiguousColumnException(columnName,
+                                host.displayNames(DmlLineage.allSources(matchedSources, extras)));
+                    }
+                }
+                return matchedSources;
+            }
+            if (matches.size() > 1) {
+                throw new AmbiguousColumnException(columnName, host.displayNames(matchedSources));
+            }
+        }
+
+        if (host.analysisContext() == null && !host.state().stackStarPlan.isEmpty()
+                && !host.state().stackStarPlan.peek().isEmpty()) {
+            // Ambiguity between fully known outputs is decided by the visible plan even
+            // when another joined source is unknown.
+            List<StarOutput> definite = new ArrayList<>();
+            for (StarOutput output : host.state().stackStarPlan.peek()) {
+                boolean matched = false;
+                for (StarColumn column : output.sources) {
+                    if (column.key != null && column.key.equals(columnKey)) {
+                        matched = true;
+                    }
+                }
+                if (matched && output.nameKnown) {
+                    definite.add(output);
+                }
+            }
+            if (definite.size() > 1) {
+                List<SourceTable> ambiguous = new ArrayList<>();
+                for (StarOutput output : definite) {
+                    ambiguous.addAll(DmlLineage.starOutputSources(output));
+                }
+                throw new AmbiguousColumnException(columnName, host.displayNames(ambiguous));
+            }
+        }
+
+        boolean nodeNamesComplete = host.analysisContext() == null && !host.state().stackSourceNode.isEmpty()
+                && host.nodeNamesKnown(host.state().stackSourceNode.peek());
+        if (host.analysisContext() == null && (host.allSourceNamesKnown(sources) || nodeNamesComplete)
+                && !host.state().stackStarPlan.isEmpty() && !host.state().stackStarPlan.peek().isEmpty()) {
+            // The visible JOIN output plan already applies USING merge rules, so it is
+            // authoritative once every source names its columns.
+            List<StarOutput> matches = new ArrayList<>();
+            for (StarOutput output : host.state().stackStarPlan.peek()) {
+                for (StarColumn column : output.sources) {
+                    if (column.key != null && column.key.equals(columnKey)) {
+                        matches.add(output);
+                        break;
+                    }
+                }
+            }
+            if (matches.size() == 1) {
+                // Only sources whose column identity is confirmed may become edges.
+                List<SourceTable> resolved = new ArrayList<>();
+                for (StarColumn column : matches.get(0).sources) {
+                    if (column.key != null && column.key.equals(columnKey) && column.nameKnown
+                            && !resolved.contains(column.source)) {
+                        resolved.add(column.source);
+                    }
+                }
+                return resolved;
+            }
+            if (matches.size() > 1) {
+                List<SourceTable> ambiguous = new ArrayList<>();
+                for (StarOutput output : matches) {
+                    ambiguous.addAll(DmlLineage.starOutputSources(output));
+                }
+                throw new AmbiguousColumnException(columnName, host.displayNames(ambiguous));
+            }
+            throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+        }
+
+        Map<String, List<SourceTable>> using = host.state().stackUsing.isEmpty()
+                ? null : host.state().stackUsing.peek();
+        if (using != null && using.containsKey(columnKey)) {
+            List<SourceTable> participants = using.get(columnKey);
+            List<SourceTable> sides = host.participantsForCurrentUsing(columnKey);
+            List<SourceTable> extras = new ArrayList<>();
+            for (SourceTable source : sources) {
+                if (participants.contains(source) || sides.contains(source)) {
+                    continue;
+                }
+                if (host.ownsOuterColumn(source, columnKey)
+                        || !host.sourceColumnNamesKnown(source)) {
+                    extras.add(source);
+                }
+            }
+            if (!extras.isEmpty()) {
+                List<SourceTable> all = new ArrayList<>(participants);
+                all.addAll(extras);
+                throw new AmbiguousColumnException(columnName, host.displayNames(all));
+            }
+            return participants;
+        }
+
+        if (host.analysisContext() == null) {
+            if (host.detachedMetadata()) {
+                // Without metadata the column must be attributable to exactly one source.
+                List<SourceTable> owners = new ArrayList<>();
+                for (SourceTable source : sources) {
+                    if (source.outputNamesKnown) {
+                        if (source.outputKeys.contains(columnKey)) {
+                            owners.add(source);
+                        }
+                    } else if (source.learnable && host.learnedMetadata() != null
+                            && source.rawName != null
+                            && host.learnedMetadata().knowsNormalizedTable(
+                                    host.learnedTableKey(source.rawName))) {
+                        if (host.learnedMetadata().hasNormalizedColumn(
+                                host.learnedTableKey(source.rawName), host.identifierKey(rawColumn))) {
+                            owners.add(source);
+                        }
+                    } else {
+                        owners.add(source);
+                    }
+                }
+                owners = host.refineWithLearned(owners, rawColumn);
+                if (owners.size() == 1) {
+                    return owners;
+                }
+                if (owners.size() > 1) {
+                    throw new AmbiguousColumnException(columnName, host.displayNames(owners));
+                }
+                throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+            }
+            // Without metadata, skip temporary sources whose known output list does not
+            // contain the column; the first unknown source still accepts any column.
+            for (SourceTable source : sources) {
+                if (!source.outputNamesKnown || source.outputKeys.contains(columnKey)) {
+                    List<SourceTable> result = new ArrayList<>();
+                    result.add(source);
+                    return result;
+                }
+            }
+            throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+        }
+
+        List<SourceTable> candidates = new ArrayList<>();
+        boolean hasUnknownSource = false;
+        for (SourceTable source : sources) {
+            if (source.metadataTable != null) {
+                if (MetadataCatalog.resolveColumnName(source.metadataTable, rawColumn,
+                        host.currentDialect()) != null) {
+                    candidates.add(source);
+                }
+            } else if (source.outputNamesKnown) {
+                if (source.outputKeys.contains(columnKey)) {
+                    candidates.add(source);
+                }
+            } else if (host.detachedMetadata()) {
+                // The source has no known column set: it may own the column.
+                candidates.add(source);
+            } else {
+                hasUnknownSource = true;
+            }
+        }
+        if (host.detachedMetadata()) {
+            candidates = host.refineWithLearned(candidates, rawColumn);
+        }
+        if (candidates.size() == 1) {
+            return candidates;
+        }
+        if (candidates.size() > 1) {
+            throw new AmbiguousColumnException(columnName, host.displayNames(candidates));
+        }
+        if (hasUnknownSource) {
+            List<SourceTable> fallback = new ArrayList<>();
+            fallback.add(sources.get(0));
+            return fallback;
+        }
+        throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+    }
 }

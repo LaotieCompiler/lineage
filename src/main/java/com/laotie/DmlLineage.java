@@ -2019,229 +2019,7 @@ public class DmlLineage {
 
 
     List<SourceTable> resolveUnqualified(String rawColumn) {
-        List<SourceTable> sources = currentSources();
-        if (sources.isEmpty()) {
-            return sources;
-        }
-        String columnName = normalizeIdentifier(rawColumn);
-        String columnKey = identifierKey(rawColumn);
-
-        if (context != null && !state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty()) {
-            List<StarOutput> matches = new ArrayList<>();
-            List<SourceTable> matchedSources = new ArrayList<>();
-            for (StarOutput output : state.stackStarPlan.peek()) {
-                boolean matched = false;
-                for (StarColumn column : output.sources) {
-                    if (column.key != null && column.key.equals(columnKey)) {
-                        matched = true;
-                        if (!matchedSources.contains(column.source)) {
-                            matchedSources.add(column.source);
-                        }
-                    }
-                }
-                if (matched) {
-                    matches.add(output);
-                }
-            }
-            if (matches.size() == 1) {
-                if (detachedMetadata()) {
-                    // A source whose column set is unknown may also own the column,
-                    // unless the learned metadata proves it cannot.
-                    List<SourceTable> unknown = refineWithLearned(
-                            unknownColumnSources(sources, matchedSources), rawColumn);
-                    Map<String, List<SourceTable>> participants = state.stackUsing.isEmpty()
-                            ? null : state.usingParticipantsByIdentity.get(state.stackUsing.peek());
-                    if (participants != null && participants.containsKey(columnKey)) {
-                        unknown.removeAll(participants.get(columnKey));
-                    }
-                    if (!unknown.isEmpty()) {
-                        throw new AmbiguousColumnException(columnName,
-                                displayNames(allSources(matchedSources, unknown)));
-                    }
-                    List<SourceTable> extras = new ArrayList<>();
-                    List<SourceTable> usingSides = participantsForCurrentUsing(columnKey);
-                    for (SourceTable source : sources) {
-                        if (matchedSources.contains(source)
-                                || usingSides.contains(source)
-                                || !sourceColumnNamesKnown(source)) {
-                            continue;
-                        }
-                        if (ownsOuterColumn(source, columnKey)) {
-                            extras.add(source);
-                        }
-                    }
-                    if (!extras.isEmpty()) {
-                        throw new AmbiguousColumnException(columnName,
-                                displayNames(allSources(matchedSources, extras)));
-                    }
-                }
-                return matchedSources;
-            }
-            if (matches.size() > 1) {
-                throw new AmbiguousColumnException(columnName, displayNames(matchedSources));
-            }
-        }
-
-        if (context == null && !state.stackStarPlan.isEmpty()
-                && !state.stackStarPlan.peek().isEmpty()) {
-            // Ambiguity between fully known outputs is decided by the visible plan even
-            // when another joined source is unknown.
-            List<StarOutput> definite = new ArrayList<>();
-            for (StarOutput output : state.stackStarPlan.peek()) {
-                boolean matched = false;
-                for (StarColumn column : output.sources) {
-                    if (column.key != null && column.key.equals(columnKey)) {
-                        matched = true;
-                    }
-                }
-                if (matched && output.nameKnown) {
-                    definite.add(output);
-                }
-            }
-            if (definite.size() > 1) {
-                List<SourceTable> ambiguous = new ArrayList<>();
-                for (StarOutput output : definite) {
-                    ambiguous.addAll(starOutputSources(output));
-                }
-                throw new AmbiguousColumnException(columnName, displayNames(ambiguous));
-            }
-        }
-
-        boolean nodeNamesComplete = context == null && !state.stackSourceNode.isEmpty()
-                && nodeNamesKnown(state.stackSourceNode.peek());
-        if (context == null && (allSourceNamesKnown(sources) || nodeNamesComplete)
-                && !state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty()) {
-            // The visible JOIN output plan already applies USING merge rules, so it is
-            // authoritative once every source names its columns.
-            List<StarOutput> matches = new ArrayList<>();
-            for (StarOutput output : state.stackStarPlan.peek()) {
-                for (StarColumn column : output.sources) {
-                    if (column.key != null && column.key.equals(columnKey)) {
-                        matches.add(output);
-                        break;
-                    }
-                }
-            }
-            if (matches.size() == 1) {
-                // Only sources whose column identity is confirmed may become edges.
-                List<SourceTable> resolved = new ArrayList<>();
-                for (StarColumn column : matches.get(0).sources) {
-                    if (column.key != null && column.key.equals(columnKey) && column.nameKnown
-                            && !resolved.contains(column.source)) {
-                        resolved.add(column.source);
-                    }
-                }
-                return resolved;
-            }
-            if (matches.size() > 1) {
-                List<SourceTable> ambiguous = new ArrayList<>();
-                for (StarOutput output : matches) {
-                    ambiguous.addAll(starOutputSources(output));
-                }
-                throw new AmbiguousColumnException(columnName, displayNames(ambiguous));
-            }
-            throw new ColumnNotFoundException(columnName, displayNames(sources));
-        }
-
-        Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
-                ? null : state.stackUsing.peek();
-        if (using != null && using.containsKey(columnKey)) {
-            List<SourceTable> participants = using.get(columnKey);
-            List<SourceTable> sides = participantsForCurrentUsing(columnKey);
-            List<SourceTable> extras = new ArrayList<>();
-            for (SourceTable source : sources) {
-                if (participants.contains(source) || sides.contains(source)) {
-                    continue;
-                }
-                if (ownsOuterColumn(source, columnKey)
-                        || !sourceColumnNamesKnown(source)) {
-                    extras.add(source);
-                }
-            }
-            if (!extras.isEmpty()) {
-                List<SourceTable> all = new ArrayList<>(participants);
-                all.addAll(extras);
-                throw new AmbiguousColumnException(columnName, displayNames(all));
-            }
-            return participants;
-        }
-
-        if (context == null) {
-            if (detachedMetadata()) {
-                // Without metadata the column must be attributable to exactly one source.
-                List<SourceTable> owners = new ArrayList<>();
-                for (SourceTable source : sources) {
-                    if (source.outputNamesKnown) {
-                        if (source.outputKeys.contains(columnKey)) {
-                            owners.add(source);
-                        }
-                    } else if (source.learnable && learnedMetadata != null
-                            && source.rawName != null
-                            && learnedMetadata.knowsNormalizedTable(
-                                    learnedTableKey(source.rawName))) {
-                        if (learnedMetadata.hasNormalizedColumn(
-                                learnedTableKey(source.rawName), identifierKey(rawColumn))) {
-                            owners.add(source);
-                        }
-                    } else {
-                        owners.add(source);
-                    }
-                }
-                owners = refineWithLearned(owners, rawColumn);
-                if (owners.size() == 1) {
-                    return owners;
-                }
-                if (owners.size() > 1) {
-                    throw new AmbiguousColumnException(columnName, displayNames(owners));
-                }
-                throw new ColumnNotFoundException(columnName, displayNames(sources));
-            }
-            // Without metadata, skip temporary sources whose known output list does not
-            // contain the column; the first unknown source still accepts any column.
-            for (SourceTable source : sources) {
-                if (!source.outputNamesKnown || source.outputKeys.contains(columnKey)) {
-                    List<SourceTable> result = new ArrayList<>();
-                    result.add(source);
-                    return result;
-                }
-            }
-            throw new ColumnNotFoundException(columnName, displayNames(sources));
-        }
-
-        List<SourceTable> candidates = new ArrayList<>();
-        boolean hasUnknownSource = false;
-        for (SourceTable source : sources) {
-            if (source.metadataTable != null) {
-                if (MetadataCatalog.resolveColumnName(source.metadataTable, rawColumn,
-                        currentDialect()) != null) {
-                    candidates.add(source);
-                }
-            } else if (source.outputNamesKnown) {
-                if (source.outputKeys.contains(columnKey)) {
-                    candidates.add(source);
-                }
-            } else if (detachedMetadata()) {
-                // The source has no known column set: it may own the column.
-                candidates.add(source);
-            } else {
-                hasUnknownSource = true;
-            }
-        }
-        if (detachedMetadata()) {
-            candidates = refineWithLearned(candidates, rawColumn);
-        }
-        if (candidates.size() == 1) {
-            return candidates;
-        }
-        if (candidates.size() > 1) {
-            throw new AmbiguousColumnException(columnName, displayNames(candidates));
-        }
-        if (hasUnknownSource) {
-            List<SourceTable> fallback = new ArrayList<>();
-            fallback.add(sources.get(0));
-            return fallback;
-        }
-        throw new ColumnNotFoundException(columnName, displayNames(sources));
+        return expression.resolveUnqualified(rawColumn);
     }
 
     boolean useVisiblePlan(List<SourceTable> sources,
@@ -2314,7 +2092,7 @@ public class DmlLineage {
      * Drop sources that the learned metadata proves cannot own the column. Known catalog
      * sources and unknown sources are kept.
      */
-    private List<SourceTable> refineWithLearned(List<SourceTable> candidates,
+    List<SourceTable> refineWithLearned(List<SourceTable> candidates,
             String rawColumn) {
         if (learnedMetadata == null) {
             return candidates;
@@ -2338,7 +2116,7 @@ public class DmlLineage {
     /**
      * The sources whose column set is unknown, so that they may own any column.
      */
-    private List<SourceTable> unknownColumnSources(List<SourceTable> sources,
+    List<SourceTable> unknownColumnSources(List<SourceTable> sources,
             List<SourceTable> excluded) {
         List<SourceTable> unknown = new ArrayList<>();
         for (SourceTable source : sources) {
@@ -2350,7 +2128,7 @@ public class DmlLineage {
         return unknown;
     }
 
-    private static List<SourceTable> allSources(List<SourceTable> first,
+    static List<SourceTable> allSources(List<SourceTable> first,
             List<SourceTable> second) {
         List<SourceTable> all = new ArrayList<>();
         all.addAll(first);

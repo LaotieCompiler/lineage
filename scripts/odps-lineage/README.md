@@ -78,14 +78,38 @@ SQL 目录按依赖顺序扫描：先出现语句里观察到的字段会用于�
 | 文件 | 内容 |
 | --- | --- |
 | `statements.csv` | 每语句状态、错误、读写表、`declared_target`、SQL 预览 |
-| `column_edges.csv` | 解析器产生的原始指令（含临时表） |
-| `column_lineage.csv` | 端到端字段血缘：目标字段 ← 最终物理源字段 |
+| `column_edges.csv` | 解析器产生的原始指令（含临时表），带 `relation` / `function` / `operator` / `expression` |
+| `column_lineage.csv` | 端到端字段血缘：目标字段 ← 最终物理源字段，带压缩后的 `relation`、完整 `relation_path`、目标写入表达式和 `truncated` 标记 |
 | `table_dependencies.csv` | 直接表依赖：穿过临时表后停在第一个物理表 |
 | `table_lineage.csv` | 端到端字段边的表级聚合 |
 | `schema_repairs.csv` | 为对齐 SQL 引用而补齐的字段 |
 | `missing_tables.csv` | 扫描中遇到的未编目表 |
 | `run-info.txt` | 本次运行的输入路径、方言、开关、统计和生成时间 |
 | `lineage-report.html` | 自动渲染的可视化报告（`--no-render` 时不生成） |
+
+### 字段关系类型
+
+`relation` 说明源字段如何进入目标字段：
+
+| 值 | 含义 |
+| --- | --- |
+| `COLUMN_COPY` | 直接字段拷贝，或 `SELECT *` 展开 |
+| `EXPRESSION` | 参与算术/比较/布尔表达式，`operator` 给出最近的运算符 |
+| `FUNCTION` | 作为标量函数的参数，`function` 给出最近的函数名 |
+| `AGGREGATE` | 作为聚合函数的参数，例如 `SUM`、`COUNT` |
+| `CAST` | 显式类型转换 |
+| `CASE` | 位于 `CASE WHEN` 分支 |
+| `SUBQUERY` | 来自标量子查询 |
+| `WILDCARD` | 表级/位置通配符注入 |
+| `CONSTANT` | 没有源字段的字面量表达式 |
+
+`column_lineage.csv` 的 `relation` 是压缩后的端到端关系链：去掉纯拷贝和重复的通配符
+跳，只保留真正改变值的关系；每一跳形如 `FUNCTION(UPPER)` 或 `EXPRESSION(+)`，括号内
+是最接近的函数名或运算符。`relation_path` 保留每一跳。同一源字段存在多条推导路径时
+（例如 UNION 两个分支一个拷贝、一个计算，或 `UPPER` 与 `LOWER` 两个分支），不同路径
+用 `;` 分隔，关系不会互相覆盖。函数名或运算符中的 `;`、括号、`>`、`%` 等字符会做
+百分号转义（如 `FUNCTION(f%3Bg)`），避免破坏路径格式。路径超过 1024 跳时保留目标侧
+的跳并置 `truncated=true`，HTML 报告显示“路径截断”，避免把不完整的计算链误读为纯拷贝。
 
 ## ODPS 预处理
 

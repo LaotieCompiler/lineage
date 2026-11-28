@@ -14,6 +14,7 @@ import com.alibaba.druid.sql.ast.*;
 import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
 
+import com.laotie.analysis.RelationClassifier;
 import com.laotie.analysis.model.ScalarSubquery;
 import com.laotie.analysis.model.SourceNode;
 import com.laotie.analysis.model.StarOutput;
@@ -24,6 +25,7 @@ import com.laotie.identifier.Identifiers;
 import com.laotie.parse.ScriptSplitter;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
+import com.laotie.model.RelationType;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.Table;
@@ -407,6 +409,12 @@ final class DmlStatementAnalyzer {
      */
     void recordValueScalarMappings(SQLExpr value, String tableName,
             String column) {
+        recordValueScalarMappings(value, tableName, column,
+                RelationClassifier.compact(value == null ? null : value.toString()));
+    }
+
+    private void recordValueScalarMappings(SQLExpr value, String tableName,
+            String column, String expression) {
         if (value == null) {
             return;
         }
@@ -419,63 +427,71 @@ final class DmlStatementAnalyzer {
                 host.recordScalarTableLevel(inner, tableName, -1, column);
                 return;
             }
-            host.instructions().add(new Instruction(OperationType.COLUMN_MAPPING,
+            Instruction edge = new Instruction(OperationType.COLUMN_MAPPING,
                     inner.references.get(0),
-                    tableName + "." + column, -1, true, false));
+                    tableName + "." + column, -1, true, false);
+            edge.setRelation(RelationType.SUBQUERY);
+            edge.setExpression(expression);
+            host.instructions().add(edge);
             return;
         }
         if (value instanceof SQLBinaryOpExpr) {
             SQLBinaryOpExpr binary = (SQLBinaryOpExpr) value;
-            recordValueScalarMappings(binary.getLeft(), tableName, column);
-            recordValueScalarMappings(binary.getRight(), tableName, column);
+            recordValueScalarMappings(binary.getLeft(), tableName, column, expression);
+            recordValueScalarMappings(binary.getRight(), tableName, column, expression);
         } else if (value instanceof SQLMethodInvokeExpr) {
             for (SQLExpr argument : ((SQLMethodInvokeExpr) value).getArguments()) {
-                recordValueScalarMappings(argument, tableName, column);
+                recordValueScalarMappings(argument, tableName, column, expression);
             }
         } else if (value instanceof SQLCastExpr) {
             recordValueScalarMappings(((SQLCastExpr) value).getExpr(), tableName,
-                    column);
+                    column, expression);
         } else if (value instanceof SQLNotExpr) {
             recordValueScalarMappings(((SQLNotExpr) value).getExpr(), tableName,
-                    column);
+                    column, expression);
         } else if (value instanceof SQLUnaryExpr) {
             recordValueScalarMappings(((SQLUnaryExpr) value).getExpr(), tableName,
-                    column);
+                    column, expression);
         } else if (value instanceof SQLBetweenExpr) {
             SQLBetweenExpr between = (SQLBetweenExpr) value;
-            recordValueScalarMappings(between.getTestExpr(), tableName, column);
-            recordValueScalarMappings(between.getBeginExpr(), tableName, column);
-            recordValueScalarMappings(between.getEndExpr(), tableName, column);
+            recordValueScalarMappings(between.getTestExpr(), tableName, column,
+                    expression);
+            recordValueScalarMappings(between.getBeginExpr(), tableName, column,
+                    expression);
+            recordValueScalarMappings(between.getEndExpr(), tableName, column,
+                    expression);
         } else if (value instanceof SQLCaseExpr) {
             SQLCaseExpr caseExpr = (SQLCaseExpr) value;
-            recordValueScalarMappings(caseExpr.getValueExpr(), tableName, column);
+            recordValueScalarMappings(caseExpr.getValueExpr(), tableName, column,
+                    expression);
             if (caseExpr.getItems() != null) {
                 for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
                     recordValueScalarMappings(caseItem.getConditionExpr(), tableName,
-                            column);
+                            column, expression);
                     recordValueScalarMappings(caseItem.getValueExpr(), tableName,
-                            column);
+                            column, expression);
                 }
             }
-            recordValueScalarMappings(caseExpr.getElseExpr(), tableName, column);
+            recordValueScalarMappings(caseExpr.getElseExpr(), tableName, column,
+                    expression);
         } else if (value instanceof SQLListExpr) {
             for (SQLExpr element : ((SQLListExpr) value).getItems()) {
-                recordValueScalarMappings(element, tableName, column);
+                recordValueScalarMappings(element, tableName, column, expression);
             }
         } else if (value instanceof SQLInListExpr) {
             SQLInListExpr in = (SQLInListExpr) value;
-            recordValueScalarMappings(in.getExpr(), tableName, column);
+            recordValueScalarMappings(in.getExpr(), tableName, column, expression);
             if (in.getTargetList() != null) {
                 for (SQLExpr element : in.getTargetList()) {
-                    recordValueScalarMappings(element, tableName, column);
+                    recordValueScalarMappings(element, tableName, column, expression);
                 }
             }
         } else if (value instanceof SQLInSubQueryExpr) {
             recordValueScalarMappings(((SQLInSubQueryExpr) value).getExpr(), tableName,
-                    column);
+                    column, expression);
         } else if (value instanceof SQLExtractExpr) {
             recordValueScalarMappings(((SQLExtractExpr) value).getValue(), tableName,
-                    column);
+                    column, expression);
         }
     }
 

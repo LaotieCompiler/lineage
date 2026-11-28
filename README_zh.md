@@ -56,7 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 922 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
+当前为 940 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
 
 Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 `JdbcMetadataScannerDockerTest`：
@@ -139,6 +139,20 @@ ADS/BI 分层，并用相邻节点的重心排序减少连线交叉，最后以 
 的直接依赖，点击可查看上下游表和写入字段，滚轮缩放、拖拽平移。字段级表展示端到端
 闭包（目标字段 ← 最终物理源字段），图展示直接表依赖，因此中间的 DWD/DWS 表仍然可见。
 由失败语句写入的目标表以红色虚线边框标出。
+
+字段级边还带有更细的**关系类型**，用来区分字段拷贝、表达式计算、函数计算、聚合等：
+
+- `column_edges.csv` 记录每一条直接边：`relation`（`COLUMN_COPY` / `EXPRESSION` /
+  `FUNCTION` / `AGGREGATE` / `CAST` / `CASE` / `SUBQUERY` / `WILDCARD` / `CONSTANT`）、
+  `function`（最近的函数名）、`operator`（最近的运算符）和原始 `expression`；
+- `column_lineage.csv` 的端到端行给出压缩后的 `relation`（例如
+  `FUNCTION(UPPER)>AGGREGATE(SUM)`）、完整 `relation_path`，以及沿途的函数、运算符和
+  表达式；同一源字段有多条推导路径时用 `;` 分隔，计算分支不会被拷贝分支掩盖；
+- HTML 报告的“说明”列用中文标签展示关系链，悬停可查看完整路径与表达式。
+
+同一列在表达式中可能同时属于多层计算；分析器记录离该列最近的一层（例如
+`SUM(UPPER(a))` 中 `a` 的关系是 `FUNCTION`，函数名为 `UPPER`），完整表达式仍保留在
+`expression` 中。
 
 Node 只在生成 HTML 时需要。扫描本身不依赖 Node；`--no-render` 可以完全跳过渲染，
 之后再用以下命令补生成报告：

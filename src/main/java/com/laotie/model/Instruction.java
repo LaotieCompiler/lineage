@@ -36,6 +36,30 @@ public class Instruction {
     String to;
 
     /**
+     * How {@link #from} feeds {@link #to}. Defaults to a coarse value derived from
+     * {@link #operation} and is refined by the analyzer for real expressions.
+     */
+    RelationType relation = RelationType.NONE;
+
+    /**
+     * The full source expression this edge belongs to, for example
+     * {@code concat(a, '-', b)}. Null when the edge does not come from a projection.
+     */
+    String expression;
+
+    /**
+     * The nearest enclosing function name for a {@link RelationType#FUNCTION} or
+     * {@link RelationType#AGGREGATE} edge, for example {@code UPPER}.
+     */
+    String functionName;
+
+    /**
+     * The nearest enclosing operator for an {@link RelationType#EXPRESSION} edge,
+     * for example {@code +}, {@code =} or {@code BETWEEN}.
+     */
+    String operator;
+
+    /**
      * Zero-based start position of this projection in the query's output. -1 when not a
      * projection (for example table mappings or update assignments).
      */
@@ -83,6 +107,7 @@ public class Instruction {
         this.operation = operation;
         this.from = from;
         this.to = to;
+        this.relation = defaultRelation(operation);
     }
 
     public Instruction(OperationType operation, String from, String to, int ordinal) {
@@ -90,6 +115,7 @@ public class Instruction {
         this.from = from;
         this.to = to;
         this.ordinal = ordinal;
+        this.relation = defaultRelation(operation);
     }
 
     public Instruction(OperationType operation, String from, String to, int ordinal,
@@ -100,6 +126,37 @@ public class Instruction {
         this.ordinal = ordinal;
         this.fromTemporary = fromTemporary;
         this.toTemporary = toTemporary;
+        this.relation = defaultRelation(operation);
+    }
+
+    /**
+     * The relation implied by the instruction kind when the analyzer has not refined
+     * it yet.
+     */
+    private static RelationType defaultRelation(OperationType operation) {
+        if (operation == null) {
+            return RelationType.NONE;
+        }
+        switch (operation) {
+            case COLUMN_MAPPING:
+                return RelationType.COLUMN_COPY;
+            case EXPR_MAPPING:
+                return RelationType.CONSTANT;
+            case COLUMNS_INJECT:
+                return RelationType.WILDCARD;
+            default:
+                return RelationType.NONE;
+        }
+    }
+
+    /**
+     * Carry the relation detail of this instruction over to a rewritten copy.
+     */
+    void copyRelationTo(Instruction copy) {
+        copy.setRelation(relation);
+        copy.setExpression(expression);
+        copy.setFunctionName(functionName);
+        copy.setOperator(operator);
     }
 
     @Override
@@ -187,9 +244,11 @@ public class Instruction {
             return instruction;
         }
         String positional = "col" + (instruction.getOrdinal() + 1);
-        return new Instruction(instruction.getOperation(), instruction.getFrom(),
-                table + "." + positional, instruction.getOrdinal(),
-                instruction.isFromTemporary(), true);
+        Instruction rewritten = new Instruction(instruction.getOperation(),
+                instruction.getFrom(), table + "." + positional,
+                instruction.getOrdinal(), instruction.isFromTemporary(), true);
+        instruction.copyRelationTo(rewritten);
+        return rewritten;
     }
 
     private static void expandColumnsInject(Instruction instruction, MetadataContext context,
@@ -212,6 +271,7 @@ public class Instruction {
             kept.setWildcardWidthKnown(instruction.isWildcardWidthKnown());
             kept.setWildcardWidth(instruction.getWildcardWidth());
             kept.setPositionalWildcard(instruction.isPositionalWildcard());
+            instruction.copyRelationTo(kept);
             result.add(kept);
             if (instruction.isToTemporary()) {
                 int at = Math.max(instruction.getOrdinal(), 0);
@@ -309,9 +369,11 @@ public class Instruction {
             if (!namesComplete) {
                 // The projection's target names are not all known: keep the wildcard
                 // rather than inventing positional names.
-                result.add(new Instruction(OperationType.COLUMNS_INJECT, fromTable,
+                Instruction kept = new Instruction(OperationType.COLUMNS_INJECT, fromTable,
                         targetTable, instruction.getOrdinal(),
-                        instruction.isFromTemporary(), instruction.isToTemporary()));
+                        instruction.isFromTemporary(), instruction.isToTemporary());
+                instruction.copyRelationTo(kept);
+                result.add(kept);
                 markUnknownTempColumn(tempColumns, targetTable, instruction.getOrdinal());
                 tempUnknown.computeIfAbsent(targetTable,
                         key -> new HashSet<Integer>()).add(Math.max(start, 0));
@@ -388,10 +450,17 @@ public class Instruction {
                 // unknown, so a column-level edge would be a guess.
                 continue;
             }
-            result.add(new Instruction(OperationType.COLUMN_MAPPING,
+            Instruction mapping = new Instruction(OperationType.COLUMN_MAPPING,
                     fromTable + "." + renderIdentifier(from.getColumnName()),
                     targetTable + "." + renderIdentifier(targets.get(i)), -1,
-                    instruction.isFromTemporary(), instruction.isToTemporary()));
+                    instruction.isFromTemporary(), instruction.isToTemporary());
+            if (instruction.getRelation() == RelationType.SUBQUERY) {
+                // A table-level claim of a scalar subquery stays SUBQUERY when it is
+                // narrowed to individual columns.
+                mapping.setRelation(RelationType.SUBQUERY);
+                mapping.setExpression(instruction.getExpression());
+            }
+            result.add(mapping);
         }
     }
 
@@ -468,6 +537,7 @@ public class Instruction {
         edge.setPopulatedColumns(instruction.getPopulatedColumns());
         edge.setWildcardWidthKnown(instruction.isWildcardWidthKnown());
         edge.setWildcardWidth(instruction.getWildcardWidth());
+        instruction.copyRelationTo(edge);
         result.add(edge);
         if (instruction.isToTemporary()) {
             int at = Math.max(instruction.getOrdinal(), 0);

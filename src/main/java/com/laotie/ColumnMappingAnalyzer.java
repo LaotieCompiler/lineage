@@ -5,6 +5,7 @@ import java.util.Locale;
 import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.expr.SQLTextLiteralExpr;
+import com.laotie.analysis.RelationClassifier;
 import com.laotie.analysis.model.SourceTable;
 import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
@@ -185,9 +186,11 @@ final class ColumnMappingAnalyzer {
             return;
         }
         String targetTable = host.state().stackTargetTable.peek();
-        host.instructions().add(new Instruction(OperationType.COLUMN_MAPPING,
+        Instruction instruction = new Instruction(OperationType.COLUMN_MAPPING,
                 sourceTable + "." + DmlLineage.renderIdentifier(columnName),
                 targetTable + "." + host.state().stackTargetColumn.peek(), host.state().currentOrdinal,
-                sourceTemporary, host.state().tempTables.contains(targetTable)));
+                sourceTemporary, host.state().tempTables.contains(targetTable));
+        RelationClassifier.applyContext(instruction, host.state());
+        host.instructions().add(instruction);
     }
 }

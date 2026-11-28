@@ -23,7 +23,7 @@ open target/odps-lineage/lineage-report.html
 | 文件 | 必需 | 说明 |
 | --- | --- | --- |
 | `statements.csv` | 是 | 每条语句的状态、错误、目标表/源表、SQL 预览 |
-| `column_lineage.csv` | 是 | 端到端字段血缘：目标表/字段 ← 最终物理源表/字段 |
+| `column_lineage.csv` | 是 | 端到端字段血缘：目标表/字段 ← 最终物理源表/字段；可带 `relation`、`relation_path`、`function`、`operator`、`expression` |
 | `table_lineage.csv` | 是 | 端到端表级聚合；`table_dependencies.csv` 缺失时作为图数据回退 |
 | `table_dependencies.csv` | 否 | 直接表依赖（穿过临时表后停在第一个物理表），用于表级图 |
 | `schema_repairs.csv` | 否 | 分析时为对齐 SQL 引用而补齐的字段 |
@@ -70,7 +70,8 @@ open target/odps-lineage/lineage-report.html
 - **表级血缘图**：按 ODS/DIM → DWD → DWS → ADS/BI 分层，barycenter 排序减少交叉；
   支持搜索、缩放、平移、悬停高亮、点击查看上下游和写入字段。
 - **fan-in / fan-out**：直接上游最多、下游影响最广的 10 张表。
-- **字段级血缘**：440 条端到端字段边，可按表名/字段名搜索、按目标表筛选。
+- **字段级血缘**：端到端字段边，可按表名/字段名/关系类型搜索、按目标表筛选；“说明”列
+  用中文标签展示关系链（字段拷贝、表达式、函数、聚合等），悬停查看完整路径和表达式。
 - **语句执行情况**：成功/失败筛选，失败原因直接展示。
 - **Schema 修补**、**方法与限制**：说明口径和未解析的 ODPS 构造。
 

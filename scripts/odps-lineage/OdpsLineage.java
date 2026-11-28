@@ -4,7 +4,10 @@ import com.laotie.LineageScanner;
 import com.laotie.model.Instruction;
 import com.laotie.model.LineageGraph;
 import com.laotie.model.LineageResult;
+import com.laotie.model.RelationHop;
+import com.laotie.model.RelationType;
 import com.laotie.model.ScanResult;
+import com.laotie.identifier.Identifiers;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
@@ -671,34 +674,317 @@ public class OdpsLineage {
 
     static void writeColumnEdges(Path p, List<Stmt> stmts) throws Exception {
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(p, StandardCharsets.UTF_8))) {
-            w.println("file,statement,operation,source,target,ordinal,source_temporary,target_temporary");
+            w.println("file,statement,operation,source,target,ordinal,source_temporary,target_temporary,"
+                    + "relation,function,operator,expression");
             for (Stmt s : stmts) {
                 for (Instruction i : expanded(s)) {
                     w.println(csv(s.file) + "," + s.index + "," + i.getOperation() + ","
                             + csv(i.getFrom()) + "," + csv(i.getTo()) + "," + i.getOrdinal() + ","
-                            + i.isFromTemporary() + "," + i.isToTemporary());
+                            + i.isFromTemporary() + "," + i.isToTemporary() + ","
+                            + csv(relationOf(i)) + "," + csv(i.getFunctionName()) + ","
+                            + csv(i.getOperator()) + "," + csv(shorten(i.getExpression())));
                 }
             }
         }
     }
 
+    static String relationOf(Instruction i) {
+        return i.getRelation() == null ? "" : i.getRelation().name();
+    }
+
+    /**
+     * One hop as {@code RELATION} or {@code RELATION(detail)}, so two paths that share
+     * a relation kind but use different functions/operators stay distinguishable.
+     */
+    static String relationHop(RelationHop hop) {
+        String relation = hop.getRelation().name();
+        String detail = hop.getFunctionName() != null
+                ? hop.getFunctionName() : hop.getOperator();
+        if (detail == null || detail.isEmpty()
+                || detail.equalsIgnoreCase(relation)) {
+            return relation;
+        }
+        return relation + "(" + escapeDetail(detail) + ")";
+    }
+
+    /**
+     * Keep the hop format unambiguous when a quoted function name contains a
+     * separator, parenthesis or percent sign.
+     */
+    static String escapeDetail(String detail) {
+        StringBuilder out = new StringBuilder(detail.length());
+        for (int i = 0; i < detail.length(); i++) {
+            char ch = detail.charAt(i);
+            if (ch == '%' || ch == '(' || ch == ')' || ch == ';' || ch == '>'
+                    || ch == '\\' || ch == '\n' || ch == '\r') {
+                out.append('%');
+                String hex = Integer.toHexString(ch).toUpperCase();
+                if (hex.length() < 2) out.append('0');
+                out.append(hex);
+            } else {
+                out.append(ch);
+            }
+        }
+        return out.toString();
+    }
+
+    static final int MAX_RELATION_PATH_CHARS = 512;
+    static final int MAX_JOIN_CHARS = 512;
+
+    /** A capped string plus whether this specific value was shortened. */
+    static final class Capped {
+        final String text;
+        final boolean truncated;
+
+        Capped(String text, boolean truncated) {
+            this.text = text;
+            this.truncated = truncated;
+        }
+    }
+
+    static Capped relationPath(List<RelationHop> path) {
+        if (path == null || path.isEmpty()) return new Capped("", false);
+        StringBuilder out = new StringBuilder();
+        boolean truncated = false;
+        for (RelationHop hop : path) {
+            String token = relationHop(hop);
+            if (out.length() == 0) {
+                if (token.length() > MAX_RELATION_PATH_CHARS) {
+                    out.append(safeToken(token, MAX_RELATION_PATH_CHARS));
+                    truncated = true;
+                    break;
+                }
+                out.append(token);
+            } else if (out.length() + token.length() + 1 > MAX_RELATION_PATH_CHARS) {
+                if (out.length() + 2 <= MAX_RELATION_PATH_CHARS) {
+                    out.append(">…");
+                }
+                // With only one character left there is no room for a separator plus
+                // an ellipsis; keep the complete prefix and rely on truncated=true.
+                truncated = true;
+                break;
+            } else {
+                out.append('>').append(token);
+            }
+        }
+        return new Capped(out.toString(), truncated);
+    }
+
+    /**
+     * A compact relation chain that drops plain copies and repeated wildcard hops,
+     * so the report shows the transformations that actually change the value.
+     */
+    static Capped relationSummary(List<RelationHop> path) {
+        if (path == null || path.isEmpty()) return new Capped("", false);
+        Set<String> notable = new LinkedHashSet<>();
+        for (RelationHop hop : path) {
+            RelationType relation = hop.getRelation();
+            if (relation == RelationType.NONE || relation == RelationType.COLUMN_COPY) {
+                continue;
+            }
+            notable.add(relationHop(hop));
+        }
+        if (notable.isEmpty()) {
+            return new Capped(RelationType.COLUMN_COPY.name(), false);
+        }
+        if (notable.size() > 1) {
+            notable.removeIf(hop -> hop.startsWith(RelationType.WILDCARD.name()));
+        }
+        if (notable.isEmpty()) {
+            return new Capped(RelationType.WILDCARD.name(), false);
+        }
+        return joinSummary(notable, MAX_JOIN_CHARS);
+    }
+
+    private static Capped joinSummary(Set<String> tokens, int maxChars) {
+        StringBuilder out = new StringBuilder();
+        boolean truncated = false;
+        for (String token : tokens) {
+            if (out.length() == 0) {
+                String safe = safeToken(token, maxChars);
+                out.append(safe);
+                truncated |= safe.length() < token.length();
+            } else if (out.length() + token.length() + 1 > maxChars) {
+                if (out.length() + 2 <= maxChars) {
+                    out.append(">…");
+                }
+                truncated = true;
+                break;
+            } else {
+                out.append('>').append(token);
+            }
+        }
+        return new Capped(out.toString(), truncated);
+    }
+
+    static Capped joinPaths(List<List<RelationHop>> paths, boolean summary) {
+        Set<String> texts = new LinkedHashSet<>();
+        boolean truncated = false;
+        if (paths != null) {
+            for (List<RelationHop> path : paths) {
+                Capped text = summary ? relationSummary(path) : relationPath(path);
+                if (!text.text.isEmpty()) {
+                    texts.add(text.text);
+                }
+                truncated |= text.truncated;
+            }
+        }
+        Capped joined = capValues(texts,
+                summary ? MAX_JOIN_CHARS : MAX_RELATION_PATH_CHARS);
+        return new Capped(joined.text, truncated || joined.truncated);
+    }
+
+    /** Join distinct alternatives with ';'. */
+    static Capped capValues(Set<String> values, int maxChars) {
+        StringBuilder out = new StringBuilder();
+        boolean truncated = false;
+        for (String value : values) {
+            if (out.length() == 0) {
+                if (value.length() > maxChars) {
+                    out.append(safeCut(value, maxChars - 1)).append('…');
+                    truncated = true;
+                    break;
+                }
+                out.append(value);
+            } else if (out.length() + value.length() + 1 > maxChars) {
+                if (out.length() + 2 <= maxChars) {
+                    out.append(";…");
+                }
+                truncated = true;
+                break;
+            } else {
+                out.append(';').append(value);
+            }
+        }
+        return new Capped(out.toString(), truncated);
+    }
+
+    /**
+     * Truncate a single RELATION(detail) token without destroying its structure or a
+     * percentile escape.
+     */
+    static String safeToken(String token, int max) {
+        if (token.length() <= max) return token;
+        int open = token.indexOf('(');
+        if (open <= 0) return safeCut(token, max);
+        String relation = token.substring(0, open);
+        int close = token.endsWith(")") ? token.length() - 1 : token.length();
+        String detail = token.substring(open + 1, close);
+        int available = max - relation.length() - 3; // '(' + '…' + ')'
+        if (available < 1) return relation;
+        return relation + "(" + safeCutEscaped(detail, available) + "…)";
+    }
+
+    static String safeCutEscaped(String text, int max) {
+        int cut = Math.min(max, text.length());
+        int percent = text.lastIndexOf('%', Math.max(cut - 1, 0));
+        if (percent >= 0 && cut - percent < 3) {
+            cut = percent;
+        }
+        if (cut > 0 && cut < text.length()
+                && Character.isHighSurrogate(text.charAt(cut - 1))) {
+            cut--;
+        }
+        return text.substring(0, Math.max(cut, 0));
+    }
+
+    /**
+     * Cut at a UTF-16 boundary without leaving a lone surrogate, which would make a
+     * UTF-8 PrintWriter fail mid-record.
+     */
+    static String safeCut(String text, int max) {
+        if (text.length() <= max) return text;
+        int cut = Math.max(max, 0);
+        if (cut > 0 && cut < text.length()
+                && Character.isHighSurrogate(text.charAt(cut - 1))) {
+            cut--;
+        }
+        return text.substring(0, cut);
+    }
+
+    static boolean isTruncated(List<List<RelationHop>> paths) {
+        if (paths != null) {
+            for (List<RelationHop> path : paths) {
+                for (RelationHop hop : path) {
+                    if (hop.isTruncated()) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    static Capped joinHops(List<List<RelationHop>> paths,
+            java.util.function.Function<RelationHop, String> field) {
+        Set<String> out = new LinkedHashSet<>();
+        boolean truncated = false;
+        if (paths != null) {
+            for (List<RelationHop> path : paths) {
+                for (RelationHop hop : path) {
+                    String value = field.apply(hop);
+                    if (value != null && !value.isEmpty()) {
+                        boolean shortened = value.length() > 300;
+                        String shortValue = shortened
+                                ? safeCut(value, 300) + "…" : value;
+                        truncated |= shortened;
+                        out.add(shortValue);
+                    }
+                }
+            }
+        }
+        Capped joined = capValues(out, MAX_JOIN_CHARS);
+        return new Capped(joined.text, truncated || joined.truncated);
+    }
+
+    static String shorten(String text) {
+        if (text == null) return null;
+        return text.length() > 300 ? safeCut(text, 300) + "…" : text;
+    }
+
+
     static Set<Column> collectTargets(List<Stmt> stmts) {
-        Set<Column> targets = new TreeSet<>(Comparator.comparing(OdpsLineage::colKey));
+        // Compare the parts, not a joined string: a column named "a.b" must stay
+        // distinct from a column named "b" in table "t.a".
+        Set<Column> targets = new TreeSet<>(Comparator
+                .comparing((Column c) -> c.getTableName() == null ? "" : c.getTableName())
+                .thenComparing(c -> c.getColumnName() == null ? "" : c.getColumnName())
+                .thenComparing(Column::isTemporary)
+                .thenComparing(Column::isWildcard));
         for (Stmt s : stmts) {
             for (Instruction i : expanded(s)) {
                 if (i.isToTemporary() || i.getTo() == null) continue;
                 if (i.getOperation() == Instruction.OperationType.COLUMN_MAPPING
                         || i.getOperation() == Instruction.OperationType.EXPR_MAPPING) {
-                    String t = tableOf(i.getTo());
-                    String c = i.getTo().substring(i.getTo().lastIndexOf('.') + 1);
-                    if (!t.isEmpty() && !c.isEmpty()) targets.add(new Column(t, c));
+                    Column target = new Column(i.getTo());
+                    if (target.getTableName() != null
+                            && target.getColumnName() != null
+                            && !target.getColumnName().isEmpty()) {
+                        targets.add(target);
+                    }
                 } else if (i.getOperation() == Instruction.OperationType.COLUMNS_INJECT) {
                     String to = i.getTo();
-                    int lp = to.indexOf('(');
-                    if (lp > 0 && to.endsWith(")")) {
+                    int lp = columnListStart(to);
+                    if (lp > 0) {
                         String t = to.substring(0, lp);
-                        for (String c : to.substring(lp + 1, to.length() - 1).split(",")) {
+                        for (String c : splitIdentifiers(
+                                to.substring(lp + 1, to.length() - 1))) {
                             if (!c.trim().isEmpty()) targets.add(new Column(t, strip(c.trim())));
+                        }
+                    }
+                    // An expanded positional wildcard carries the written columns
+                    // separately from the target reference.
+                    if (i.getPopulatedColumns() != null) {
+                        // `to` is a table identity here, not a `table.column` reference;
+                        // do not apply tableOf(), which would split `prj.t` into `prj`.
+                        String t = i.getWildcardTable() != null
+                                ? i.getWildcardTable() : to;
+                        int listStart = columnListStart(t);
+                        if (listStart > 0) {
+                            t = t.substring(0, listStart);
+                        }
+                        for (String c : splitIdentifiers(i.getPopulatedColumns())) {
+                            if (!c.trim().isEmpty()) {
+                                targets.add(new Column(t, strip(c.trim())));
+                            }
                         }
                     }
                 }
@@ -744,10 +1030,14 @@ public class OdpsLineage {
     static void writeColumnLineage(Path p, List<Stmt> stmts, LineageGraph graph) throws Exception {
         Set<Column> targets = collectTargets(stmts);
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(p, StandardCharsets.UTF_8))) {
-            w.println("target_table,target_column,source_table,source_column,source_is_wildcard");
+            w.println("target_table,target_column,source_table,source_column,source_is_wildcard,"
+                    + "relation,relation_path,function,operator,expression,truncated");
             for (Column target : targets) {
                 Set<Column> srcs;
                 try { srcs = graph.getSources(target); } catch (RuntimeException e) { continue; }
+                Map<Column, List<List<RelationHop>>> paths;
+                try { paths = graph.relationPaths(target); }
+                catch (RuntimeException e) { paths = Collections.emptyMap(); }
                 List<Column> leaves = new ArrayList<>();
                 for (Column c : srcs) {
                     if (c.isTemporary() || c.equals(target)) continue;
@@ -755,21 +1045,32 @@ public class OdpsLineage {
                 }
                 leaves.sort(Comparator.comparing(OdpsLineage::colKey));
                 for (Column c : leaves) {
+                    List<List<RelationHop>> path = paths.get(c);
+                    Capped relationText = joinPaths(path, true);
+                    Capped pathText = joinPaths(path, false);
+                    Capped functions = joinHops(path, RelationHop::getFunctionName);
+                    Capped operators = joinHops(path, RelationHop::getOperator);
+                    Capped expressions = joinHops(path, RelationHop::getExpression);
+                    boolean truncated = isTruncated(path)
+                            || relationText.truncated || pathText.truncated
+                            || functions.truncated || operators.truncated
+                            || expressions.truncated;
                     w.println(csv(target.getTableName()) + "," + csv(target.getColumnName()) + ","
-                            + csv(c.getTableName()) + "," + csv(c.getColumnName()) + "," + c.isWildcard());
+                            + csv(c.getTableName()) + "," + csv(c.getColumnName()) + "," + c.isWildcard()
+                            + "," + csv(relationText.text) + "," + csv(pathText.text)
+                            + "," + csv(functions.text) + "," + csv(operators.text)
+                            + "," + csv(expressions.text) + "," + truncated);
                 }
+            }
+            if (w.checkError()) {
+                throw new IllegalStateException("failed to write " + p);
             }
         }
     }
 
     static void writeTableLineage(Path p, Path columnLineage) throws Exception {
         Map<String, Set<String>> map = new TreeMap<>();
-        List<String> lines = Files.readAllLines(columnLineage, StandardCharsets.UTF_8);
-        for (int i = 1; i < lines.size(); i++) {
-            String[] f = parseCsv(lines.get(i));
-            if (f.length < 4) continue;
-            map.computeIfAbsent(f[0] + "\u0001" + f[2], k -> new TreeSet<>()).add(f[1]);
-        }
+        aggregateTableLineage(columnLineage, map);
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(p, StandardCharsets.UTF_8))) {
             w.println("target_table,source_table,target_columns");
             for (Map.Entry<String, Set<String>> e : map.entrySet()) {
@@ -777,6 +1078,69 @@ public class OdpsLineage {
                 w.println(csv(k[0]) + "," + csv(k[1]) + "," + e.getValue().size());
             }
         }
+    }
+
+    /**
+     * Stream the first three columns of column_lineage.csv. The expression column can
+     * be very large, so the whole file must not be loaded into memory and later fields
+     * are skipped instead of retained. Quoted newlines are still handled.
+     */
+    static void aggregateTableLineage(Path file, Map<String, Set<String>> map)
+            throws Exception {
+        try (java.io.PushbackReader reader = new java.io.PushbackReader(
+                new java.io.BufferedReader(Files.newBufferedReader(file,
+                        StandardCharsets.UTF_8)), 2)) {
+            String[] fields = new String[3];
+            StringBuilder current = new StringBuilder();
+            int field = 0;
+            boolean quoted = false;
+            boolean header = true;
+            int read;
+            while ((read = reader.read()) != -1) {
+                char ch = (char) read;
+                if (quoted) {
+                    if (ch == '"') {
+                        int next = reader.read();
+                        if (next == '"') {
+                            if (field < 3) current.append('"');
+                        } else {
+                            quoted = false;
+                            if (next != -1) reader.unread(next);
+                        }
+                    } else if (field < 3) {
+                        current.append(ch);
+                    }
+                    continue;
+                }
+                if (ch == '"') {
+                    quoted = true;
+                } else if (ch == ',') {
+                    if (field < 3) fields[field] = current.toString();
+                    current.setLength(0);
+                    field++;
+                } else if (ch == '\n') {
+                    if (field < 3) fields[field] = current.toString();
+                    current.setLength(0);
+                    if (!header) addTableLineageEdge(map, fields);
+                    header = false;
+                    fields = new String[3];
+                    field = 0;
+                } else if (ch != '\r') {
+                    if (field < 3) current.append(ch);
+                }
+            }
+            if (current.length() > 0 || field > 0) {
+                if (field < 3) fields[field] = current.toString();
+                if (!header) addTableLineageEdge(map, fields);
+            }
+        }
+    }
+
+    private static void addTableLineageEdge(Map<String, Set<String>> map,
+            String[] fields) {
+        if (fields[0] == null || fields[2] == null) return;
+        map.computeIfAbsent(fields[0] + "\u0001" + fields[2], k -> new TreeSet<>())
+                .add(fields[1] == null ? "" : fields[1]);
     }
 
     static void writeRepairs(Path p, List<String> repairs) throws Exception {
@@ -808,11 +1172,50 @@ public class OdpsLineage {
         return (c.getTableName() == null ? "" : c.getTableName()) + "." + c.getColumnName();
     }
 
+    /**
+     * Start of a trailing top-level column list, or -1. Parentheses inside quoted
+     * identifiers (for example a table named {@code "t(x"}) are not a column list.
+     */
+    static int columnListStart(String value) {
+        if (value == null || !value.endsWith(")")) return -1;
+        char quote = 0;
+        int depth = 0;
+        int candidate = -1;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (quote != 0) {
+                if (ch == quote) quote = 0;
+                continue;
+            }
+            if (ch == '"' || ch == '`') {
+                quote = ch;
+            } else if (ch == '[') {
+                quote = ']';
+            } else if (ch == '(') {
+                if (depth == 0) candidate = i;
+                depth++;
+            } else if (ch == ')') {
+                depth--;
+            }
+        }
+        return depth == 0 ? candidate : -1;
+    }
+
     static String strip(String s) {
         s = s.trim();
-        if (s.length() >= 2 && ((s.startsWith("`") && s.endsWith("`"))
-                || (s.startsWith("\"") && s.endsWith("\"")))) {
-            return s.substring(1, s.length() - 1);
+        if (s.length() >= 2) {
+            char first = s.charAt(0);
+            char last = s.charAt(s.length() - 1);
+            String inner = s.substring(1, s.length() - 1);
+            if (first == '`' && last == '`') {
+                return inner.replace("``", "`");
+            }
+            if (first == '"' && last == '"') {
+                return Identifiers.decodeDoubleQuoted(inner);
+            }
+            if (first == '[' && last == ']') {
+                return inner.replace("]]", "]");
+            }
         }
         return s;
     }
@@ -838,22 +1241,40 @@ public class OdpsLineage {
         return s;
     }
 
-    static String[] parseCsv(String line) {
+    /**
+     * Split a column list on commas outside quotes. Hive/ODPS quoted identifiers use
+     * backticks, so a plain {@code split(",")} would break a column named {@code a,b}.
+     */
+    static List<String> splitIdentifiers(String list) {
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
-        boolean q = false;
-        for (int i = 0; i < line.length(); i++) {
-            char ch = line.charAt(i);
-            if (q) {
-                if (ch == '"') {
-                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') { cur.append('"'); i++; }
-                    else q = false;
-                } else cur.append(ch);
-            } else if (ch == '"') q = true;
-            else if (ch == ',') { out.add(cur.toString()); cur.setLength(0); }
-            else cur.append(ch);
+        char quote = 0;
+        for (int i = 0; i < list.length(); i++) {
+            char ch = list.charAt(i);
+            if (quote != 0) {
+                cur.append(ch);
+                if (ch == quote) {
+                    if (i + 1 < list.length() && list.charAt(i + 1) == quote) {
+                        cur.append(list.charAt(++i));
+                    } else {
+                        quote = 0;
+                    }
+                }
+            } else if (ch == '`' || ch == '"' || ch == '\'') {
+                quote = ch;
+                cur.append(ch);
+            } else if (ch == '[') {
+                quote = ']';
+                cur.append(ch);
+            } else if (ch == ',') {
+                out.add(cur.toString());
+                cur.setLength(0);
+            } else {
+                cur.append(ch);
+            }
         }
         out.add(cur.toString());
-        return out.toArray(new String[0]);
+        return out;
     }
+
 }

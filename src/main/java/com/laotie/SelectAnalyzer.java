@@ -15,6 +15,8 @@ import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
 
 import com.laotie.ast.SqlAst;
+import com.laotie.analysis.AnalysisContext;
+import com.laotie.analysis.RelationClassifier;
 import com.laotie.analysis.model.CorrelatedOwner;
 import com.laotie.analysis.model.ScalarSubquery;
 import com.laotie.analysis.model.SourceNode;
@@ -29,6 +31,7 @@ import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.identifier.Identifiers;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
+import com.laotie.model.RelationType;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 
@@ -628,6 +631,31 @@ final class SelectAnalyzer {
         if (expr == null) {
             return;
         }
+        AnalysisContext state = host.state();
+        RelationType savedRelation = state.relationType;
+        String savedExpression = state.expressionText;
+        String savedFunction = state.functionName;
+        String savedOperator = state.operatorName;
+        state.relationType = RelationClassifier.rootRelation(expr);
+        state.expressionText = RelationClassifier.compact(expr.toString());
+        state.functionName = RelationClassifier.rootFunction(expr);
+        state.operatorName = RelationClassifier.rootOperator(expr);
+        try {
+            visitOuterExpression(expr, target, targetName, position,
+                    state.relationType);
+        } finally {
+            state.relationType = savedRelation;
+            state.expressionText = savedExpression;
+            state.functionName = savedFunction;
+            state.operatorName = savedOperator;
+        }
+    }
+
+    private void visitOuterExpression(SQLExpr expr, String target, String targetName,
+            int position, RelationType kind) {
+        if (expr == null) {
+            return;
+        }
         if (expr instanceof SQLPropertyExpr) {
             SQLPropertyExpr property = (SQLPropertyExpr) expr;
             if (!isStarProperty(property)) {
@@ -637,61 +665,135 @@ final class SelectAnalyzer {
         }
         if (expr instanceof SQLBinaryOpExpr) {
             SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
-            recordOuterExpression(binary.getLeft(), target, targetName, position);
-            recordOuterExpression(binary.getRight(), target, targetName, position);
+            String operator = binary.getOperator() == null ? null
+                    : binary.getOperator().getName();
+            recordOuterChild(binary.getLeft(), target, targetName, position,
+                    RelationType.EXPRESSION, null, operator);
+            recordOuterChild(binary.getRight(), target, targetName, position,
+                    RelationType.EXPRESSION, null, operator);
+        } else if (expr instanceof SQLAggregateExpr) {
+            recordOuterCall((SQLMethodInvokeExpr) expr, target, targetName, position,
+                    RelationType.AGGREGATE);
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr operand : ExpressionAnalyzer.methodOperands(
-                    (SQLMethodInvokeExpr) expr)) {
-                recordOuterExpression(operand, target, targetName, position);
-            }
+            recordOuterCall((SQLMethodInvokeExpr) expr, target, targetName, position,
+                    RelationType.FUNCTION);
         } else if (expr instanceof SQLCastExpr) {
-            recordOuterExpression(((SQLCastExpr) expr).getExpr(), target, targetName,
-                    position);
+            recordOuterChild(((SQLCastExpr) expr).getExpr(), target, targetName,
+                    position, RelationType.CAST, null, null);
         } else if (expr instanceof SQLNotExpr) {
-            recordOuterExpression(((SQLNotExpr) expr).getExpr(), target, targetName,
-                    position);
+            recordOuterChild(((SQLNotExpr) expr).getExpr(), target, targetName,
+                    position, RelationType.EXPRESSION, null, "NOT");
         } else if (expr instanceof SQLUnaryExpr) {
-            recordOuterExpression(((SQLUnaryExpr) expr).getExpr(), target, targetName,
-                    position);
+            SQLUnaryExpr unary = (SQLUnaryExpr) expr;
+            recordOuterChild(unary.getExpr(), target, targetName, position,
+                    RelationType.EXPRESSION, null,
+                    unary.getOperator() == null ? null : unary.getOperator().name);
         } else if (expr instanceof SQLBetweenExpr) {
             SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            recordOuterExpression(between.getTestExpr(), target, targetName, position);
-            recordOuterExpression(between.getBeginExpr(), target, targetName, position);
-            recordOuterExpression(between.getEndExpr(), target, targetName, position);
+            recordOuterChild(between.getTestExpr(), target, targetName, position,
+                    RelationType.EXPRESSION, null, "BETWEEN");
+            recordOuterChild(between.getBeginExpr(), target, targetName, position,
+                    RelationType.EXPRESSION, null, "BETWEEN");
+            recordOuterChild(between.getEndExpr(), target, targetName, position,
+                    RelationType.EXPRESSION, null, "BETWEEN");
         } else if (expr instanceof SQLCaseExpr) {
             SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            recordOuterExpression(caseExpr.getValueExpr(), target, targetName,
-                    position);
+            recordOuterChild(caseExpr.getValueExpr(), target, targetName, position,
+                    RelationType.CASE, null, "CASE");
             if (caseExpr.getItems() != null) {
                 for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
-                    recordOuterExpression(caseItem.getConditionExpr(), target,
-                            targetName, position);
-                    recordOuterExpression(caseItem.getValueExpr(), target, targetName,
-                            position);
+                    recordOuterChild(caseItem.getConditionExpr(), target, targetName,
+                            position, RelationType.CASE, null, "CASE");
+                    recordOuterChild(caseItem.getValueExpr(), target, targetName,
+                            position, RelationType.CASE, null, "CASE");
                 }
             }
-            recordOuterExpression(caseExpr.getElseExpr(), target, targetName, position);
+            recordOuterChild(caseExpr.getElseExpr(), target, targetName, position,
+                    RelationType.CASE, null, "CASE");
         } else if (expr instanceof SQLListExpr) {
             for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
-                recordOuterExpression(element, target, targetName, position);
+                recordOuterChild(element, target, targetName, position, kind,
+                        host.state().functionName, host.state().operatorName);
             }
         } else if (expr instanceof SQLInListExpr) {
             SQLInListExpr in = (SQLInListExpr) expr;
-            recordOuterExpression(in.getExpr(), target, targetName, position);
+            recordOuterChild(in.getExpr(), target, targetName, position,
+                    RelationType.EXPRESSION, null, "IN");
             if (in.getTargetList() != null) {
                 for (SQLExpr element : in.getTargetList()) {
-                    recordOuterExpression(element, target, targetName, position);
+                    recordOuterChild(element, target, targetName, position,
+                            RelationType.EXPRESSION, null, "IN");
                 }
             }
         } else if (expr instanceof SQLInSubQueryExpr) {
-            recordOuterExpression(((SQLInSubQueryExpr) expr).getExpr(), target,
-                    targetName, position);
+            recordOuterChild(((SQLInSubQueryExpr) expr).getExpr(), target,
+                    targetName, position, RelationType.EXPRESSION, null, "IN");
         } else if (expr instanceof SQLIdentifierExpr) {
             recordOuterIdentifier(((SQLIdentifierExpr) expr).getName(), target,
                     targetName, position);
         } else if (expr instanceof SQLExtractExpr) {
-            recordOuterExpression(((SQLExtractExpr) expr).getValue(), target,
-                    targetName, position);
+            recordOuterChild(((SQLExtractExpr) expr).getValue(), target, targetName,
+                    position, RelationType.FUNCTION, "EXTRACT", null);
+        } else if (expr instanceof SQLQueryExpr) {
+            recordOuterScalarSubquery((SQLQueryExpr) expr, target, targetName, position);
+        }
+    }
+
+    /**
+     * A scalar subquery nested in a projection that reads only outer sources. The
+     * subquery is analyzed as its own temporary, then its references feed the target.
+     */
+    private void recordOuterScalarSubquery(SQLQueryExpr expr, String target,
+            String targetName, int position) {
+        ScalarSubquery inner = analyzeScalarSubquery(expr);
+        if (inner == null) {
+            return;
+        }
+        if (inner.columns.isEmpty()) {
+            recordScalarTableLevel(inner, target, position, targetName);
+            return;
+        }
+        for (int i = 0; i < inner.columns.size(); i++) {
+            Instruction edge = new Instruction(OperationType.COLUMN_MAPPING,
+                    inner.references.get(i),
+                    target + "." + Identifiers.render(targetName), position, true,
+                    host.state().tempTables.contains(target));
+            edge.setRelation(RelationType.SUBQUERY);
+            edge.setExpression(host.state().expressionText);
+            host.instructions().add(edge);
+        }
+    }
+
+    private void recordOuterCall(SQLMethodInvokeExpr call, String target,
+            String targetName, int position, RelationType kind) {
+        String function = call.getMethodName();
+        for (SQLExpr operand : ExpressionAnalyzer.methodOperands(call)) {
+            if (operand instanceof SQLAllColumnExpr) {
+                continue;
+            }
+            recordOuterChild(operand, target, targetName, position, kind, function,
+                    null);
+        }
+    }
+
+    private void recordOuterChild(SQLExpr expr, String target, String targetName,
+            int position, RelationType kind, String function, String operator) {
+        if (expr == null) {
+            return;
+        }
+        AnalysisContext state = host.state();
+        RelationType savedRelation = state.relationType;
+        String savedFunction = state.functionName;
+        String savedOperator = state.operatorName;
+        state.relationType = kind;
+        state.functionName = function;
+        state.operatorName = operator;
+        try {
+            visitOuterExpression(expr, target, targetName, position, kind);
+        } finally {
+            state.relationType = savedRelation;
+            state.functionName = savedFunction;
+            state.operatorName = savedOperator;
         }
     }
 
@@ -1086,8 +1188,8 @@ final class SelectAnalyzer {
             String column = resolveOuterColumn(source, rawName);
             Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
                     : null;
-            addOuterColumnMapping(source, column, target, targetName, position,
-                    quoted);
+            addOuterExpressionColumnMapping(source, column, target, targetName,
+                    position, quoted);
             return;
         }
         SourceNode binding = correlated == null ? null : correlated.binding;
@@ -1116,7 +1218,7 @@ final class SelectAnalyzer {
             }
             if (matchedOutputs.size() == 1) {
                 for (StarColumn column : matchedOutputs.get(0).sources) {
-                    addOuterColumnMapping(column.source, column.column, target,
+                    addOuterExpressionColumnMapping(column.source, column.column, target,
                             targetName, position, column.quoted);
                 }
                 return;
@@ -1136,11 +1238,26 @@ final class SelectAnalyzer {
 
     void addOuterColumnMapping(SourceTable source, String column,
             String target, String targetName, int position) {
-        addOuterColumnMapping(source, column, target, targetName, position, null);
+        addOuterColumnMapping(source, column, target, targetName, position, null, false);
     }
 
     void addOuterColumnMapping(SourceTable source, String column,
             String target, String targetName, int position, Boolean quoted) {
+        addOuterColumnMapping(source, column, target, targetName, position, quoted, false);
+    }
+
+    /**
+     * Map a column read by an expression. Unlike a star expansion, the expression
+     * context (relation, function, operator) applies to this edge.
+     */
+    private void addOuterExpressionColumnMapping(SourceTable source, String column,
+            String target, String targetName, int position, Boolean quoted) {
+        addOuterColumnMapping(source, column, target, targetName, position, quoted, true);
+    }
+
+    private void addOuterColumnMapping(SourceTable source, String column,
+            String target, String targetName, int position, Boolean quoted,
+            boolean useContext) {
         if (source.metadataTable == null && !source.temporary) {
             DbType dialect = host.currentDialect();
             if (dialect == DbType.hive || dialect == DbType.antspark) {
@@ -1156,10 +1273,14 @@ final class SelectAnalyzer {
                 ? Identifiers.render(column)
                 : quoted ? Identifiers.quoteDouble(column)
                         : Identifiers.render(column);
-        host.instructions().add(new Instruction(OperationType.COLUMN_MAPPING,
+        Instruction mapping = new Instruction(OperationType.COLUMN_MAPPING,
                 host.lineageTableName(source) + "." + rendered,
                 target + "." + Identifiers.render(targetName), position,
-                source.temporary, host.state().tempTables.contains(target)));
+                source.temporary, host.state().tempTables.contains(target));
+        if (useContext) {
+            RelationClassifier.applyContext(mapping, host.state());
+        }
+        host.instructions().add(mapping);
         if (source.wildcardContribution && source.temporary) {
             int relative = -1;
             String key = quoted != null && quoted
@@ -1248,7 +1369,8 @@ final class SelectAnalyzer {
             }
             for (SourceTable source : participants) {
                 String column = resolveOuterColumn(source, rawName);
-                addOuterColumnMapping(source, column, target, targetName, position);
+                addOuterExpressionColumnMapping(source, column, target, targetName,
+                        position, null);
             }
             return;
         }
@@ -1299,7 +1421,7 @@ final class SelectAnalyzer {
                         host.displayNames(owners));
             }
             for (StarColumn column : matchedOutputs.get(0).sources) {
-                addOuterColumnMapping(column.source, column.column, target,
+                addOuterExpressionColumnMapping(column.source, column.column, target,
                         targetName, position, column.quoted);
             }
             return;
@@ -1326,7 +1448,7 @@ final class SelectAnalyzer {
             }
             Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
                     : null;
-            addOuterColumnMapping(owners.get(0),
+            addOuterExpressionColumnMapping(owners.get(0),
                     resolveOuterColumn(owners.get(0), rawName), target, targetName,
                     position, quoted);
             return;
@@ -1346,8 +1468,8 @@ final class SelectAnalyzer {
                     : null;
             for (SourceTable source : ancestors) {
                 String column = resolveOuterColumn(source, rawName);
-                addOuterColumnMapping(source, column, target, targetName, position,
-                        quoted);
+                addOuterExpressionColumnMapping(source, column, target, targetName,
+                        position, quoted);
                 mapped.add(source);
             }
             if (!mapped.isEmpty()) {
@@ -1497,6 +1619,7 @@ final class SelectAnalyzer {
                 edge.setPositionalWildcard(true);
                 edge.setWildcardTable(targetTable);
                 edge.setPopulatedColumns(rendered);
+                edge.setRelation(RelationType.SUBQUERY);
                 host.instructions().add(edge);
             } else {
                 Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
@@ -1505,6 +1628,7 @@ final class SelectAnalyzer {
                 wildcard.setPositionalWildcard(true);
                 wildcard.setWildcardWidthKnown(true);
                 wildcard.setWildcardWidth(1);
+                wildcard.setRelation(RelationType.SUBQUERY);
                 host.instructions().add(wildcard);
                 host.recordWildcardSpan(targetTable, position, position + 1, table, false);
                 host.state().targetWildcardContribution.put(targetTable, Boolean.TRUE);
@@ -1562,9 +1686,12 @@ final class SelectAnalyzer {
         }
         for (int i = 0; i < inner.columns.size(); i++) {
             String source = inner.references.get(i);
-            host.instructions().add(new Instruction(OperationType.COLUMN_MAPPING, source,
+            Instruction edge = new Instruction(OperationType.COLUMN_MAPPING, source,
                     targetTable + "." + Identifiers.render(targetColumn), host.state().currentOrdinal,
-                    true, host.state().tempTables.contains(targetTable)));
+                    true, host.state().tempTables.contains(targetTable));
+            edge.setRelation(RelationType.SUBQUERY);
+            edge.setExpression(RelationClassifier.compact(item.getExpr().toString()));
+            host.instructions().add(edge);
         }
         return 1;
     }
@@ -1657,7 +1784,14 @@ final class SelectAnalyzer {
         List<String> outputs = host.copyOutputs(host.state().targetOutputs.get(targetTable));
         String name = outputs != null && position < outputs.size() && outputs.get(position) != null
                 ? outputs.get(position) : "col" + (position + 1);
-        recordUnboundScalarExpression(item.getExpr(), targetTable, name, position);
+        AnalysisContext state = host.state();
+        String savedExpression = state.expressionText;
+        state.expressionText = RelationClassifier.compact(item.getExpr().toString());
+        try {
+            recordUnboundScalarExpression(item.getExpr(), targetTable, name, position);
+        } finally {
+            state.expressionText = savedExpression;
+        }
     }
 
     void recordUnboundScalarExpression(SQLExpr expr, String targetTable,
@@ -1674,10 +1808,15 @@ final class SelectAnalyzer {
                 recordScalarTableLevel(inner, targetTable, position, null);
                 return;
             }
-            host.instructions().add(new Instruction(OperationType.COLUMN_MAPPING,
+            Instruction edge = new Instruction(OperationType.COLUMN_MAPPING,
                     inner.references.get(0),
                     targetTable + "." + Identifiers.render(targetName), position, true,
-                    host.state().tempTables.contains(targetTable)));
+                    host.state().tempTables.contains(targetTable));
+            edge.setRelation(RelationType.SUBQUERY);
+            edge.setExpression(host.state().expressionText != null
+                    ? host.state().expressionText
+                    : RelationClassifier.compact(expr.toString()));
+            host.instructions().add(edge);
             return;
         }
         if (expr instanceof SQLBinaryOpExpr) {
@@ -1990,9 +2129,11 @@ final class SelectAnalyzer {
         host.state().inTargetExpression = false;
         boolean uncertain = host.state().uncertainOrdinal >= 0 && host.state().currentOrdinal == host.state().uncertainOrdinal;
         if (host.instructions().size() == before && !uncertain) {
-            host.instructions().add(new Instruction(OperationType.EXPR_MAPPING,
+            Instruction expression = new Instruction(OperationType.EXPR_MAPPING,
                     item.getExpr().toString(), targetTable + "." + targetColumn,
-                    host.state().currentOrdinal, false, host.state().tempTables.contains(targetTable)));
+                    host.state().currentOrdinal, false, host.state().tempTables.contains(targetTable));
+            RelationClassifier.applyRoot(expression, item.getExpr());
+            host.instructions().add(expression);
         }
         host.state().stackTargetColumn.pop();
 

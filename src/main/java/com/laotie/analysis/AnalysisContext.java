@@ -14,6 +14,7 @@ import com.laotie.analysis.model.SourceNode;
 import com.laotie.analysis.model.SourceTable;
 import com.laotie.analysis.model.StarOutput;
 import com.laotie.analysis.model.WildcardSpan;
+import com.laotie.model.RelationType;
 
 /**
  * Mutable state shared by the analysis passes for one statement.
@@ -37,6 +38,17 @@ public final class AnalysisContext {
     public Stack<Set<SourceTable>> stackHiddenSources;
 
     public boolean inTargetExpression;
+    /**
+     * The relation currently being recorded for column edges, set while walking an
+     * expression and restored when the walk leaves it.
+     */
+    public RelationType relationType = RelationType.NONE;
+    /** The source expression text shared by the edges of one projection. */
+    public String expressionText;
+    /** The nearest enclosing function name, for function/aggregate edges. */
+    public String functionName;
+    /** The nearest enclosing operator, for expression edges. */
+    public String operatorName;
     public int tempTableNum;
     public int currentOrdinal = -1;
     public int uncertainOrdinal = -1;
@@ -114,6 +126,10 @@ public final class AnalysisContext {
         tableSourceBindings = new IdentityHashMap<>();
         stackHiddenSources = new Stack<>();
         inTargetExpression = false;
+        relationType = RelationType.NONE;
+        expressionText = null;
+        functionName = null;
+        operatorName = null;
         currentOrdinal = -1;
         uncertainOrdinal = -1;
         currentStarBudget = -1;

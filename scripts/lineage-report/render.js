@@ -90,14 +90,17 @@ function main() {
     tableDependencies: toNums(tableDependencies),
     columnLineage: toNums(columnLineage).map(r => ({
       ...r,
-      source_is_wildcard: r.source_is_wildcard === true || r.source_is_wildcard === 'true'
+      source_is_wildcard: r.source_is_wildcard === true || r.source_is_wildcard === 'true',
+      truncated: r.truncated === true || r.truncated === 'true'
     })),
     repairs: toNums(repairs)
   };
 
   const template = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf8');
   const payload = JSON.stringify(data).replace(/</g, '\\u003c');
-  const html = template.replace('/*__LINEAGE_DATA__*/null', payload);
+  // A function replacer keeps `$&`, `$'` and `$\`` inside SQL expressions literal;
+  // a string replacement would expand them as replacement patterns.
+  const html = template.replace('/*__LINEAGE_DATA__*/null', () => payload);
   fs.writeFileSync(out, html, 'utf8');
 
   const ok = data.statements.filter(s => s.status === 'OK').length;

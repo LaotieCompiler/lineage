@@ -10,6 +10,8 @@ import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
 
 import com.laotie.ast.SqlAst;
+import com.laotie.analysis.AnalysisContext;
+import com.laotie.analysis.RelationClassifier;
 import com.laotie.analysis.model.CorrelatedOwner;
 import com.laotie.analysis.model.ScalarSubquery;
 import com.laotie.analysis.model.SourceNode;
@@ -21,6 +23,7 @@ import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
+import com.laotie.model.RelationType;
 import com.laotie.model.metadata.MetadataCatalog;
 
 /** Expression, owner-resolution and join-binding analysis. */
@@ -36,6 +39,35 @@ final class ExpressionAnalyzer {
         if (expr == null) {
             return;
         }
+        AnalysisContext state = host.state();
+        RelationType savedRelation = state.relationType;
+        String savedExpression = state.expressionText;
+        String savedFunction = state.functionName;
+        String savedOperator = state.operatorName;
+        RelationType root = RelationClassifier.rootRelation(expr);
+        state.relationType = root;
+        state.expressionText = RelationClassifier.compact(expr.toString());
+        state.functionName = RelationClassifier.rootFunction(expr);
+        state.operatorName = RelationClassifier.rootOperator(expr);
+        try {
+            visitNode(expr, root);
+        } finally {
+            state.relationType = savedRelation;
+            state.expressionText = savedExpression;
+            state.functionName = savedFunction;
+            state.operatorName = savedOperator;
+        }
+    }
+
+    /**
+     * Walk one expression node. The relation of the current context is already set by
+     * the caller, so a column encountered here keeps the most specific classification
+     * of the operator/function that consumes it.
+     */
+    private void visitNode(SQLExpr expr, RelationType kind) {
+        if (expr == null) {
+            return;
+        }
         if (expr instanceof SQLIdentifierExpr) {
             visitIdentifier((SQLIdentifierExpr) expr);
         } else if (expr instanceof SQLPropertyExpr) {
@@ -44,54 +76,103 @@ final class ExpressionAnalyzer {
             host.visitAllColumn();
         } else if (expr instanceof SQLBinaryOpExpr) {
             SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
-            visitExpr(binary.getLeft());
-            visitExpr(binary.getRight());
+            String operator = binary.getOperator() == null ? null
+                    : binary.getOperator().getName();
+            visitChild(binary.getLeft(), RelationType.EXPRESSION, null, operator);
+            visitChild(binary.getRight(), RelationType.EXPRESSION, null, operator);
+        } else if (expr instanceof SQLAggregateExpr) {
+            visitCall((SQLMethodInvokeExpr) expr, RelationType.AGGREGATE);
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr operand : methodOperands((SQLMethodInvokeExpr) expr)) {
-                if (operand instanceof SQLAllColumnExpr) {
-                    // COUNT(*) and COUNT(DISTINCT *) count rows, not every column;
-                    // a star inside a call is not a projection wildcard.
-                    continue;
-                }
-                visitExpr(operand);
-            }
+            visitCall((SQLMethodInvokeExpr) expr, RelationType.FUNCTION);
         } else if (expr instanceof SQLCastExpr) {
-            visitExpr(((SQLCastExpr) expr).getExpr());
+            visitChild(((SQLCastExpr) expr).getExpr(), RelationType.CAST, null, null);
         } else if (expr instanceof SQLCaseExpr) {
             SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            visitExpr(caseExpr.getValueExpr());
+            visitChild(caseExpr.getValueExpr(), RelationType.CASE, null, "CASE");
             if (caseExpr.getItems() != null) {
                 for (SQLCaseExpr.Item item : caseExpr.getItems()) {
-                    visitExpr(item.getConditionExpr());
-                    visitExpr(item.getValueExpr());
+                    visitChild(item.getConditionExpr(), RelationType.CASE, null, "CASE");
+                    visitChild(item.getValueExpr(), RelationType.CASE, null, "CASE");
                 }
             }
-            visitExpr(caseExpr.getElseExpr());
+            visitChild(caseExpr.getElseExpr(), RelationType.CASE, null, "CASE");
         } else if (expr instanceof SQLListExpr) {
             for (SQLExpr item : ((SQLListExpr) expr).getItems()) {
-                visitExpr(item);
+                visitChild(item, kind, host.state().functionName,
+                        host.state().operatorName);
             }
         } else if (expr instanceof SQLInListExpr) {
             SQLInListExpr inList = (SQLInListExpr) expr;
-            visitExpr(inList.getExpr());
+            visitChild(inList.getExpr(), RelationType.EXPRESSION, null, "IN");
             for (SQLExpr target : inList.getTargetList()) {
-                visitExpr(target);
+                visitChild(target, RelationType.EXPRESSION, null, "IN");
             }
         } else if (expr instanceof SQLInSubQueryExpr) {
-            visitExpr(((SQLInSubQueryExpr) expr).getExpr());
+            visitChild(((SQLInSubQueryExpr) expr).getExpr(), RelationType.EXPRESSION,
+                    null, "IN");
         } else if (expr instanceof SQLQueryExpr) {
-            visitScalarSubquery((SQLQueryExpr) expr);
+            AnalysisContext state = host.state();
+            RelationType savedRelation = state.relationType;
+            String savedFunction = state.functionName;
+            String savedOperator = state.operatorName;
+            state.relationType = RelationType.SUBQUERY;
+            state.functionName = null;
+            state.operatorName = null;
+            try {
+                visitScalarSubquery((SQLQueryExpr) expr);
+            } finally {
+                state.relationType = savedRelation;
+                state.functionName = savedFunction;
+                state.operatorName = savedOperator;
+            }
         } else if (expr instanceof SQLBetweenExpr) {
             SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            visitExpr(between.getTestExpr());
-            visitExpr(between.getBeginExpr());
-            visitExpr(between.getEndExpr());
+            visitChild(between.getTestExpr(), RelationType.EXPRESSION, null, "BETWEEN");
+            visitChild(between.getBeginExpr(), RelationType.EXPRESSION, null, "BETWEEN");
+            visitChild(between.getEndExpr(), RelationType.EXPRESSION, null, "BETWEEN");
         } else if (expr instanceof SQLNotExpr) {
-            visitExpr(((SQLNotExpr) expr).getExpr());
+            visitChild(((SQLNotExpr) expr).getExpr(), RelationType.EXPRESSION, null,
+                    "NOT");
         } else if (expr instanceof SQLUnaryExpr) {
-            visitExpr(((SQLUnaryExpr) expr).getExpr());
+            SQLUnaryExpr unary = (SQLUnaryExpr) expr;
+            visitChild(unary.getExpr(), RelationType.EXPRESSION, null,
+                    unary.getOperator() == null ? null : unary.getOperator().name);
         } else if (expr instanceof SQLExtractExpr) {
-            visitExpr(((SQLExtractExpr) expr).getValue());
+            visitChild(((SQLExtractExpr) expr).getValue(), RelationType.FUNCTION,
+                    "EXTRACT", null);
+        }
+    }
+
+    private void visitCall(SQLMethodInvokeExpr call, RelationType kind) {
+        String function = call.getMethodName();
+        for (SQLExpr operand : methodOperands(call)) {
+            if (operand instanceof SQLAllColumnExpr) {
+                // COUNT(*) and COUNT(DISTINCT *) count rows, not every column;
+                // a star inside a call is not a projection wildcard.
+                continue;
+            }
+            visitChild(operand, kind, function, null);
+        }
+    }
+
+    private void visitChild(SQLExpr expr, RelationType kind, String function,
+            String operator) {
+        if (expr == null) {
+            return;
+        }
+        AnalysisContext state = host.state();
+        RelationType savedRelation = state.relationType;
+        String savedFunction = state.functionName;
+        String savedOperator = state.operatorName;
+        state.relationType = kind;
+        state.functionName = function;
+        state.operatorName = operator;
+        try {
+            visitNode(expr, kind);
+        } finally {
+            state.relationType = savedRelation;
+            state.functionName = savedFunction;
+            state.operatorName = savedOperator;
         }
     }
 
@@ -112,9 +193,12 @@ final class ExpressionAnalyzer {
         }
         for (int i = 0; i < inner.columns.size(); i++) {
             String source = inner.references.get(i);
-            host.instructions().add(new Instruction(OperationType.COLUMN_MAPPING, source,
+            Instruction edge = new Instruction(OperationType.COLUMN_MAPPING, source,
                     targetTable + "." + targetColumn, host.state().currentOrdinal, true,
-                    host.state().tempTables.contains(targetTable)));
+                    host.state().tempTables.contains(targetTable));
+            edge.setRelation(RelationType.SUBQUERY);
+            edge.setExpression(host.state().expressionText);
+            host.instructions().add(edge);
         }
     }
 

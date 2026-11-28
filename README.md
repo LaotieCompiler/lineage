@@ -52,7 +52,7 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 922 tests; 2 are always skipped and the
+Run the full unit suite with `mvn test` (currently 940 tests; 2 are always skipped and the
 optional TPC-H corpus is skipped until its queries are fetched).
 
 The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
@@ -145,6 +145,23 @@ columns, and wheel/drag zooms and pans. The field-level table is the end-to-end 
 (target column <- physical source column), while the graph shows direct table
 dependencies, so intermediate DWD/DWS tables remain visible. A table written by a failed
 statement is drawn with a dashed red border.
+
+Column edges also carry a finer **relation type** that separates a plain copy from an
+expression, function, aggregate, and so on:
+
+- `column_edges.csv` describes every direct edge with `relation` (`COLUMN_COPY`,
+  `EXPRESSION`, `FUNCTION`, `AGGREGATE`, `CAST`, `CASE`, `SUBQUERY`, `WILDCARD`,
+  `CONSTANT`), the nearest `function`, the nearest `operator`, and the source
+  `expression`;
+- `column_lineage.csv` rows carry a compact `relation` chain (for example
+  `FUNCTION(UPPER)>AGGREGATE(SUM)`), the full `relation_path`, and the
+  function/operator/expression along the path;
+- the HTML report labels the relation chain in the description column and shows the full
+  path and expression on hover.
+
+A column can pass through several layers of computation. The analyzer assigns the layer
+closest to the column (in `SUM(UPPER(a))` the relation of `a` is `FUNCTION` with function
+`UPPER`), while `expression` keeps the whole projection text.
 
 Node is only needed to generate the HTML. The scan works without it, and `--no-render`
 skips the render step entirely; a report can be produced later with:

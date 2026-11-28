@@ -178,8 +178,12 @@
   .status .ico { font-size: 12px; }
   .status.ok { color: var(--good-ink); }
   .status.fail { color: var(--critical); }
-  .badge { display: inline-block; padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; margin-right: 4px; }
   .badge.wild { background: rgba(251, 179, 21, .18); color: var(--ink); }
+  .badge.rel { background: var(--chip); color: var(--chip-ink); }
+  .badge.rel.fn { background: rgba(37, 125, 224, .16); color: var(--ink); }
+  .badge.rel.agg { background: rgba(23, 87, 172, .20); color: var(--ink); }
+  .badge.expr { background: transparent; color: var(--ink-2); border: 1px solid var(--border); font-weight: 400; }
   .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
   .two-col .panel { margin-bottom: 20px; }
   .bars { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; }
@@ -347,6 +351,40 @@ const DATA = /*__LINEAGE_DATA__*/null;
 
 const LAYER_NAMES = ['源数据 ODS/DIM', '明细 DWD', '汇总 DWS', '应用 ADS/BI'];
 const LAYER_SHORT = ['ODS', 'DWD', 'DWS', 'ADS/BI'];
+const REL_LABELS = {
+  COLUMN_COPY: '字段拷贝', EXPRESSION: '表达式', FUNCTION: '函数', AGGREGATE: '聚合',
+  CAST: '类型转换', CASE: 'CASE', SUBQUERY: '子查询', WILDCARD: '通配符', CONSTANT: '常量'
+};
+const REL_CLASS = { FUNCTION: ' fn', AGGREGATE: ' agg' };
+/* A relation hop is REL or REL(detail), e.g. FUNCTION(UPPER) or EXPRESSION(+). */
+function decodeDetail(text) {
+  return String(text || '').replace(/%([0-9A-Fa-f]{2})/g,
+    (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+function relationToken(text) {
+  const m = String(text || '').match(/^([A-Z_]+)(?:\((.*)\))?$/);
+  return {
+    rel: m ? m[1] : String(text || ''),
+    detail: m && m[2] ? decodeDetail(m[2]) : ''
+  };
+}
+/* Split REL>REL>..., ignoring '>' inside REL(detail) such as EXPRESSION(>=). */
+function splitHops(chain) {
+  const out = [];
+  let current = '';
+  let depth = 0;
+  for (const ch of String(chain || '')) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === '>' && depth === 0) {
+      out.push(current); current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
 
 function layerOf(name) {
   const n = String(name || '').toLowerCase();
@@ -576,7 +614,17 @@ const graph = (function buildGraph() {
     const h3 = el('h4', '', '写入字段（' + cols.length + '）'); detail.appendChild(h3);
     const ul = el('ul');
     cols.slice(0, 30).forEach(r => {
-      ul.appendChild(el('li', '', r.target_column + ' ← ' + r.source_table + '.' + r.source_column));
+      const relations = (r.relation || '').split(';').filter(Boolean)
+        .map(chain => splitHops(chain).filter(Boolean).map(token => {
+          const part = relationToken(token);
+          return (REL_LABELS[part.rel] || part.rel) + (part.detail ? ' ' + part.detail : '');
+        }).join(' › ')).join(' / ');
+      const how = (relations ? ' · ' + relations : '') + (r.truncated ? ' · 路径截断' : '');
+      const li = el('li', '', r.target_column + ' ← ' + r.source_table + '.' + r.source_column + how);
+      const tip = [r.expression, r.relation_path ? ('关系路径：' + r.relation_path) : '']
+        .filter(Boolean).join('\n');
+      if (tip) li.title = tip;
+      ul.appendChild(li);
     });
     if (!cols.length) ul.appendChild(el('li', 'empty', '无字段级边'));
     if (cols.length > 30) ul.appendChild(el('li', 'empty', '… 其余 ' + (cols.length - 30) + ' 条'));
@@ -704,7 +752,9 @@ const graph = (function buildGraph() {
     const filtered = rows.filter(r => {
       if (t && r.target_table !== t) return false;
       if (!q) return true;
-      return (r.target_table + ' ' + r.target_column + ' ' + r.source_table + ' ' + r.source_column).toLowerCase().includes(q);
+      return (r.target_table + ' ' + r.target_column + ' ' + r.source_table + ' ' + r.source_column
+        + ' ' + (r.relation || '') + ' ' + (r.function || '') + ' ' + (r.operator || '')
+        + ' ' + (r.expression || '')).toLowerCase().includes(q);
     });
     body.innerHTML = '';
     const frag = document.createDocumentFragment();
@@ -716,6 +766,29 @@ const graph = (function buildGraph() {
       const td4 = el('td'); td4.appendChild(el('span', 'chip', r.source_table));
       const td5 = el('td', 'mono', r.source_column);
       const td6 = el('td');
+      const tip = [r.expression, r.relation_path ? ('关系路径：' + r.relation_path) : '']
+        .filter(Boolean).join('\n');
+      (r.relation || '').split(';').filter(Boolean).forEach((chain, ci) => {
+        if (ci) td6.appendChild(el('span', 'muted', ' / '));
+        splitHops(chain).filter(Boolean).forEach((token, i) => {
+          if (i) td6.appendChild(el('span', 'muted', '›'));
+          const part = relationToken(token);
+          const badge = el('span', 'badge rel' + (REL_CLASS[part.rel] || ''),
+            REL_LABELS[part.rel] || part.rel);
+          if (tip) badge.title = tip;
+          td6.appendChild(badge);
+          if (part.detail) {
+            const detail = el('span', 'badge expr', part.detail);
+            if (tip) detail.title = tip;
+            td6.appendChild(detail);
+          }
+        });
+      });
+      if (r.truncated) {
+        const cut = el('span', 'badge wild', '路径截断');
+        cut.title = '路径超过展示上限，靠近源侧的变换已省略';
+        td6.appendChild(cut);
+      }
       if (r.source_is_wildcard) td6.appendChild(el('span', 'badge wild', '表级 · 未知列'));
       tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4); tr.appendChild(td5); tr.appendChild(td6);
       frag.appendChild(tr);

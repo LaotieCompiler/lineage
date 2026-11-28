@@ -131,8 +131,9 @@ final class LearningAnalyzer {
             learnExplicitReferences(((SQLBinaryOpExpr) expr).getRight(), locals,
                     cteKeys);
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                learnExplicitReferences(argument, locals, cteKeys);
+            for (SQLExpr operand : ExpressionAnalyzer.methodOperands(
+                    (SQLMethodInvokeExpr) expr)) {
+                learnExplicitReferences(operand, locals, cteKeys);
             }
         } else if (expr instanceof SQLCastExpr) {
             learnExplicitReferences(((SQLCastExpr) expr).getExpr(), locals, cteKeys);

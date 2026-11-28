@@ -532,6 +532,22 @@ public class ColumnResolutionTest {
                 OperationType.COLUMN_MAPPING, "db2.B.c2", "temp0.c2");
     }
 
+    @Test
+    public void extractUnitIsNotAColumnAndItsSourceIsTraced() {
+        MetadataContext context = mysqlContext("CREATE TABLE t (d DATE, x INT);");
+
+        LineageResult result = new DmlLineage(context)
+                .parse("SELECT extract(year FROM d) + x AS y FROM t");
+
+        assertEquals(2, result.getInstructions().size());
+        assertEquals(new HashSet<>(Arrays.asList(
+                new Column("t.d"), new Column("t.x"))),
+                new HashSet<>(Arrays.asList(
+                        new Column(result.getInstructions().get(0).getFrom()),
+                        new Column(result.getInstructions().get(1).getFrom()))));
+        assertTrue(result.getInstructions().toString().contains("temp0.y"));
+    }
+
     private static MetadataContext mysqlContext(String ddl) {
         MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
         catalog.loadDdl(ddl);

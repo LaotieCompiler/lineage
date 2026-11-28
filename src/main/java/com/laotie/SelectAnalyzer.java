@@ -562,8 +562,9 @@ final class SelectAnalyzer {
             recordUncertainOuterExpression(((SQLBinaryOpExpr) expr).getRight(), target,
                     position);
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                recordUncertainOuterExpression(argument, target, position);
+            for (SQLExpr operand : ExpressionAnalyzer.methodOperands(
+                    (SQLMethodInvokeExpr) expr)) {
+                recordUncertainOuterExpression(operand, target, position);
             }
         } else if (expr instanceof SQLCastExpr) {
             recordUncertainOuterExpression(((SQLCastExpr) expr).getExpr(), target,
@@ -643,8 +644,9 @@ final class SelectAnalyzer {
             recordOuterExpression(binary.getLeft(), target, targetName, position);
             recordOuterExpression(binary.getRight(), target, targetName, position);
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                recordOuterExpression(argument, target, targetName, position);
+            for (SQLExpr operand : ExpressionAnalyzer.methodOperands(
+                    (SQLMethodInvokeExpr) expr)) {
+                recordOuterExpression(operand, target, targetName, position);
             }
         } else if (expr instanceof SQLCastExpr) {
             recordOuterExpression(((SQLCastExpr) expr).getExpr(), target, targetName,
@@ -1584,8 +1586,9 @@ final class SelectAnalyzer {
                     || containsScalarSubquery(binary.getRight());
         }
         if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                if (containsScalarSubquery(argument)) {
+            for (SQLExpr operand : ExpressionAnalyzer.methodOperands(
+                    (SQLMethodInvokeExpr) expr)) {
+                if (containsScalarSubquery(operand)) {
                     return true;
                 }
             }
@@ -1688,8 +1691,9 @@ final class SelectAnalyzer {
             recordUnboundScalarExpression(binary.getRight(), targetTable, targetName,
                     position);
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                recordUnboundScalarExpression(argument, targetTable, targetName,
+            for (SQLExpr operand : ExpressionAnalyzer.methodOperands(
+                    (SQLMethodInvokeExpr) expr)) {
+                recordUnboundScalarExpression(operand, targetTable, targetName,
                         position);
             }
         } else if (expr instanceof SQLCastExpr) {

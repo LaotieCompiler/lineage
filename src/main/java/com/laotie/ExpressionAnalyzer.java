@@ -46,11 +46,8 @@ final class ExpressionAnalyzer {
             visitExpr(binary.getLeft());
             visitExpr(binary.getRight());
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            List<SQLExpr> arguments = ((SQLMethodInvokeExpr) expr).getArguments();
-            if (arguments != null) {
-                for (SQLExpr argument : arguments) {
-                    visitExpr(argument);
-                }
+            for (SQLExpr operand : methodOperands((SQLMethodInvokeExpr) expr)) {
+                visitExpr(operand);
             }
         } else if (expr instanceof SQLCastExpr) {
             visitExpr(((SQLCastExpr) expr).getExpr());
@@ -568,6 +565,23 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return false;
     }
 
+    /**
+     * The expressions a method call reads. {@code EXTRACT(unit FROM value)} keeps the
+     * unit as a keyword argument and the value in {@code from}; the unit is not a
+     * column. Other functions may use both positions for data.
+     */
+    static List<SQLExpr> methodOperands(SQLMethodInvokeExpr call) {
+        List<SQLExpr> operands = new ArrayList<>();
+        if (!"EXTRACT".equalsIgnoreCase(call.getMethodName())
+                && call.getArguments() != null) {
+            operands.addAll(call.getArguments());
+        }
+        if (call.getFrom() != null) {
+            operands.add(call.getFrom());
+        }
+        return operands;
+    }
+
     static boolean isStarProperty(SQLExpr expr) {
         if (!(expr instanceof SQLPropertyExpr)) {
             return false;
@@ -1045,8 +1059,8 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             validateUnboundQualified(binary.getLeft());
             validateUnboundQualified(binary.getRight());
         } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                validateUnboundQualified(argument);
+            for (SQLExpr operand : methodOperands((SQLMethodInvokeExpr) expr)) {
+                validateUnboundQualified(operand);
             }
         } else if (expr instanceof SQLCastExpr) {
             validateUnboundQualified(((SQLCastExpr) expr).getExpr());

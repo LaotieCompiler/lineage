@@ -119,6 +119,30 @@ public class DmlLineage {
     private Set<String> tables;
     private List<Instruction> instructions;
     private final AnalysisContext state = new AnalysisContext();
+
+    List<Instruction> instructions() {
+        return instructions;
+    }
+
+    MetadataContext analysisContext() {
+        return context;
+    }
+
+    LineageOptions options() {
+        return options;
+    }
+
+    boolean ansiEnabled() {
+        return ansiEnabled;
+    }
+
+    boolean ansiDoubleQuotedIdentifiers() {
+        return ansiDoubleQuotedIdentifiers;
+    }
+
+    String statementSql() {
+        return statementSql;
+    }
     private final LearningAnalyzer learning = new LearningAnalyzer(this);
 
     AnalysisContext state() {
@@ -183,7 +207,7 @@ public class DmlLineage {
      * Whether sources without a known column set are analyzed without inventing column
      * names.
      */
-    private boolean detachedMetadata() {
+    boolean detachedMetadata() {
         return options.getMetadataMode() == MetadataMode.OPTIONAL;
     }
 
@@ -535,7 +559,7 @@ public class DmlLineage {
         return ScriptSplitter.isIdentifierChar(ch);
     }
 
-    private DbType resolveDialect() {
+    DbType resolveDialect() {
         if (explicitContext != null) {
             return explicitContext.getCatalog().getDialect();
         }
@@ -584,7 +608,7 @@ public class DmlLineage {
         }
     }
 
-    private void processSelect(SQLSelect select) {
+    void processSelect(SQLSelect select) {
         SQLWithSubqueryClause with = select.getWithSubQuery();
         if (with == null) {
             processSelectQuery(select.getQuery());
@@ -752,7 +776,7 @@ public class DmlLineage {
         }
     }
 
-    private void processWithSubQuery(SQLWithSubqueryClause withSubQuery) {
+    void processWithSubQuery(SQLWithSubqueryClause withSubQuery) {
         if (withSubQuery == null) {
             return;
         }
@@ -3095,7 +3119,7 @@ public class DmlLineage {
      * the target. When the written column is known (UPDATE/VALUES), the claim is
      * bound to that column; otherwise it occupies one projection position.
      */
-    private void recordScalarTableLevel(ScalarSubquery inner, String targetTable,
+    void recordScalarTableLevel(ScalarSubquery inner, String targetTable,
             int position, String targetColumn) {
         Set<String> tables = new LinkedHashSet<>();
         String prefix = inner.temp + ".";
@@ -3205,7 +3229,7 @@ public class DmlLineage {
         return 1;
     }
 
-    private boolean containsScalarSubquery(SQLExpr expr) {
+    boolean containsScalarSubquery(SQLExpr expr) {
         if (expr == null) {
             return false;
         }
@@ -3435,7 +3459,7 @@ public class DmlLineage {
      * Analyze a scalar subquery as a one-column derived table so its own lineage is
      * kept instead of being folded into the enclosing expression.
      */
-    private ScalarSubquery analyzeScalarSubquery(SQLQueryExpr expr) {
+    ScalarSubquery analyzeScalarSubquery(SQLQueryExpr expr) {
         SQLSelect select = expr.getSubQuery();
         if (select == null) {
             return null;
@@ -3852,7 +3876,7 @@ public class DmlLineage {
     /* sources                                                            */
     /* ------------------------------------------------------------------ */
 
-    private SourceNode buildSourceNode(SQLTableSource tableSource,
+    SourceNode buildSourceNode(SQLTableSource tableSource,
             Map<String, List<SourceTable>> using) {
         if (tableSource instanceof SQLJoinTableSource) {
             SQLJoinTableSource join = (SQLJoinTableSource) tableSource;
@@ -5045,11 +5069,11 @@ private boolean hasWildcardContribution(String target) {
                 sessionRawSchemas, detachedMetadata());
     }
 
-    private TableLocation resolveMetadataTable(String written) {
+    TableLocation resolveMetadataTable(String written) {
         return metadataResolver().resolve(written);
     }
 
-    private String sessionPhysicalReference(String rawName) {
+    String sessionPhysicalReference(String rawName) {
         return metadataResolver().physicalReference(rawName);
     }
 
@@ -5327,7 +5351,7 @@ private boolean hasWildcardContribution(String target) {
                 || context.getCatalog().getDialect() == DbType.mariadb);
     }
 
-    private void registerTable(String written, String mappingName, String display, String alias,
+    void registerTable(String written, String mappingName, String display, String alias,
             boolean cteReference) {
         if (cteReference || tables.contains(display)) {
             return;
@@ -5407,7 +5431,7 @@ private boolean hasWildcardContribution(String target) {
     private boolean ansiEnabled;
     private boolean ansiDoubleQuotedIdentifiers;
     private String statementSql;
-    private static final String ANSI_IDENTIFIER_ATTRIBUTE =
+    static final String ANSI_IDENTIFIER_ATTRIBUTE =
             "com.laotie.ansiQuotedIdentifier";
 
     private void learnBlockExplicitReferences(SQLSelectQueryBlock block,
@@ -5424,7 +5448,7 @@ private boolean hasWildcardContribution(String target) {
         return learning.outerBlockLocals(includeCurrentFrame);
     }
 
-    private void visitExpr(SQLExpr expr) {
+    void visitExpr(SQLExpr expr) {
         if (expr == null) {
             return;
         }
@@ -6652,7 +6676,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                 ? hiveColumnIdentity(raw) : canonicalColumnName(raw);
     }
 
-    private String canonicalColumnName(String raw) {
+    String canonicalColumnName(String raw) {
         if (raw == null) {
             return null;
         }
@@ -7211,7 +7235,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return key.toString();
     }
 
-    private String canonicalColumnName(String table, String rawColumn) {
+    String canonicalColumnName(String table, String rawColumn) {
         if (context == null || state.tempTables.contains(table)) {
             return normalizeIdentifier(rawColumn);
         }
@@ -7242,7 +7266,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return resolved;
     }
 
-    private String renderInsertColumn(Table metadata, String tableName, SQLExpr column) {
+    String renderInsertColumn(Table metadata, String tableName, SQLExpr column) {
         String raw = column.toString();
         DbType dialect = currentDialect();
         if ((dialect == DbType.hive || dialect == DbType.antspark)
@@ -7283,7 +7307,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return renderIdentifier(resolved);
     }
 
-    private DbType currentDialect() {
+    DbType currentDialect() {
         return context != null ? context.getCatalog().getDialect() : dbType;
     }
 
@@ -7408,907 +7432,46 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
     /* insert / update / delete / create                                  */
     /* ------------------------------------------------------------------ */
 
+    private final DmlStatementAnalyzer dml = new DmlStatementAnalyzer(this);
+
     private void processInsert(SQLInsertStatement insert) {
-        annotateAnsiInsertColumns(insert);
-        processInsertInto(insert.getTableSource(), insert.getColumns(),
-                insert.getQuery(), insert.getWith(), insert.getPartitions());
-    }
-
-    /**
-     * Druid's Hive/Spark lexer parses every double-quoted INSERT target as a text
-     * literal. In Spark ANSI identifier mode those are identifiers; recover the
-     * original quote delimiter from the statement text.
-     */
-    private void annotateAnsiInsertColumns(SQLInsertStatement insert) {
-        if (!ansiEnabled || !ansiDoubleQuotedIdentifiers
-                || statementSql == null || insert.getColumns().isEmpty()) {
-            return;
-        }
-        List<Boolean> styles = insertColumnQuoteStyles(statementSql);
-        if (styles.size() != insert.getColumns().size()) {
-            return;
-        }
-        for (int i = 0; i < styles.size(); i++) {
-            SQLExpr column = insert.getColumns().get(i);
-            if (styles.get(i) && column instanceof SQLTextLiteralExpr) {
-                column.putAttribute(ANSI_IDENTIFIER_ATTRIBUTE, Boolean.TRUE);
-            }
-        }
-    }
-
-    /** True for a double-quoted element in the INSERT column list. */
-    private static List<Boolean> insertColumnQuoteStyles(String sql) {
-        List<Boolean> styles = new ArrayList<>();
-        int depth = 0;
-        int groupStart = -1;
-        int lastStart = -1;
-        int lastEnd = -1;
-        boolean seenInsert = false;
-        boolean expectPartition = false;
-        boolean groupIsPartition = false;
-        boolean sawIntoOrTable = false;
-        boolean tableNameSeen = false;
-        boolean nextNameIsTablePart = false;
-        boolean atInsertStart = false;
-        char quote = 0;
-        for (int i = 0; i < sql.length(); i++) {
-            char ch = sql.charAt(i);
-            char next = i + 1 < sql.length() ? sql.charAt(i + 1) : 0;
-            if (quote != 0) {
-                if (ch == '\\' && quote == '\'') {
-                    i++;
-                } else if (ch == quote) {
-                    if (next == quote) {
-                        i++;
-                    } else {
-                        quote = 0;
-                    }
-                }
-                continue;
-            }
-            if (ch == '-' && next == '-') {
-                int end = sql.indexOf('\n', i);
-                if (end < 0) {
-                    break;
-                }
-                i = end;
-                continue;
-            }
-            if (ch == '/' && next == '*') {
-                int end = sql.indexOf("*/", i + 2);
-                if (end < 0) {
-                    break;
-                }
-                i = end + 1;
-                continue;
-            }
-            if (ch == '#') {
-                int end = sql.indexOf('\n', i);
-                if (end < 0) {
-                    break;
-                }
-                i = end;
-                continue;
-            }
-            if (ch == '\'' || ch == '"' || ch == '`') {
-                if (seenInsert && depth == 0) {
-                    if (!tableNameSeen) {
-                        tableNameSeen = true;
-                    }
-                    nextNameIsTablePart = false;
-                }
-                quote = ch;
-                continue;
-            }
-            if (ch == ';') {
-                break;
-            }
-            if (ch == '(') {
-                if (depth == 0 && seenInsert) {
-                    groupIsPartition = expectPartition;
-                    expectPartition = false;
-                    groupStart = groupIsPartition ? -1 : i;
-                }
-                depth++;
-            } else if (ch == ')') {
-                depth--;
-                if (depth == 0 && seenInsert && groupStart >= 0) {
-                    if (isQueryGroup(sql, groupStart + 1, i)) {
-                        break;
-                    }
-                    lastStart = groupStart;
-                    lastEnd = i;
-                }
-            } else if (depth == 0 && ch == '.' && tableNameSeen) {
-                nextNameIsTablePart = true;
-            } else if (depth == 0 && Character.isDigit(ch)
-                    && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {
-                int end = i + 1;
-                while (end < sql.length()
-                        && isIdentifierChar(sql.charAt(end))) {
-                    end++;
-                }
-                if (seenInsert && !tableNameSeen) {
-                    tableNameSeen = true;
-                    atInsertStart = false;
-                }
-                nextNameIsTablePart = false;
-                i = end - 1;
-            } else if (depth == 0 && (ch == '_' || ch == '$')
-                    && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {
-                int end = i + 1;
-                while (end < sql.length()
-                        && isIdentifierChar(sql.charAt(end))) {
-                    end++;
-                }
-                if (seenInsert && !tableNameSeen) {
-                    tableNameSeen = true;
-                    atInsertStart = false;
-                }
-                nextNameIsTablePart = false;
-                i = end - 1;
-            } else if (depth == 0 && Character.isLetter(ch)
-                    && (i == 0 || !isIdentifierChar(sql.charAt(i - 1)))) {
-                int end = i + 1;
-                while (end < sql.length()
-                        && isIdentifierChar(sql.charAt(end))) {
-                    end++;
-                }
-                String word = sql.substring(i, end);
-                if (!seenInsert) {
-                    if ("INSERT".equalsIgnoreCase(word)) {
-                        seenInsert = true;
-                        atInsertStart = true;
-                    }
-                } else if (!tableNameSeen) {
-                    if ("INTO".equalsIgnoreCase(word)
-                            || "TABLE".equalsIgnoreCase(word)) {
-                        sawIntoOrTable = true;
-                        atInsertStart = false;
-                    } else if (atInsertStart && ("OVERWRITE".equalsIgnoreCase(word)
-                            || "IGNORE".equalsIgnoreCase(word))
-                            || !sawIntoOrTable
-                                    && "OVERWRITE".equalsIgnoreCase(word)) {
-                        atInsertStart = false;
-                    } else {
-                        tableNameSeen = true;
-                        nextNameIsTablePart = false;
-                        atInsertStart = false;
-                    }
-                } else if (nextNameIsTablePart) {
-                    nextNameIsTablePart = false;
-                } else if ("PARTITION".equalsIgnoreCase(word)) {
-                    expectPartition = true;
-                } else if ("SELECT".equalsIgnoreCase(word)
-                        || "VALUES".equalsIgnoreCase(word)
-                        || "WITH".equalsIgnoreCase(word)) {
-                    break;
-                }
-                i = end - 1;
-            }
-        }
-        if (lastStart < 0) {
-            return styles;
-        }
-        String list = sql.substring(lastStart + 1, lastEnd);
-        int d = 0;
-        char q = 0;
-        StringBuilder element = new StringBuilder();
-        for (int i = 0; i < list.length(); i++) {
-            char ch = list.charAt(i);
-            char next = i + 1 < list.length() ? list.charAt(i + 1) : 0;
-            if (q == 0 && ch == '-' && next == '-') {
-                int end = list.indexOf('\n', i);
-                if (end < 0) {
-                    break;
-                }
-                i = end;
-                continue;
-            }
-            if (q == 0 && ch == '/' && next == '*') {
-                int end = list.indexOf("*/", i + 2);
-                if (end < 0) {
-                    break;
-                }
-                i = end + 1;
-                continue;
-            }
-            if (q == 0 && ch == '#') {
-                int end = list.indexOf('\n', i);
-                if (end < 0) {
-                    break;
-                }
-                i = end;
-                continue;
-            }
-            if (q != 0) {
-                element.append(ch);
-                if (ch == '\\' && q == '\'') {
-                    if (i + 1 < list.length()) {
-                        element.append(list.charAt(++i));
-                    }
-                } else if (ch == q) {
-                    if (next == q) {
-                        element.append(list.charAt(++i));
-                    } else {
-                        q = 0;
-                    }
-                }
-                continue;
-            }
-            if (ch == '\'' || ch == '"' || ch == '`') {
-                q = ch;
-                element.append(ch);
-            } else if (ch == '(') {
-                d++;
-                element.append(ch);
-            } else if (ch == ')') {
-                d--;
-                element.append(ch);
-            } else if (ch == ',' && d == 0) {
-                styles.add(isDoubleQuotedElement(element.toString()));
-                element.setLength(0);
-            } else {
-                element.append(ch);
-            }
-        }
-        styles.add(isDoubleQuotedElement(element.toString()));
-        return styles;
-    }
-
-    private static boolean isQueryGroup(String sql, int start, int end) {
-        int i = start;
-        while (i < end) {
-            char ch = sql.charAt(i);
-            char next = i + 1 < end ? sql.charAt(i + 1) : 0;
-            if (Character.isWhitespace(ch)) {
-                i++;
-            } else if (ch == '-' && next == '-') {
-                int newline = sql.indexOf('\n', i);
-                if (newline < 0 || newline >= end) {
-                    return false;
-                }
-                i = newline + 1;
-            } else if (ch == '/' && next == '*') {
-                int close = sql.indexOf("*/", i + 2);
-                if (close < 0 || close >= end) {
-                    return false;
-                }
-                i = close + 2;
-            } else if (ch == '#') {
-                int newline = sql.indexOf('\n', i);
-                if (newline < 0 || newline >= end) {
-                    return false;
-                }
-                i = newline + 1;
-            } else if (ch == '(') {
-                // A parenthesized source query may be nested.
-                i++;
-            } else if (Character.isLetter(ch)) {
-                int stop = i + 1;
-                while (stop < end && isIdentifierChar(sql.charAt(stop))) {
-                    stop++;
-                }
-                String word = sql.substring(i, stop);
-                return "SELECT".equalsIgnoreCase(word)
-                        || "VALUES".equalsIgnoreCase(word)
-                        || "WITH".equalsIgnoreCase(word);
-            } else {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isDoubleQuotedElement(String element) {
-        String value = element.trim();
-        return value.startsWith("\"") && value.endsWith("\"")
-                && value.length() >= 2;
+        dml.processInsert(insert);
     }
 
     private void processReplace(SQLReplaceStatement replace) {
-        SQLQueryExpr query = replace.getQuery();
-        if (query != null) {
-            processInsertInto(replace.getTableSource(), replace.getColumns(),
-                    query.getSubQuery(), null, null);
-            return;
-        }
-        // REPLACE INTO ... VALUES: the written values are literals or expressions.
-        processValuesInto(replace.getTableSource(), replace.getColumns(),
-                replace.getValuesList());
-    }
-
-    /**
-     * Write a VALUES list into a target table. Literal values carry no lineage, but
-     * an expression (for example a scalar subquery) does.
-     */
-    private void processValuesInto(SQLExprTableSource tableSource,
-            List<SQLExpr> insertColumns,
-            List<SQLInsertStatement.ValuesClause> valueClauses) {
-        String rawName = extractTableName(tableSource);
-        String written = normalizeQualifiedName(rawName);
-        String tableName = detachedMetadata() && context == null && rawName != null
-                ? sessionPhysicalReference(rawName) : written;
-        Table targetMetadata = null;
-        if (context != null && findCteTarget(identifierKey(rawName)) == null) {
-            TableLocation location = resolveMetadataTable(rawName);
-            if (location != null) {
-                tableName = location.getDisplayName();
-                targetMetadata = location.getTable();
-            } else if (detachedMetadata() && rawName != null) {
-                tableName = sessionPhysicalReference(rawName);
-            }
-        }
-        registerTable(written, tableName, tableName, tableSource.getAlias() == null
-                ? null : normalizeIdentifier(tableSource.getAlias()),
-                findCteTarget(identifierKey(rawName)) != null);
-        if (valueClauses == null || valueClauses.isEmpty()) {
-            return;
-        }
-        List<String> columnNames = new ArrayList<>();
-        if (insertColumns != null && !insertColumns.isEmpty()) {
-            for (SQLExpr column : insertColumns) {
-                columnNames.add(renderInsertColumn(targetMetadata, tableName, column));
-            }
-        } else if (targetMetadata != null) {
-            for (Column column : targetMetadata.getFields()) {
-                columnNames.add(renderMetadataColumn(column));
-            }
-        }
-        for (SQLInsertStatement.ValuesClause clause : valueClauses) {
-            List<SQLExpr> values = clause.getValues();
-            for (int i = 0; i < values.size(); i++) {
-                SQLExpr value = values.get(i);
-                if (!containsScalarSubquery(value)) {
-                    // A literal has no source, so the target column keeps none.
-                    continue;
-                }
-                if (i >= columnNames.size()) {
-                    break;
-                }
-                String column = columnNames.get(i);
-                recordValueScalarMappings(value, tableName, column);
-            }
-        }
-    }
-
-    /**
-     * Record the sources of every scalar subquery inside a written value.
-     */
-    private void recordValueScalarMappings(SQLExpr value, String tableName,
-            String column) {
-        if (value == null) {
-            return;
-        }
-        if (value instanceof SQLQueryExpr) {
-            ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) value);
-            if (inner == null) {
-                return;
-            }
-            if (inner.columns.isEmpty()) {
-                recordScalarTableLevel(inner, tableName, -1, column);
-                return;
-            }
-            instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                    inner.references.get(0),
-                    tableName + "." + column, -1, true, false));
-            return;
-        }
-        if (value instanceof SQLBinaryOpExpr) {
-            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) value;
-            recordValueScalarMappings(binary.getLeft(), tableName, column);
-            recordValueScalarMappings(binary.getRight(), tableName, column);
-        } else if (value instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) value).getArguments()) {
-                recordValueScalarMappings(argument, tableName, column);
-            }
-        } else if (value instanceof SQLCastExpr) {
-            recordValueScalarMappings(((SQLCastExpr) value).getExpr(), tableName,
-                    column);
-        } else if (value instanceof SQLNotExpr) {
-            recordValueScalarMappings(((SQLNotExpr) value).getExpr(), tableName,
-                    column);
-        } else if (value instanceof SQLUnaryExpr) {
-            recordValueScalarMappings(((SQLUnaryExpr) value).getExpr(), tableName,
-                    column);
-        } else if (value instanceof SQLBetweenExpr) {
-            SQLBetweenExpr between = (SQLBetweenExpr) value;
-            recordValueScalarMappings(between.getTestExpr(), tableName, column);
-            recordValueScalarMappings(between.getBeginExpr(), tableName, column);
-            recordValueScalarMappings(between.getEndExpr(), tableName, column);
-        } else if (value instanceof SQLCaseExpr) {
-            SQLCaseExpr caseExpr = (SQLCaseExpr) value;
-            recordValueScalarMappings(caseExpr.getValueExpr(), tableName, column);
-            if (caseExpr.getItems() != null) {
-                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
-                    recordValueScalarMappings(caseItem.getConditionExpr(), tableName,
-                            column);
-                    recordValueScalarMappings(caseItem.getValueExpr(), tableName,
-                            column);
-                }
-            }
-            recordValueScalarMappings(caseExpr.getElseExpr(), tableName, column);
-        } else if (value instanceof SQLListExpr) {
-            for (SQLExpr element : ((SQLListExpr) value).getItems()) {
-                recordValueScalarMappings(element, tableName, column);
-            }
-        } else if (value instanceof SQLInListExpr) {
-            SQLInListExpr in = (SQLInListExpr) value;
-            recordValueScalarMappings(in.getExpr(), tableName, column);
-            if (in.getTargetList() != null) {
-                for (SQLExpr element : in.getTargetList()) {
-                    recordValueScalarMappings(element, tableName, column);
-                }
-            }
-        } else if (value instanceof SQLInSubQueryExpr) {
-            recordValueScalarMappings(((SQLInSubQueryExpr) value).getExpr(), tableName,
-                    column);
-        } else if (value instanceof SQLExtractExpr) {
-            recordValueScalarMappings(((SQLExtractExpr) value).getValue(), tableName,
-                    column);
-        }
+        dml.processReplace(replace);
     }
 
     private void processTruncate(SQLTruncateStatement truncate) {
-        // A truncate removes every row, so it carries no column lineage.
-        if (truncate.getTableSources() == null) {
-            return;
-        }
-        for (SQLExprTableSource tableSource : truncate.getTableSources()) {
-            String rawName = extractTableName(tableSource);
-            if (rawName == null) {
-                continue;
-            }
-            registerTable(normalizeQualifiedName(rawName),
-                    normalizeQualifiedName(rawName),
-                    normalizeQualifiedName(rawName), null, false);
-        }
-    }
-
-    private void pushClauseScope(List<SourceTable> sources,
-            Map<String, List<SourceTable>> using,
-            Map<String, SourceNode> bindings, Set<SourceTable> hidden,
-            List<StarOutput> plan) {
-        state.stackSources.push(sources);
-        state.lateralScopes.push(Boolean.FALSE);
-        state.stackUsing.push(using);
-        state.stackStarPlan.push(plan == null ? new ArrayList<StarOutput>()
-                : new ArrayList<>(plan));
-        state.stackHiddenSources.push(new HashSet<>(hidden));
-        state.stackJoinBindings.push(new HashMap<>(bindings));
-    }
-
-    private void popClauseScope() {
-        state.stackJoinBindings.pop();
-        state.stackHiddenSources.pop();
-        state.stackStarPlan.pop();
-        state.stackUsing.pop();
-        state.lateralScopes.pop();
-        state.stackSources.pop();
+        dml.processTruncate(truncate);
     }
 
     private void processMerge(SQLMergeStatement merge) {
-        SQLTableSource into = merge.getInto();
-        if (!(into instanceof SQLExprTableSource)) {
-            return;
-        }
-        SQLExprTableSource target = (SQLExprTableSource) into;
-        String rawName = extractTableName(target);
-        String written = normalizeQualifiedName(rawName);
-        String tableName = written;
-        if (context != null && findCteTarget(identifierKey(rawName)) == null) {
-            TableLocation location = resolveMetadataTable(rawName);
-            if (location != null) {
-                tableName = location.getDisplayName();
-            }
-        }
-        registerTable(written, tableName, tableName, null, false);
-
-        Map<String, List<SourceTable>> using = new LinkedHashMap<>();
-        List<SourceTable> targetSources = new ArrayList<>();
-        targetSources.addAll(buildSourceNode(target, using).sources);
-        List<SourceTable> sourceSources = new ArrayList<>();
-        // The join bindings of the USING clause (for example its alias) stay visible
-        // to both clauses.
-        Map<String, SourceNode> usingBindings = new HashMap<>();
-        Set<SourceTable> usingHidden = new HashSet<>();
-        state.stackJoinBindings.push(usingBindings);
-        state.stackHiddenSources.push(usingHidden);
-        List<StarOutput> usingPlan = new ArrayList<>();
-        try {
-            if (merge.getUsing() instanceof SQLTableSource) {
-                SourceNode usingNode = buildSourceNode(
-                        (SQLTableSource) merge.getUsing(), using);
-                sourceSources.addAll(usingNode.sources);
-                usingPlan.addAll(usingNode.plan);
-            }
-        } finally {
-            state.stackHiddenSources.pop();
-            state.stackJoinBindings.pop();
-        }
-        Table targetTableMetadata = null;
-        if (context != null) {
-            TableLocation location = resolveMetadataTable(rawName);
-            if (location != null) {
-                targetTableMetadata = location.getTable();
-            }
-        }
-        state.stackTargetTable.push(tableName);
-        state.stackSourceTable.push(tableName);
-        state.inTargetExpression = true;
-        try {
-            SQLMergeStatement.MergeUpdateClause update = merge.getUpdateClause();
-            if (update != null) {
-                // The update expression reads the target and the source.
-                List<SourceTable> scope = new ArrayList<>(targetSources);
-                scope.addAll(sourceSources);
-                pushClauseScope(scope, using, usingBindings, usingHidden, usingPlan);
-                try {
-                    for (SQLUpdateSetItem item : update.getItems()) {
-                        state.stackTargetColumn.push(renderIdentifier(
-                                mergeTargetColumn(targetTableMetadata, tableName,
-                                        item.getColumn())));
-                        state.currentOrdinal = -1;
-                        visitExpr(item.getValue());
-                        state.stackTargetColumn.pop();
-                    }
-                } finally {
-                    popClauseScope();
-                }
-                collectTablesFromExpression(update.getWhere());
-            }
-            SQLMergeStatement.MergeInsertClause insert = merge.getInsertClause();
-            if (insert != null && insert.getValues() != null) {
-                // The inserted values come from the source only.
-                List<SQLExpr> columns = insert.getColumns();
-                List<SQLExpr> values = insert.getValues();
-                boolean hasColumnList = columns != null && !columns.isEmpty();
-                List<String> targetColumns = hasColumnList ? null
-                        : mergeTargetColumns(targetTableMetadata, tableName,
-                                values.size());
-                pushClauseScope(new ArrayList<>(sourceSources), using, usingBindings,
-                        usingHidden, usingPlan);
-                try {
-                    for (int i = 0; i < values.size(); i++) {
-                        String column;
-                        if (hasColumnList) {
-                            if (i >= columns.size()) {
-                                break;
-                            }
-                            column = mergeTargetColumn(targetTableMetadata, tableName,
-                                    columns.get(i));
-                        } else {
-                            column = targetColumns.get(i);
-                        }
-                        state.stackTargetColumn.push(renderIdentifier(column));
-                        state.currentOrdinal = -1;
-                        visitExpr(values.get(i));
-                        state.stackTargetColumn.pop();
-                    }
-                } finally {
-                    popClauseScope();
-                }
-                collectTablesFromExpression(insert.getWhere());
-            }
-        } finally {
-            state.inTargetExpression = false;
-            state.stackSourceTable.pop();
-            state.stackTargetTable.pop();
-        }
-        collectTablesFromExpression(merge.getOn());
-    }
-
-    private String renderMetadataColumn(Column column) {
-        if (!column.isQuoted()) {
-            return renderIdentifier(column.getColumnName());
-        }
-        DbType dialect = currentDialect();
-        if (dialect == DbType.mysql || dialect == DbType.mariadb) {
-            return "`" + column.getColumnName().replace("`", "``") + "`";
-        }
-        return quoteIdentifierValue(column.getColumnName());
-    }
-
-    private String mergeTargetColumn(Table metadata, String tableName, SQLExpr column) {
-        String raw = rawColumnName(column);
-        if (!MetadataCatalog.isQuotedIdentifier(raw)) {
-            raw = lastIdentifier(raw);
-        }
-        if (metadata != null) {
-            String resolved = MetadataCatalog.resolveColumnName(metadata, raw,
-                    currentDialect());
-            if (resolved == null) {
-                throw new ColumnNotFoundException(normalizeIdentifier(raw),
-                        java.util.Collections.singletonList(tableName));
-            }
-            return resolved;
-        }
-        return normalizeIdentifier(raw);
-    }
-
-    private List<String> mergeTargetColumns(Table metadata, String tableName,
-            int count) {
-        if (metadata == null) {
-            throw new ColumnNotFoundException("*",
-                    java.util.Collections.singletonList(tableName));
-        }
-        List<String> columns = new ArrayList<>();
-        for (Column column : metadata.getFields()) {
-            columns.add(column.getColumnName());
-        }
-        if (columns.size() < count) {
-            throw new ColumnNotFoundException("*",
-                    java.util.Collections.singletonList(tableName));
-        }
-        return columns;
-    }
-
-    private void processInsertInto(SQLExprTableSource tableSource,
-            List<SQLExpr> insertColumns, SQLSelect select,
-            SQLWithSubqueryClause with, List<SQLAssignItem> partitions) {
-        String rawName = extractTableName(tableSource);
-        String written = normalizeQualifiedName(rawName);
-        // The graph identity of an unaliased target keeps its written reference when
-        // metadata is not available, so later reads resolve to the same vertex.
-        String tableName = detachedMetadata() && context == null && rawName != null
-                ? sessionPhysicalReference(rawName) : written;
-        Table targetMetadata = null;
-        if (context != null && findCteTarget(identifierKey(rawName)) == null) {
-            TableLocation location = resolveMetadataTable(rawName);
-            if (location != null) {
-                tableName = location.getDisplayName();
-                targetMetadata = location.getTable();
-            } else if (detachedMetadata() && rawName != null) {
-                // The target table is missing from the catalog: keep its written
-                // identity so the table-level edge matches later reads.
-                tableName = sessionPhysicalReference(rawName);
-            }
-        }
-        registerTable(written, tableName, tableName, tableSource.getAlias() == null
-                ? null : normalizeIdentifier(tableSource.getAlias()),
-                findCteTarget(identifierKey(rawName)) != null);
-
-        // Static partition columns receive no data; dynamic partition columns follow
-        // the table's non-partition columns in partition-spec order. Other dialects use
-        // PARTITION (...) as a physical partition selector, not a column list.
-        DbType insertDialect = resolveDialect();
-        String partitionTargets = insertDialect == DbType.hive
-                || insertDialect == DbType.antspark
-                        ? partitionTargetList(insertColumns, partitions,
-                                targetMetadata, tableName)
-                        : null;
-
-        boolean scoped = with != null;
-        if (scoped) {
-            state.cteScopes.push(new HashMap<String, String>());
-        }
-        try {
-            if (with != null) {
-                processWithSubQuery(with);
-            }
-
-            String insertTemp = getTempTableName();
-            state.stackTargetTable.push(insertTemp);
-            state.intermediateTargets.add(insertTemp);
-
-            if (select != null) {
-                processSelect(select);
-            }
-
-            String fromTable = state.stackTargetTable.peek();
-            boolean fromTemporary = state.tempTables.contains(fromTable);
-            List<SQLExpr> columns = insertColumns;
-            if (partitionTargets != null) {
-                Instruction insertEdge = new Instruction(OperationType.COLUMNS_INJECT,
-                        fromTable, String.format("%s(%s)", tableName, partitionTargets),
-                        -1, fromTemporary, false);
-                insertEdge.setWildcardTable(tableName);
-                insertEdge.setPopulatedColumns(partitionTargets);
-                instructions.add(insertEdge);
-            } else if (columns != null && !columns.isEmpty()) {
-                final Table insertMetadata = targetMetadata;
-                final String insertTable = tableName;
-                String colStr = columns.stream()
-                        .map(column -> renderInsertColumn(insertMetadata, insertTable, column))
-                        .collect(Collectors.joining(","));
-                Instruction insertEdge = new Instruction(OperationType.COLUMNS_INJECT,
-                        fromTable, String.format("%s(%s)", tableName, colStr), -1,
-                        fromTemporary, false);
-                insertEdge.setWildcardTable(tableName);
-                insertEdge.setPopulatedColumns(colStr);
-                instructions.add(insertEdge);
-            } else {
-                instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                        fromTable, tableName, -1, fromTemporary, false));
-            }
-            state.stackTargetTable.pop();
-        } finally {
-            if (scoped) {
-                state.cteScopes.pop();
-            }
-        }
-    }
-
-    /**
-     * Compare partition names with catalog fields by name, not by SQL quotation.
-     * Hive/Spark partition matching is case-insensitive and only the outer
-     * backtick/double-quote layer is syntactic.
-     */
-    private static String partitionKey(String raw) {
-        return foldCase(hiveLogicalName(raw));
-    }
-
-    private static String partitionColumnKey(String columnName) {
-        return foldCase(columnName);
-    }
-
-    /**
-     * Case fold matching {@link String#equalsIgnoreCase}: per-character
-     * upper-then-lower, independent of the JVM locale.
-     */
-    private static String foldCase(String value) {
-        return IdentifierCase.fold(value);
-    }
-
-    /** Strip one Hive SQL identifier layer, keeping inner quote characters. */
-    /** Fold an already-decoded Hive/Spark planned column name. */
-    private static String hivePlannedColumn(String column) {
-        return foldCase(column);
-    }
-
-    private static String hiveColumnIdentity(String raw) {
-        return foldCase(hiveLogicalName(raw));
-    }
-
-    private static String hiveLogicalName(String raw) {
-        if (raw == null) {
-            return null;
-        }
-        String value = raw.trim();
-        if (value.length() >= 2 && value.charAt(0) == '`'
-                && value.charAt(value.length() - 1) == '`') {
-            return value.substring(1, value.length() - 1).replace("``", "`");
-        }
-        return MetadataCatalog.normalizeIdentifier(value);
-    }
-
-    private static String catalogSpelling(Table metadata, String raw) {
-        String logical = hiveLogicalName(raw);
-        String key = foldCase(logical);
-        for (Column column : metadata.getFields()) {
-            if (foldCase(column.getColumnName()).equals(key)) {
-                return column.getColumnName();
-            }
-        }
-        return logical;
-    }
-
-    private static String renderHiveIdentifier(String name) {
-        if (name == null || name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-            return name;
-        }
-        return "`" + name.replace("`", "``") + "`";
-    }
-
-    private String partitionTargetList(List<SQLExpr> insertColumns,
-            List<SQLAssignItem> partitions, Table targetMetadata, String tableName) {
-        if (targetMetadata == null || partitions == null || partitions.isEmpty()) {
-            return null;
-        }
-        Set<String> partitionKeys = new HashSet<>();
-        List<String> dynamic = new ArrayList<>();
-        for (SQLAssignItem partition : partitions) {
-            String name = partition.getTarget() == null ? null
-                    : partition.getTarget().toString();
-            if (name == null) {
-                continue;
-            }
-            partitionKeys.add(partitionKey(name));
-            if (partition.getValue() == null) {
-                dynamic.add(name);
-            }
-        }
-        if (partitionKeys.isEmpty()) {
-            return null;
-        }
-        Set<String> dynamicKeys = new HashSet<>();
-        for (String name : dynamic) {
-            dynamicKeys.add(partitionKey(name));
-        }
-        List<String> targets = new ArrayList<>();
-        if (insertColumns != null && !insertColumns.isEmpty()) {
-            for (SQLExpr column : insertColumns) {
-                targets.add(renderInsertColumn(targetMetadata, tableName, column));
-            }
-        } else {
-            // Follow the table's own column order; a reordered PARTITION clause
-            // does not reorder the written data.
-            for (Column column : targetMetadata.getFields()) {
-                String key = partitionColumnKey(column.getColumnName());
-                if (!partitionKeys.contains(key)
-                        || dynamicKeys.contains(key)) {
-                    targets.add(renderHiveIdentifier(column.getColumnName()));
-                }
-            }
-        }
-        Set<String> present = new HashSet<>();
-        for (String target : targets) {
-            present.add(partitionKey(target));
-        }
-        for (String name : dynamic) {
-            String key = partitionKey(name);
-            if (present.add(key)) {
-                targets.add(renderHiveIdentifier(
-                        catalogSpelling(targetMetadata, name)));
-            }
-        }
-        return targets.isEmpty() ? null : String.join(",", targets);
+        dml.processMerge(merge);
     }
 
     private void processUpdate(SQLUpdateStatement update) {
-        Map<String, List<SourceTable>> using = new LinkedHashMap<>();
-        List<SourceTable> sources = new ArrayList<>();
-        List<StarOutput> plan = new ArrayList<>();
-        state.stackJoinBindings.push(new HashMap<String, SourceNode>());
-        state.stackHiddenSources.push(new HashSet<SourceTable>());
-        try {
-            if (update.getTableSource() != null) {
-                SourceNode node = buildSourceNode(update.getTableSource(), using);
-                sources.addAll(node.sources);
-                plan.addAll(node.plan);
-            }
-            if (update.getFrom() != null) {
-                SourceNode node = buildSourceNode(update.getFrom(), using);
-                sources.addAll(node.sources);
-                plan.addAll(node.plan);
-            }
-            if (sources.isEmpty()) {
-                return;
-            }
-
-            String target = sources.get(0).displayName;
-            state.stackTargetTable.push(target);
-            state.stackSources.push(sources);
-            state.lateralScopes.push(Boolean.FALSE);
-            state.stackUsing.push(using);
-            state.stackStarPlan.push(plan);
-            state.stackSourceTable.push(target);
-            state.inTargetExpression = true;
-            try {
-                for (SQLUpdateSetItem item : update.getItems()) {
-                    String targetColumn = canonicalColumnName(target,
-                            rawColumnName(item.getColumn()));
-                    state.stackTargetColumn.push(renderIdentifier(targetColumn));
-                    state.currentOrdinal = -1;
-                    visitExpr(item.getValue());
-                    state.stackTargetColumn.pop();
-                }
-            } finally {
-                state.inTargetExpression = false;
-                state.stackSourceTable.pop();
-                state.stackStarPlan.pop();
-                state.stackUsing.pop();
-                state.lateralScopes.pop();
-                state.stackSources.pop();
-                state.stackTargetTable.pop();
-            }
-        } finally {
-            state.stackHiddenSources.pop();
-            state.stackJoinBindings.pop();
-        }
-        collectTablesFromExpression(update.getWhere());
+        dml.processUpdate(update);
     }
 
     private void processDelete(SQLDeleteStatement delete) {
-        Map<String, List<SourceTable>> using = new LinkedHashMap<>();
-        List<SourceTable> sources = new ArrayList<>();
-        if (delete.getTableSource() != null) {
-            sources.addAll(buildSourceNode(delete.getTableSource(), using).sources);
-        }
-        if (delete.getFrom() != null) {
-            sources.addAll(buildSourceNode(delete.getFrom(), using).sources);
-        }
-        collectTablesFromExpression(delete.getWhere());
+        dml.processDelete(delete);
+    }
+
+    private static String hivePlannedColumn(String column) {
+        return DmlStatementAnalyzer.hivePlannedColumn(column);
+    }
+
+    private static String hiveColumnIdentity(String raw) {
+        return DmlStatementAnalyzer.hiveColumnIdentity(raw);
+    }
+
+    private static String renderHiveIdentifier(String name) {
+        return DmlStatementAnalyzer.renderHiveIdentifier(name);
+    }
+
+    private static String foldCase(String value) {
+        return DmlStatementAnalyzer.foldCase(value);
     }
 
     private void processCreateTable(SQLCreateTableStatement create) {
@@ -8326,7 +7489,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
     /* WHERE subqueries (tables only)                                     */
     /* ------------------------------------------------------------------ */
 
-    private void collectTablesFromExpression(SQLExpr expr) {
+    void collectTablesFromExpression(SQLExpr expr) {
         if (expr == null) {
             return;
         }
@@ -8482,7 +7645,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return candidate;
     }
 
-    private static String rawColumnName(SQLExpr expr) {
+    static String rawColumnName(SQLExpr expr) {
         if (expr instanceof SQLIdentifierExpr) {
             return ((SQLIdentifierExpr) expr).getName();
         }
@@ -8508,16 +7671,16 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return expr.toString();
     }
 
-    private static String normalizeIdentifier(String name) {
+    static String normalizeIdentifier(String name) {
         return MetadataCatalog.normalizeIdentifier(name);
     }
 
-    private static String normalizeQualifiedName(String name) {
+    static String normalizeQualifiedName(String name) {
         String[] parts = MetadataCatalog.splitQualifiedName(name);
         return String.join(".", parts);
     }
 
-    private static String lastIdentifier(String name) {
+    static String lastIdentifier(String name) {
         if (name == null) {
             return null;
         }

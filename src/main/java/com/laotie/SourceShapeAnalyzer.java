@@ -164,11 +164,7 @@ final class SourceShapeAnalyzer {
             SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
             SourceTable source = host.findByOwner(owner);
             if (source != null) {
-                if (source.metadataTable != null || source.outputWidthKnown) {
-                    return true;
-                }
-                return source.temporary
-                        && Boolean.TRUE.equals(host.state().targetWidthKnown.get(source.displayName));
+                return sourceWidthKnown(source);
             }
             SourceNode binding = host.joinBinding(owner);
             return binding != null && binding.widthKnown;

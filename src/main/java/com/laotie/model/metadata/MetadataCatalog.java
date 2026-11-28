@@ -959,6 +959,10 @@ public class MetadataCatalog {
         return parts.toArray(new String[0]);
     }
 
+    public static boolean isSingleSegmentName(String rawName) {
+        return splitQualifiedNamePreservingQuotes(rawName).length == 1;
+    }
+
     public static String[] splitQualifiedName(String qualifiedName) {
         String[] parts = splitQualifiedNamePreservingQuotes(qualifiedName);
         for (int i = 0; i < parts.length; i++) {

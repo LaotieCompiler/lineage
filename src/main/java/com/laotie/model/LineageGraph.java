@@ -133,6 +133,7 @@ public class LineageGraph {
                         } else if (!to.isTemporary() && result.getContext() != null) {
                             java.util.List<String> targetColumns =
                                     physicalColumnNames(to.getTableName(), result.getContext());
+                            int targetWidth = targetColumns.size();
                             java.util.List<String> projected =
                                     result.getTargetOutputs().get(instruction.getFrom());
                             String fromKey = prefix + instruction.getFrom();
@@ -156,8 +157,6 @@ public class LineageGraph {
                                 Column target = to;
                                 Column source = from;
                                 java.util.List<String> names = targetColumns;
-                                int targetWidth = physicalColumnNames(
-                                        to.getTableName(), result.getContext()).size();
                                 String fromTable = instruction.getFrom();
                                 boolean fromTemporary = instruction.isFromTemporary();
                                 pendingWildcardLinks.add(() -> linkPopulatedColumns(target,

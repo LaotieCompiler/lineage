@@ -244,24 +244,7 @@ final class SourcePlanner {
             String target = alias != null ? host.uniqueTarget(alias) : host.getTempTableName();
             host.state().tempTables.add(target);
             processDerivedBody(target, body, lateral.getColumns());
-            List<String> derivedOutputs = host.copyOutputs(host.state().targetOutputs.get(target));
-            boolean widthKnown = host.isOutputWidthKnown(target, derivedOutputs);
-            boolean namesKnown = host.isOutputNamesKnown(target, derivedOutputs);
-            int derivedWidth = host.derivedWidth(target, derivedOutputs, widthKnown);
-            SourceTable source = new SourceTable(target, null, null, alias, null, true,
-                    widthKnown, namesKnown, derivedOutputs, host.copyKeys(target),
-                    host.copyNameKnown(target, derivedOutputs.size()),
-                    host.targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    host.copyUnknownGroups(target, derivedOutputs.size()), false,
-                    host.hasWildcardContribution(target));
-            return new SourceNode(java.util.Collections.singletonList(source),
-                    planFromSource(source), namesKnown, widthKnown, derivedWidth,
-                    host.targetMinimumColumns(target, widthKnown, derivedWidth), 0,
-                    derivedWidth,
-                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                            : java.util.Collections.singletonList(source),
-                    java.util.Collections.<SourceTable>emptyList(),
-                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
+            return derivedSourceNode(target, alias);
         }
         if (tableSource instanceof SQLSubqueryTableSource) {
             SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) tableSource;
@@ -269,24 +252,7 @@ final class SourcePlanner {
             String target = alias != null ? host.uniqueTarget(alias) : host.getTempTableName();
             host.state().tempTables.add(target);
             processDerivedBody(target, subquery.getSelect(), subquery.getColumns());
-            List<String> derivedOutputs = host.copyOutputs(host.state().targetOutputs.get(target));
-            boolean widthKnown = host.isOutputWidthKnown(target, derivedOutputs);
-            boolean namesKnown = host.isOutputNamesKnown(target, derivedOutputs);
-            int derivedWidth = host.derivedWidth(target, derivedOutputs, widthKnown);
-            SourceTable source = new SourceTable(target, null, null, alias, null, true,
-                    widthKnown, namesKnown, derivedOutputs, host.copyKeys(target),
-                    host.copyNameKnown(target, derivedOutputs.size()),
-                    host.targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    host.copyUnknownGroups(target, derivedOutputs.size()), false,
-                    host.hasWildcardContribution(target));
-            return new SourceNode(java.util.Collections.singletonList(source),
-                    planFromSource(source), namesKnown, widthKnown, derivedWidth,
-                    host.targetMinimumColumns(target, widthKnown, derivedWidth), 0,
-                    derivedWidth,
-                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                            : java.util.Collections.singletonList(source),
-                    java.util.Collections.<SourceTable>emptyList(),
-                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
+            return derivedSourceNode(target, alias);
         }
         if (tableSource instanceof SQLUnionQueryTableSource) {
             SQLUnionQueryTableSource union = (SQLUnionQueryTableSource) tableSource;
@@ -294,24 +260,7 @@ final class SourcePlanner {
             String target = alias != null ? host.uniqueTarget(alias) : host.getTempTableName();
             host.state().tempTables.add(target);
             processDerivedUnion(target, union.getUnion(), union.getColumns());
-            List<String> derivedOutputs = host.copyOutputs(host.state().targetOutputs.get(target));
-            boolean widthKnown = host.isOutputWidthKnown(target, derivedOutputs);
-            boolean namesKnown = host.isOutputNamesKnown(target, derivedOutputs);
-            int derivedWidth = host.derivedWidth(target, derivedOutputs, widthKnown);
-            SourceTable source = new SourceTable(target, null, null, alias, null, true,
-                    widthKnown, namesKnown, derivedOutputs, host.copyKeys(target),
-                    host.copyNameKnown(target, derivedOutputs.size()),
-                    host.targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    host.copyUnknownGroups(target, derivedOutputs.size()), false,
-                    host.hasWildcardContribution(target));
-            return new SourceNode(java.util.Collections.singletonList(source),
-                    planFromSource(source), namesKnown, widthKnown, derivedWidth,
-                    host.targetMinimumColumns(target, widthKnown, derivedWidth), 0,
-                    derivedWidth,
-                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                            : java.util.Collections.singletonList(source),
-                    java.util.Collections.<SourceTable>emptyList(),
-                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
+            return derivedSourceNode(target, alias);
         }
         if (tableSource instanceof SQLExprTableSource) {
             SourceTable source = resolveSource((SQLExprTableSource) tableSource);
@@ -438,6 +387,28 @@ final class SourcePlanner {
         host.state().targetColumnAliases.push(aliases);
     }
 
+    /** Wraps an already-analyzed derived body in the single source it exposes. */
+    private SourceNode derivedSourceNode(String target, String alias) {
+        List<String> derivedOutputs = host.copyOutputs(host.state().targetOutputs.get(target));
+        boolean widthKnown = host.isOutputWidthKnown(target, derivedOutputs);
+        boolean namesKnown = host.isOutputNamesKnown(target, derivedOutputs);
+        int derivedWidth = host.derivedWidth(target, derivedOutputs, widthKnown);
+        SourceTable source = new SourceTable(target, null, null, alias, null, true,
+                widthKnown, namesKnown, derivedOutputs, host.copyKeys(target),
+                host.copyNameKnown(target, derivedOutputs.size()),
+                host.targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
+                host.copyUnknownGroups(target, derivedOutputs.size()), false,
+                host.hasWildcardContribution(target));
+        return new SourceNode(java.util.Collections.singletonList(source),
+                planFromSource(source), namesKnown, widthKnown, derivedWidth,
+                host.targetMinimumColumns(target, widthKnown, derivedWidth), 0,
+                derivedWidth,
+                widthKnown ? java.util.Collections.<SourceTable>emptyList()
+                        : java.util.Collections.singletonList(source),
+                java.util.Collections.<SourceTable>emptyList(),
+                unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
+    }
+
     List<StarOutput> planFromSource(SourceTable source) {
         List<String> names = host.sourceColumnNames(source);
         List<String> keys = sourceColumnKeys(source);
@@ -445,14 +416,14 @@ final class SourcePlanner {
         if (host.sourceWidthKnown(source)) {
             width = Math.max(width, host.sourceKnownWidth(source));
         }
+        if (width > names.size()) {
+            names = new ArrayList<>(names);
+            for (int j = names.size(); j < width; j++) {
+                names.add("col" + (j + 1));
+            }
+        }
         List<StarOutput> plan = new ArrayList<>();
         for (int i = 0; i < width; i++) {
-            if (i >= names.size()) {
-                names = new ArrayList<>(names);
-                for (int j = names.size(); j <= i; j++) {
-                    names.add("col" + (j + 1));
-                }
-            }
             String key = i < keys.size() ? keys.get(i) : host.identifierKey(names.get(i));
             boolean nameKnown = host.sourceOutputNameKnown(source, i);
             boolean quoted = source.metadataTable != null

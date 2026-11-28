@@ -1035,7 +1035,7 @@ public class DmlLineage {
     }
 
     static boolean isSingleSegmentName(String rawName) {
-        return MetadataCatalog.splitQualifiedNamePreservingQuotes(rawName).length == 1;
+        return MetadataCatalog.isSingleSegmentName(rawName);
     }
 
     String canonicalIdentifier(String rawName) {

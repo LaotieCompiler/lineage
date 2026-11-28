@@ -12,6 +12,7 @@ import com.alibaba.druid.sql.ast.*;
 import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
 
+import com.laotie.ast.SqlAst;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.TableLocation;
@@ -111,12 +112,7 @@ final class StaticShapeAnalyzer {
      * rows, used to pre-bind forward-referenced recursive CTEs.
      */
     private static boolean isStarProperty(SQLExpr expr) {
-        if (!(expr instanceof SQLPropertyExpr)) {
-            return false;
-        }
-        String rawName = ((SQLPropertyExpr) expr).getName();
-        return "*".equals(MetadataCatalog.normalizeIdentifier(rawName))
-                && !MetadataCatalog.isQuotedIdentifier(rawName);
+        return SqlAst.isStarProperty(expr);
     }
 
     List<String> staticOutputNames(SQLSelect select,

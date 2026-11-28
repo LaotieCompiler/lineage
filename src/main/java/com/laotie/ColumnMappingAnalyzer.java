@@ -176,17 +176,7 @@ final class ColumnMappingAnalyzer {
         } else {
             columnName = host.normalizeIdentifier(columnName);
         }
-
-        if (host.state().uncertainOrdinal >= 0 && host.state().currentOrdinal == host.state().uncertainOrdinal) {
-            // The projection's position cannot be derived from the declaration, so a
-            // positional edge would be a guess.
-            return;
-        }
-        String targetTable = host.state().stackTargetTable.peek();
-        host.instructions().add(new Instruction(OperationType.COLUMN_MAPPING,
-                sourceTable + "." + DmlLineage.renderIdentifier(columnName),
-                targetTable + "." + host.state().stackTargetColumn.peek(), host.state().currentOrdinal,
-                sourceTemporary, host.state().tempTables.contains(targetTable)));
+        addResolvedColumnMapping(sourceTable, columnName, sourceTemporary);
     }
 
     private void addResolvedColumnMapping(String sourceTable, String columnName,

@@ -526,11 +526,13 @@ final class DmlStatementAnalyzer {
         String rawName = host.extractTableName(target);
         String written = host.normalizeQualifiedName(rawName);
         String tableName = written;
-        if (host.analysisContext() != null && host.findCteTarget(host.identifierKey(rawName)) == null) {
-            TableLocation location = host.resolveMetadataTable(rawName);
-            if (location != null) {
-                tableName = location.getDisplayName();
-            }
+        TableLocation targetLocation = null;
+        if (host.analysisContext() != null) {
+            targetLocation = host.resolveMetadataTable(rawName);
+        }
+        if (targetLocation != null
+                && host.findCteTarget(host.identifierKey(rawName)) == null) {
+            tableName = targetLocation.getDisplayName();
         }
         host.registerTable(written, tableName, tableName, null, false);
 
@@ -556,13 +558,8 @@ final class DmlStatementAnalyzer {
             host.state().stackHiddenSources.pop();
             host.state().stackJoinBindings.pop();
         }
-        Table targetTableMetadata = null;
-        if (host.analysisContext() != null) {
-            TableLocation location = host.resolveMetadataTable(rawName);
-            if (location != null) {
-                targetTableMetadata = location.getTable();
-            }
-        }
+        Table targetTableMetadata = targetLocation == null ? null
+                : targetLocation.getTable();
         host.state().stackTargetTable.push(tableName);
         host.state().stackSourceTable.push(tableName);
         host.state().inTargetExpression = true;

@@ -17,6 +17,7 @@ import com.alibaba.druid.sql.dialect.sqlserver.visitor.SQLServerASTVisitorAdapte
 import com.alibaba.druid.sql.visitor.SQLASTVisitor;
 import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
 
+import com.laotie.ast.SqlAst;
 import com.laotie.dialect.DialectRules;
 import com.laotie.exception.UnquotedIdentifierException;
 import com.laotie.model.metadata.MetadataCatalog;
@@ -538,12 +539,7 @@ public final class StrictQuotedIdentifierValidator {
     }
 
     private static boolean isStarProperty(SQLExpr expr) {
-        if (!(expr instanceof SQLPropertyExpr)) {
-            return false;
-        }
-        String rawName = ((SQLPropertyExpr) expr).getName();
-        return "*".equals(MetadataCatalog.normalizeIdentifier(rawName))
-                && !MetadataCatalog.isQuotedIdentifier(rawName);
+        return SqlAst.isStarProperty(expr);
     }
 
     private static void checkProperty(SQLPropertyExpr property) {

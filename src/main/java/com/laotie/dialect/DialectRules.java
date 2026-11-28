@@ -32,10 +32,14 @@ public interface DialectRules {
     }
 
     /** Whether a function call may take a unit keyword as its first argument. */
-    boolean allowsUnitFunction(String method);
+    default boolean allowsUnitFunction(String method) {
+        return "EXTRACT".equalsIgnoreCase(method);
+    }
 
     /** Derby only accepts the JDBC escape form's SQL_TSI_* units. */
-    boolean requiresJdbcTimestampUnit();
+    default boolean requiresJdbcTimestampUnit() {
+        return false;
+    }
 
     default boolean isUnitKeyword(String name) {
         return UnitKeywords.isUnit(name);
@@ -152,15 +156,6 @@ final class DefaultDialectRules extends BaseDialectRules {
         super(null, KeyStyle.UPPER_UNQUOTED, CanonicalStyle.UPPER_UNQUOTED);
     }
 
-    @Override
-    public boolean allowsUnitFunction(String method) {
-        return "EXTRACT".equalsIgnoreCase(method);
-    }
-
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }
 
 final class MySqlDialectRules extends BaseDialectRules {
@@ -178,10 +173,6 @@ final class MySqlDialectRules extends BaseDialectRules {
                 || "GET_FORMAT".equalsIgnoreCase(method);
     }
 
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }
 
 final class PostgresDialectRules extends BaseDialectRules {
@@ -192,15 +183,6 @@ final class PostgresDialectRules extends BaseDialectRules {
                 CanonicalStyle.LOWER_UNQUOTED);
     }
 
-    @Override
-    public boolean allowsUnitFunction(String method) {
-        return "EXTRACT".equalsIgnoreCase(method);
-    }
-
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }
 
 final class HiveDialectRules extends BaseDialectRules {
@@ -217,10 +199,6 @@ final class HiveDialectRules extends BaseDialectRules {
                 || "TIMESTAMPADD".equalsIgnoreCase(method);
     }
 
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }
 
 final class SqlServerDialectRules extends BaseDialectRules {
@@ -245,10 +223,6 @@ final class SqlServerDialectRules extends BaseDialectRules {
                 || "DATE_BUCKET".equalsIgnoreCase(method);
     }
 
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }
 
 final class SybaseDialectRules extends BaseDialectRules {
@@ -270,10 +244,6 @@ final class SybaseDialectRules extends BaseDialectRules {
                 || "DATENAME".equalsIgnoreCase(method);
     }
 
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }
 
 final class H2DialectRules extends BaseDialectRules {
@@ -294,10 +264,6 @@ final class H2DialectRules extends BaseDialectRules {
                 || "DATE_TRUNC".equalsIgnoreCase(method);
     }
 
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }
 
 final class DerbyDialectRules extends BaseDialectRules {
@@ -336,8 +302,4 @@ final class HsqlDialectRules extends BaseDialectRules {
                 || "TIMESTAMPADD".equalsIgnoreCase(method);
     }
 
-    @Override
-    public boolean requiresJdbcTimestampUnit() {
-        return false;
-    }
 }

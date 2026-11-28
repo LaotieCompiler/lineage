@@ -28,9 +28,8 @@ import com.laotie.model.metadata.MetadataMode;
  * Parse and analyze the 22 TPC-H queries against the standard schema.
  *
  * <p>
- * The queries are not committed (TPC license); run
- * {@code scripts/fetch-tpch-corpus.sh} first. When they are absent the test is skipped so
- * an offline build stays green.
+ * The queries are not committed (TPC license); place them in {@code target/tpch/queries}.
+ * When they are absent the test is skipped so an offline build stays green.
  * </p>
  */
 public class TpchCorpusTest {
@@ -60,7 +59,7 @@ public class TpchCorpusTest {
 
     @Test
     public void allQueriesAnalyzeDeterministically() throws Exception {
-        Assume.assumeTrue("fetch TPC-H queries with scripts/fetch-tpch-corpus.sh",
+        Assume.assumeTrue("place TPC-H queries in target/tpch/queries",
                 Files.isDirectory(QUERIES));
 
         List<String> failures = new ArrayList<>();

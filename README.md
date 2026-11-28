@@ -347,35 +347,6 @@ After an intentional behavior change, regenerate the expectations and review the
 mvn test -Dtest=GoldenLineageTest -Dgolden.update=true
 ```
 
-### External TPC-H corpus
-
-`TpchCorpusTest` analyzes the 22 TPC-H queries against `src/test/resources/tpch/schema.sql`
-and asserts that every query produces lineage and is deterministic. The queries are not
-committed (TPC license); download them first:
-
-```bash
-./scripts/fetch-tpch-corpus.sh
-mvn test -Dtest=TpchCorpusTest
-```
-
-Without the download the test is skipped, so offline builds stay green.
-
-### Differential check (optional)
-
-[SQLGlot](https://github.com/tobymao/sqlglot) provides an independent implementation of
-column lineage. It is a second opinion, not an oracle: the script compares single-statement
-`SELECT` cases from the golden corpus with its lineage and reports differences and
-unsupported constructs for manual review.
-
-```bash
-python3 -m venv target/sqlglot-venv
-target/sqlglot-venv/bin/pip install -r scripts/sqlglot-requirements.txt
-target/sqlglot-venv/bin/python scripts/differential-sqlglot.py
-```
-
-The check is not part of the Maven build or CI. Pass `--fail-on-diff` to make confirmed
-differences exit non-zero.
-
 ### Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `mvn clean test` on every push and pull

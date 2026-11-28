@@ -56,7 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 933 个测试通过、2 个跳过。
+当前为 936 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
 
 Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 `JdbcMetadataScannerDockerTest`：
@@ -64,6 +64,30 @@ Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 ```bash
 ./scripts/run-jdbc-docker-tests.sh
 ```
+
+### 黄金语料
+
+`src/test/resources/golden` 存放数据驱动的回归用例。每个 JSON 用例声明方言、分析选项、
+可选的 catalog DDL、SQL 脚本以及每条语句的期望 instructions 或错误；`GoldenLineageTest`
+会运行全部用例。
+
+在有意的行为变更之后，重新生成期望并**审查 JSON diff** 后再提交：
+
+```bash
+mvn test -Dtest=GoldenLineageTest -Dgolden.update=true
+```
+
+### 外部 TPC-H 语料
+
+`TpchCorpusTest` 会用 `src/test/resources/tpch/schema.sql` 分析 22 条 TPC-H 查询，断言每条
+都产生血缘且结果确定。查询本身因 TPC 许可证不提交入库，先下载：
+
+```bash
+./scripts/fetch-tpch-corpus.sh
+mvn test -Dtest=TpchCorpusTest
+```
+
+未下载时该测试自动跳过，离线构建仍然通过。
 
 ### 构建
 

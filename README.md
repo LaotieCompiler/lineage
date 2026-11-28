@@ -52,7 +52,8 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 933 tests, 2 skipped).
+Run the full unit suite with `mvn test` (currently 936 tests; 2 are always skipped and the
+optional TPC-H corpus is skipped until its queries are fetched).
 
 The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
 run `JdbcMetadataScannerDockerTest`:
@@ -60,6 +61,32 @@ run `JdbcMetadataScannerDockerTest`:
 ```bash
 ./scripts/run-jdbc-docker-tests.sh
 ```
+
+### golden corpus
+
+`src/test/resources/golden` holds data-driven regression cases. Each JSON case declares a
+dialect, analysis options, an optional catalog DDL, a SQL script and the expected
+per-statement instructions or error. `GoldenLineageTest` runs every case.
+
+After an intentional behavior change, regenerate the expectations and review the JSON diff
+before committing it:
+
+```bash
+mvn test -Dtest=GoldenLineageTest -Dgolden.update=true
+```
+
+### external TPC-H corpus
+
+`TpchCorpusTest` analyzes the 22 TPC-H queries against `src/test/resources/tpch/schema.sql`
+and asserts that every query produces lineage and is deterministic. The queries are not
+committed (TPC license); download them first:
+
+```bash
+./scripts/fetch-tpch-corpus.sh
+mvn test -Dtest=TpchCorpusTest
+```
+
+Without the download the test is skipped, so offline builds stay green.
 
 ### build
 

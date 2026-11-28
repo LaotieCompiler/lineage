@@ -3,7 +3,6 @@ package com.laotie;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -31,7 +30,6 @@ import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
-import com.laotie.model.metadata.Table;
 
 /** SELECT projection, outer-reference and scalar-subquery analysis. */
 final class SelectAnalyzer {

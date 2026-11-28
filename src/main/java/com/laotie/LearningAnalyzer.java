@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.ast.*;
 import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
@@ -708,7 +707,6 @@ final class LearningAnalyzer {
             }
         }
     }
-
 
     void learnColumn(SourceTable source, String columnName) {
         learnColumn(source, columnName, false);

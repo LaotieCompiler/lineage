@@ -8,42 +8,23 @@ package com.laotie;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.Stack;
-import java.util.stream.Collectors;
 
 import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLName;
-import com.alibaba.druid.sql.ast.SQLObject;
 import com.alibaba.druid.sql.ast.SQLStatement;
-import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
-import com.alibaba.druid.sql.ast.expr.SQLBetweenExpr;
-import com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr;
-import com.alibaba.druid.sql.ast.expr.SQLCaseExpr;
-import com.alibaba.druid.sql.ast.expr.SQLCastExpr;
-import com.alibaba.druid.sql.ast.expr.SQLExtractExpr;
-import com.alibaba.druid.sql.ast.expr.SQLExistsExpr;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.expr.SQLTextLiteralExpr;
-import com.alibaba.druid.sql.ast.expr.SQLInListExpr;
-import com.alibaba.druid.sql.ast.expr.SQLInSubQueryExpr;
 import com.alibaba.druid.sql.ast.expr.SQLListExpr;
-import com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr;
-import com.alibaba.druid.sql.ast.expr.SQLNotExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.expr.SQLQueryExpr;
-import com.alibaba.druid.sql.ast.expr.SQLUnaryExpr;
 import com.alibaba.druid.sql.ast.statement.SQLAssignItem;
 import com.alibaba.druid.sql.ast.statement.SQLCreateTableStatement;
 import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
-import com.alibaba.druid.sql.ast.statement.SQLColumnDefinition;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
 import com.alibaba.druid.sql.ast.statement.SQLMergeStatement;
@@ -56,32 +37,14 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectQuery;
 import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
 import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.alibaba.druid.sql.ast.statement.SQLSetStatement;
-import com.alibaba.druid.sql.ast.statement.SQLSubqueryTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLUnionQuery;
-import com.alibaba.druid.sql.ast.statement.SQLUnionQueryTableSource;
-import com.alibaba.druid.sql.ast.statement.SQLUpdateSetItem;
 import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
 import com.alibaba.druid.sql.ast.statement.SQLUseStatement;
-import com.alibaba.druid.sql.dialect.oracle.visitor.OracleASTVisitorAdapter;
-import com.alibaba.druid.sql.dialect.postgresql.ast.stmt.PGInsertStatement;
-import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlInsertStatement;
-import com.alibaba.druid.sql.visitor.SQLASTVisitor;
-import com.alibaba.druid.sql.dialect.sqlserver.visitor.SQLServerASTVisitorAdapter;
-import com.alibaba.druid.sql.dialect.oracle.ast.stmt.OracleSelectTableReference;
-import com.alibaba.druid.sql.dialect.oracle.ast.stmt.OracleSelectJoin;
-import com.alibaba.druid.sql.dialect.oracle.ast.stmt.OracleSelectSubqueryTableSource;
-import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
 import com.alibaba.druid.sql.ast.statement.SQLWithSubqueryClause;
 
-import com.laotie.exception.AmbiguousColumnException;
-import com.laotie.exception.AmbiguousTableException;
-import com.laotie.exception.ColumnNotFoundException;
-import com.laotie.exception.MetadataNotFoundException;
-import com.laotie.exception.UnquotedIdentifierException;
 import com.laotie.analysis.AnalysisContext;
 import com.laotie.analysis.model.CorrelatedOwner;
-import com.laotie.analysis.model.OutputName;
 import com.laotie.analysis.model.ScalarSubquery;
 import com.laotie.analysis.model.SourceNode;
 import com.laotie.analysis.model.SourceTable;
@@ -91,7 +54,6 @@ import com.laotie.analysis.model.WildcardRef;
 import com.laotie.analysis.model.WildcardSpan;
 import com.laotie.dialect.DialectRules;
 import com.laotie.identifier.Identifier;
-import com.laotie.identifier.IdentifierCase;
 import com.laotie.identifier.Identifiers;
 import com.laotie.metadata.SessionState;
 import com.laotie.metadata.MetadataResolver;
@@ -101,7 +63,6 @@ import com.laotie.validation.StrictQuotedIdentifierValidator;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
-import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.LearnedMetadata;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
@@ -112,19 +73,48 @@ import com.laotie.model.metadata.TableLocation;
 
 /**
  * Extract table and column level lineage from SQL statements.
+ *
+ * <p>This class is the public facade and orchestration host. It owns the
+ * statement-level state and delegates the individual concerns to package-private
+ * analyzers: parsing and dispatch, source planning, expression/owner resolution,
+ * star projection, target shape, column mapping, table collection and metadata
+ * learning.</p>
  */
 @SuppressWarnings({"PMD.CyclomaticComplexity", "PMD.UncommentedEmptyMethodBody"})
 public class DmlLineage {
 
+    static final String ANSI_IDENTIFIER_ATTRIBUTE =
+            "com.laotie.ansiQuotedIdentifier";
+
     private Set<String> tables;
     private List<Instruction> instructions;
+    private final DbType dbType;
+    private final boolean explicitDialect;
+    private final MetadataContext explicitContext;
+    private final LineageOptions options;
+    private LearnedMetadata learnedMetadata;
+    private String sessionDatabase;
+    private String sessionRawDatabase;
+    private String sessionSchema;
+    private List<String> sessionRawSchemas = new ArrayList<>();
+    private Map<String, Set<String>> pendingLearned = new HashMap<>();
+    private MetadataContext context;
+    private boolean ansiEnabled;
+    private boolean ansiDoubleQuotedIdentifiers;
+    private String statementSql;
+
     private final AnalysisContext state = new AnalysisContext();
-    final TargetShapeAnalyzer targetShape = new TargetShapeAnalyzer(this);
-    final StarProjectionAnalyzer starProjection = new StarProjectionAnalyzer(this);
-    final QueryDispatcher queryDispatcher = new QueryDispatcher(this);
-    final TableCollector tableCollector = new TableCollector(this);
-    final ColumnMappingAnalyzer columnMapping = new ColumnMappingAnalyzer(this);
-    final SourceShapeAnalyzer sourceShape = new SourceShapeAnalyzer(this);
+    private final LearningAnalyzer learning = new LearningAnalyzer(this);
+    private final SelectAnalyzer selector = new SelectAnalyzer(this);
+    private final SourcePlanner planner = new SourcePlanner(this);
+    private final ExpressionAnalyzer expression = new ExpressionAnalyzer(this);
+
+    private final TargetShapeAnalyzer targetShape = new TargetShapeAnalyzer(this);
+    private final StarProjectionAnalyzer starProjection = new StarProjectionAnalyzer(this);
+    private final QueryDispatcher queryDispatcher = new QueryDispatcher(this);
+    private final TableCollector tableCollector = new TableCollector(this);
+    private final ColumnMappingAnalyzer columnMapping = new ColumnMappingAnalyzer(this);
+    private final SourceShapeAnalyzer sourceShape = new SourceShapeAnalyzer(this);
 
     List<Instruction> instructions() {
         return instructions;
@@ -149,7 +139,6 @@ public class DmlLineage {
     String statementSql() {
         return statementSql;
     }
-    private final LearningAnalyzer learning = new LearningAnalyzer(this);
 
     AnalysisContext state() {
         return state;
@@ -170,19 +159,6 @@ public class DmlLineage {
     String sessionSchema() {
         return sessionSchema;
     }
-
-    private final DbType dbType;
-    private final boolean explicitDialect;
-    private final MetadataContext explicitContext;
-    private final LineageOptions options;
-    private LearnedMetadata learnedMetadata;
-    private String sessionDatabase;
-    private String sessionRawDatabase;
-    private String sessionSchema;
-    private List<String> sessionRawSchemas = new ArrayList<>();
-    private Map<String, Set<String>> pendingLearned = new HashMap<>();
-
-    private MetadataContext context;
 
     public DmlLineage() {
         this(DbType.mysql, false, null, LineageOptions.defaults(), null);
@@ -272,7 +248,6 @@ public class DmlLineage {
         learning.publishLearned();
     }
 
-
     /**
      * The learned-metadata key of a table, scoped to the session database so that
      * observations from one database do not leak into another.
@@ -287,9 +262,6 @@ public class DmlLineage {
         }
         return key.toString();
     }
-
-
-
 
     /**
      * Publish the observations of a successful statement. A failed statement must not
@@ -531,7 +503,6 @@ public class DmlLineage {
         return ScriptSplitter.split(sql, dialect);
     }
 
-
     DbType resolveDialect() {
         if (explicitContext != null) {
             return explicitContext.getCatalog().getDialect();
@@ -605,7 +576,7 @@ public class DmlLineage {
         return queryDispatcher.isLateralSource(source);
     }
 
-    final SelectAnalyzer selector = new SelectAnalyzer(this);
+
 
     void processQueryBlock(SQLSelectQueryBlock queryBlock) {
         selector.processQueryBlock(queryBlock);
@@ -787,19 +758,11 @@ public class DmlLineage {
         return sourceShape.columnCount(source);
     }
 
-
-
-
-
-
-
-
-
     /* ------------------------------------------------------------------ */
     /* sources                                                            */
     /* ------------------------------------------------------------------ */
 
-    final SourcePlanner planner = new SourcePlanner(this);
+
 
     SourceNode buildSourceNode(SQLTableSource tableSource, Map<String, List<SourceTable>> using) {
         return planner.buildSourceNode(tableSource, using);
@@ -1027,8 +990,6 @@ public class DmlLineage {
         return targetShape.copyKeys(target);
     }
 
-
-
     private MetadataResolver metadataResolver() {
         return new MetadataResolver(context, currentDialect(), sessionDatabase,
                 sessionRawDatabase,
@@ -1114,7 +1075,6 @@ public class DmlLineage {
         return targetShape.currentTargetColumnAliases(target);
     }
 
-
     String findCteTarget(String key) {
         for (int i = state.cteScopes.size() - 1; i >= 0; i--) {
             String target = state.cteScopes.get(i).get(key);
@@ -1124,7 +1084,6 @@ public class DmlLineage {
         }
         return null;
     }
-
 
     void registerTable(String written, String mappingName, String display, String alias,
             boolean cteReference) {
@@ -1159,12 +1118,6 @@ public class DmlLineage {
         expression.validateUnboundQualified(expr);
     }
 
-    private boolean ansiEnabled;
-    private boolean ansiDoubleQuotedIdentifiers;
-    private String statementSql;
-    static final String ANSI_IDENTIFIER_ATTRIBUTE =
-            "com.laotie.ansiQuotedIdentifier";
-
     void learnBlockExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
         learning.learnBlockExplicitReferences(block, inherited);
@@ -1179,7 +1132,7 @@ public class DmlLineage {
         return learning.outerBlockLocals(includeCurrentFrame);
     }
 
-    final ExpressionAnalyzer expression = new ExpressionAnalyzer(this);
+
 
     void visitExpr(SQLExpr expr) {
         expression.visitExpr(expr);
@@ -1216,9 +1169,6 @@ public class DmlLineage {
     List<SourceTable> resolveCorrelatedUnqualified(String rawName) {
         return expression.resolveCorrelatedUnqualified(rawName);
     }
-
-
-
 
     List<SourceTable> visibleOwnerMatches(SQLExpr owner) {
         return expression.visibleOwnerMatches(owner);
@@ -1335,11 +1285,6 @@ public class DmlLineage {
                 sourceMetadata);
     }
 
-
-
-
-
-
     List<SourceTable> resolveUnqualified(String rawColumn) {
         return expression.resolveUnqualified(rawColumn);
     }
@@ -1415,14 +1360,9 @@ public class DmlLineage {
         return key.toString();
     }
 
-
-
-
     DbType currentDialect() {
         return context != null ? context.getCatalog().getDialect() : dbType;
     }
-
-
 
     /** Write an edge for a name that is already the catalog/derived spelling. */
 
@@ -1486,9 +1426,6 @@ public class DmlLineage {
     static String hivePlannedColumn(String column) {
         return DmlStatementAnalyzer.hivePlannedColumn(column);
     }
-
-
-
 
     private void processCreateTable(SQLCreateTableStatement create) {
         SQLExprTableSource tableSource = create.getTableSource();
@@ -1567,7 +1504,6 @@ public class DmlLineage {
         }
         return expr.toString();
     }
-
 
     static String normalizeIdentifier(String name) {
         return MetadataCatalog.normalizeIdentifier(name);

@@ -1,16 +1,10 @@
 package com.laotie;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.ast.*;
 import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
@@ -21,16 +15,12 @@ import com.laotie.analysis.model.SourceNode;
 import com.laotie.analysis.model.SourceTable;
 import com.laotie.analysis.model.StarColumn;
 import com.laotie.analysis.model.StarOutput;
-import com.laotie.analysis.model.WildcardRef;
 import com.laotie.exception.AmbiguousColumnException;
 import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
-import com.laotie.identifier.Identifiers;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
-import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
-import com.laotie.model.metadata.Table;
 
 /** Expression, owner-resolution and join-binding analysis. */
 final class ExpressionAnalyzer {

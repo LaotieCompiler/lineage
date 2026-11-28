@@ -17,7 +17,6 @@ import java.util.Set;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.metadata.Column;
 import com.laotie.identifier.Identifiers;
-import com.laotie.model.metadata.MetadataContext;
 import org.jgrapht.Graph;
 import org.jgrapht.graph.DefaultEdge;
 import org.jgrapht.graph.DirectedMultigraph;
@@ -457,20 +456,6 @@ public class LineageGraph {
         }
         result.add(stripQuotes(current.toString()));
         return result;
-    }
-
-    /**
-     * Remember which target columns an INSERT-style wildcard populated. A table-level
-     * edge must not attribute unwritten columns.
-     */
-    private static void recordPopulatedColumns(Map<String, Set<String>> populatedColumns,
-            String reference) {
-        int lparen = reference.indexOf('(');
-        if (lparen <= 0 || !reference.endsWith(")")) {
-            return;
-        }
-        recordPopulatedColumns(populatedColumns, reference.substring(0, lparen),
-                reference.substring(lparen + 1, reference.length() - 1));
     }
 
     private static void recordPopulatedColumns(Map<String, Set<String>> populatedColumns,

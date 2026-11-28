@@ -213,7 +213,7 @@ final class QueryDispatcher {
                 if (alias == null) {
                     continue;
                 }
-                String target = host.uniqueTarget(host.normalizeIdentifier(alias));
+                String target = host.uniqueTarget(DmlLineage.normalizeIdentifier(alias));
                 host.state().tempTables.add(target);
                 prebound.put(entry, target);
                 if (!host.state().cteScopes.isEmpty()) {
@@ -347,7 +347,7 @@ final class QueryDispatcher {
             String target = prebound.containsKey(entry)
                     ? prebound.get(entry)
                     : alias != null
-                            ? host.uniqueTarget(host.normalizeIdentifier(alias))
+                            ? host.uniqueTarget(DmlLineage.normalizeIdentifier(alias))
                             : host.getTempTableName();
             if (!prebound.containsKey(entry)) {
                 host.state().tempTables.add(target);
@@ -464,11 +464,6 @@ final class QueryDispatcher {
     private List<String> staticOutputNames(SQLSelect select,
             Map<String, List<String>> scope) {
         return shape.staticOutputNames(select, scope);
-    }
-
-    private List<String> staticOutputNames(SQLSelectQuery query,
-            Map<String, List<String>> scope) {
-        return shape.staticOutputNames(query, scope);
     }
 
     private static List<String> mergeDeclaredColumns(List<String> declared,

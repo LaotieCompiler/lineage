@@ -12,14 +12,12 @@ import com.alibaba.druid.sql.ast.*;
 import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
 
-import com.laotie.DmlLineage;
 import com.laotie.ast.SqlAst;
 import com.laotie.analysis.model.SourceNode;
 import com.laotie.analysis.model.StarColumn;
 import com.laotie.analysis.model.StarOutput;
 import com.laotie.analysis.model.SourceTable;
 import com.laotie.dialect.DialectRules;
-import com.laotie.model.metadata.MetadataCatalog;
 
 /** Explicit-reference discovery for learned metadata. */
 final class LearningAnalyzer {
@@ -301,8 +299,8 @@ final class LearningAnalyzer {
                 names.add(host.qualifiedKey(table.getAlias()));
             } else if (name != null) {
                 names.add(host.qualifiedKey(name));
-                if (!host.isSingleSegmentName(name)) {
-                    names.add(host.qualifiedKey(host.lastSegment(name)));
+                if (!DmlLineage.isSingleSegmentName(name)) {
+                    names.add(host.qualifiedKey(DmlLineage.lastSegment(name)));
                 }
             }
         } else if (from instanceof SQLSubqueryTableSource) {
@@ -405,8 +403,8 @@ final class LearningAnalyzer {
                         putLocal(frameLocals, host.qualifiedKey(reference), learnedTable);
                     }
                 }
-                if (source.rawName != null && !host.isSingleSegmentName(source.rawName)) {
-                    putLocal(frameLocals, host.qualifiedKey(host.lastSegment(source.rawName)),
+                if (source.rawName != null && !DmlLineage.isSingleSegmentName(source.rawName)) {
+                    putLocal(frameLocals, host.qualifiedKey(DmlLineage.lastSegment(source.rawName)),
                             learnedTable);
                 }
             }
@@ -500,14 +498,14 @@ final class LearningAnalyzer {
         }
         if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;
-            if (!host.isPhysicalTableExpression(table)) {
+            if (!DmlLineage.isPhysicalTableExpression(table)) {
                 return null;
             }
             String name = host.extractTableName(table);
             if (name == null) {
                 return null;
             }
-            if (host.isSingleSegmentName(name)
+            if (DmlLineage.isSingleSegmentName(name)
                     && ctes.contains(host.qualifiedKey(name))) {
                 // A CTE is not a physical table instance.
                 return null;
@@ -651,9 +649,9 @@ final class LearningAnalyzer {
             }
         } else if (from instanceof SQLExprTableSource) {
             SQLExprTableSource table = (SQLExprTableSource) from;
-            boolean physical = host.isPhysicalTableExpression(table);
+            boolean physical = DmlLineage.isPhysicalTableExpression(table);
             String name = physical ? host.extractTableName(table)
-                    : host.implicitRelationName(table);
+                    : DmlLineage.implicitRelationName(table);
             String reference = table.getAlias() != null
                     ? table.getAlias() : name;
             if (reference != null && !physical) {
@@ -677,11 +675,11 @@ final class LearningAnalyzer {
                         return;
                     }
                     locals.put(referenceKey, learnedTable);
-                    if (name != null && !host.isSingleSegmentName(name)
+                    if (name != null && !DmlLineage.isSingleSegmentName(name)
                             && table.getAlias() == null) {
                         // An unaliased table can also be referenced by its short name
                         // inside this scope; an alias hides the original name.
-                        String shortKey = host.qualifiedKey(host.lastSegment(name));
+                        String shortKey = host.qualifiedKey(DmlLineage.lastSegment(name));
                         if (locals.containsKey(shortKey)
                                 && !String.valueOf(learnedTable).equals(
                                         String.valueOf(locals.get(shortKey)))) {

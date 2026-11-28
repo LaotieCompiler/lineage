@@ -358,7 +358,7 @@ final class DmlStatementAnalyzer {
             List<SQLExpr> insertColumns,
             List<SQLInsertStatement.ValuesClause> valueClauses) {
         String rawName = host.extractTableName(tableSource);
-        String written = host.normalizeQualifiedName(rawName);
+        String written = DmlLineage.normalizeQualifiedName(rawName);
         String tableName = host.detachedMetadata() && host.analysisContext() == null && rawName != null
                 ? host.sessionPhysicalReference(rawName) : written;
         Table targetMetadata = null;
@@ -505,9 +505,9 @@ final class DmlStatementAnalyzer {
             if (rawName == null) {
                 continue;
             }
-            host.registerTable(host.normalizeQualifiedName(rawName),
-                    host.normalizeQualifiedName(rawName),
-                    host.normalizeQualifiedName(rawName), null, false);
+            host.registerTable(DmlLineage.normalizeQualifiedName(rawName),
+                    DmlLineage.normalizeQualifiedName(rawName),
+                    DmlLineage.normalizeQualifiedName(rawName), null, false);
         }
     }
 
@@ -540,7 +540,7 @@ final class DmlStatementAnalyzer {
         }
         SQLExprTableSource target = (SQLExprTableSource) into;
         String rawName = host.extractTableName(target);
-        String written = host.normalizeQualifiedName(rawName);
+        String written = DmlLineage.normalizeQualifiedName(rawName);
         String tableName = written;
         TableLocation targetLocation = null;
         if (host.analysisContext() != null) {
@@ -653,9 +653,9 @@ final class DmlStatementAnalyzer {
     }
 
     String mergeTargetColumn(Table metadata, String tableName, SQLExpr column) {
-        String raw = host.rawColumnName(column);
+        String raw = DmlLineage.rawColumnName(column);
         if (!MetadataCatalog.isQuotedIdentifier(raw)) {
-            raw = host.lastIdentifier(raw);
+            raw = DmlLineage.lastIdentifier(raw);
         }
         if (metadata != null) {
             String resolved = MetadataCatalog.resolveColumnName(metadata, raw,
@@ -694,7 +694,7 @@ final class DmlStatementAnalyzer {
             List<SQLExpr> insertColumns, SQLSelect select,
             SQLWithSubqueryClause with, List<SQLAssignItem> partitions) {
         String rawName = host.extractTableName(tableSource);
-        String written = host.normalizeQualifiedName(rawName);
+        String written = DmlLineage.normalizeQualifiedName(rawName);
         // The graph identity of an unaliased target keeps its written reference when
         // metadata is not available, so later reads resolve to the same vertex.
         String tableName = host.detachedMetadata() && host.analysisContext() == null && rawName != null
@@ -952,7 +952,7 @@ final class DmlStatementAnalyzer {
             try {
                 for (SQLUpdateSetItem item : update.getItems()) {
                     String targetColumn = host.canonicalColumnName(target,
-                            host.rawColumnName(item.getColumn()));
+                            DmlLineage.rawColumnName(item.getColumn()));
                     host.state().stackTargetColumn.push(Identifiers.render(targetColumn));
                     host.state().currentOrdinal = -1;
                     host.visitExpr(item.getValue());

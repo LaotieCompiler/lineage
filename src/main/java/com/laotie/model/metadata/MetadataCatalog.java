@@ -732,11 +732,6 @@ public class MetadataCatalog {
         return body.toString();
     }
 
-    private String canonicalPath(boolean forDdl, String instance, String database, String schema,
-            String table) {
-        return canonicalPath(forDdl, instance, database, schema, table, false);
-    }
-
     private String canonicalPath(boolean forDdl, String instance, String database,
             String schema, String table, boolean quotedTable) {
         if (isRepresentable(instance, database, schema)) {

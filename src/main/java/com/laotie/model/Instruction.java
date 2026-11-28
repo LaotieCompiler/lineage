@@ -1,14 +1,11 @@
 package com.laotie.model;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.identifier.Identifiers;
@@ -23,12 +20,8 @@ import lombok.Setter;
 @Getter
 @Setter
 public class Instruction {
-    private static final Logger LOGGER = Logger.getLogger(Instruction.class.getName());
-
     /** A column whose name is unknown but whose position is known. */
     private static final Column UNNAMED = new Column(null, "\u0000unnamed");
-
-
 
     OperationType operation;
 

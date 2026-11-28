@@ -245,36 +245,36 @@ final class SelectAnalyzer {
                 // Two or more independent unknown relations leave the distribution
                 // of the missing width ambiguous.
                 boolean leftOnly = leftUnknown.size() == 1 && rightUnknown.isEmpty()
-                        && host.unknownRegionCount(leftUnknown.get(0)) <= 1;
+                        && DmlLineage.unknownRegionCount(leftUnknown.get(0)) <= 1;
                 boolean rightOnly = rightUnknown.size() == 1 && leftUnknown.isEmpty()
-                        && host.unknownRegionCount(rightUnknown.get(0)) <= 1;
+                        && DmlLineage.unknownRegionCount(rightUnknown.get(0)) <= 1;
                 boolean handledRepeated = false;
                 List<SourceTable> repeatedSide = leftUnknown.size() == 1
                         && rightUnknown.isEmpty() ? leftUnknown
                         : rightUnknown.size() == 1 && leftUnknown.isEmpty()
                                 ? rightUnknown : null;
                 if (repeatedSide != null
-                        && host.totalWildcardOccurrences(repeatedSide.get(0)) > 1) {
+                        && DmlLineage.totalWildcardOccurrences(repeatedSide.get(0)) > 1) {
                     SourceTable source = repeatedSide.get(0);
                     int deficit = inferredUnknownWidth - plan.size();
-                    List<Integer> ends = host.unknownRegionEnds(source);
-                    List<Integer> runs = host.unknownRegionRuns(source);
-                    int occurrences = host.totalWildcardOccurrences(source);
+                    List<Integer> ends = DmlLineage.unknownRegionEnds(source);
+                    List<Integer> runs = DmlLineage.unknownRegionRuns(source);
+                    int occurrences = DmlLineage.totalWildcardOccurrences(source);
                     // Locate the source's own plan to translate region boundaries after
                     // any USING reordering.
                     SourceNode sideNode = null;
                     int sideOffset = 0;
                     if (targetNode.leftNode != null
-                            && host.containsSource(targetNode.leftNode.sources, source)) {
+                            && DmlLineage.containsSource(targetNode.leftNode.sources, source)) {
                         sideNode = targetNode.leftNode;
                     } else if (targetNode.rightNode != null
-                            && host.containsSource(targetNode.rightNode.sources, source)) {
+                            && DmlLineage.containsSource(targetNode.rightNode.sources, source)) {
                         sideNode = targetNode.rightNode;
                         sideOffset = Math.max(plan.size()
-                                - host.countRemaining(plan, targetNode.leftNode == null
+                                - DmlLineage.countRemaining(plan, targetNode.leftNode == null
                                         ? new ArrayList<StarOutput>()
                                         : targetNode.leftNode.plan)
-                                - host.countRemaining(plan, targetNode.rightNode.plan), 0);
+                                - DmlLineage.countRemaining(plan, targetNode.rightNode.plan), 0);
                     } else if (targetNode.sources.size() == 1
                             && targetNode.sources.get(0) == source) {
                         sideNode = targetNode;
@@ -282,10 +282,10 @@ final class SelectAnalyzer {
                     int mergedPrefix = 0;
                     if (targetNode.leftNode != null && targetNode.rightNode != null) {
                         mergedPrefix = Math.max(plan.size()
-                                - host.countRemaining(plan, targetNode.leftNode.plan)
-                                - host.countRemaining(plan, targetNode.rightNode.plan), 0);
+                                - DmlLineage.countRemaining(plan, targetNode.leftNode.plan)
+                                - DmlLineage.countRemaining(plan, targetNode.rightNode.plan), 0);
                     }
-                    if (deficit >= 0 && host.sameUnknownGroup(source) && sideNode != null
+                    if (deficit >= 0 && DmlLineage.sameUnknownGroup(source) && sideNode != null
                             && sideNode.plan.size() == source.outputNameKnown.size()
                             && occurrences > 0) {
                         if (deficit % occurrences != 0) {
@@ -298,7 +298,7 @@ final class SelectAnalyzer {
                         for (int r = 0; r < ends.size(); r++) {
                             int boundary = ends.get(r);
                             int insertAt = mergedPrefix
-                                    + host.keptBefore(plan, sideNode.plan, boundary) + sideOffset
+                                    + DmlLineage.keptBefore(plan, sideNode.plan, boundary) + sideOffset
                                     + offset;
                             insertAt = Math.min(insertAt, plan.size());
                             for (int k = 0; k < perWildcard * runs.get(r); k++) {
@@ -323,12 +323,12 @@ final class SelectAnalyzer {
                     insertAt = plan.size();
                 } else if (leftOnly) {
                     expansion = leftUnknown;
-                    insertAt = host.insertionPoint(plan, leftUnknown,
+                    insertAt = DmlLineage.insertionPoint(plan, leftUnknown,
                             Math.min(targetNode.rightBoundary, plan.size()),
                             targetNode.unknownSectionEnd);
                 } else if (rightOnly) {
                     expansion = rightUnknown;
-                    insertAt = host.insertionPoint(plan, rightUnknown, plan.size(),
+                    insertAt = DmlLineage.insertionPoint(plan, rightUnknown, plan.size(),
                             targetNode.unknownSectionEnd);
                 } else {
                     expansion = new ArrayList<>(leftUnknown);
@@ -516,13 +516,13 @@ final class SelectAnalyzer {
                         }
                     }
                     throw new AmbiguousColumnException(
-                            host.normalizeIdentifier(property.getName()),
-                            host.displayNames(owners));
+                            DmlLineage.normalizeIdentifier(property.getName()),
+                            DmlLineage.displayNames(owners));
                 }
                 if (matched.isEmpty() && host.nodeNamesKnown(correlated.binding)) {
                     throw new ColumnNotFoundException(
-                            host.normalizeIdentifier(property.getName()),
-                            host.displayNames(correlated.binding.sources));
+                            DmlLineage.normalizeIdentifier(property.getName()),
+                            DmlLineage.displayNames(correlated.binding.sources));
                 }
                 if (matched.size() == 1) {
                     for (StarColumn column : matched.get(0).sources) {
@@ -622,7 +622,7 @@ final class SelectAnalyzer {
         String name = outputs != null && position < outputs.size()
                 && outputs.get(position) != null
                         ? outputs.get(position)
-                        : host.normalizeIdentifier(expr.toString());
+                        : DmlLineage.normalizeIdentifier(expr.toString());
         recordOuterExpression(expr, target, name, position);
     }
 
@@ -885,7 +885,6 @@ final class SelectAnalyzer {
             if (source.temporary) {
                 int width = host.sourceWidthKnown(source) ? host.sourceKnownWidth(source) : -1;
                 if (width > 0) {
-                    List<WildcardSpan> spans = host.wildcardSpansOf(source.displayName);
                     if (declared == null && hasDuplicateNamedOutputs(source)) {
                         // Ambiguous repeated names cannot be expanded into columns
                         // unless the target declares their order.
@@ -1213,8 +1212,8 @@ final class SelectAnalyzer {
                         }
                     }
                 }
-                throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                        host.displayNames(owners));
+                throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                        DmlLineage.displayNames(owners));
             }
             if (matchedOutputs.size() == 1) {
                 for (StarColumn column : matchedOutputs.get(0).sources) {
@@ -1224,8 +1223,8 @@ final class SelectAnalyzer {
                 return;
             }
             if (host.nodeNamesKnown(binding)) {
-                throw new ColumnNotFoundException(host.normalizeIdentifier(rawName),
-                        host.displayNames(binding.sources));
+                throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(rawName),
+                        DmlLineage.displayNames(binding.sources));
             }
             for (SourceTable candidate : binding.sources) {
                 addOuterWildcard(candidate, target, position);
@@ -1263,7 +1262,7 @@ final class SelectAnalyzer {
             if (dialect == DbType.hive || dialect == DbType.antspark) {
                 // Planned columns are already logical; strip only a backtick
                 // layer, fold case, and let rendering re-quote special names.
-                column = host.hivePlannedColumn(column);
+                column = DmlLineage.hivePlannedColumn(column);
                 quoted = null;
             } else if (quoted == null) {
                 column = host.uncatalogedColumnSpelling(column);
@@ -1364,8 +1363,8 @@ final class SelectAnalyzer {
             if (!extras.isEmpty()) {
                 List<SourceTable> all = new ArrayList<>(participants);
                 all.addAll(extras);
-                throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                        host.displayNames(all));
+                throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                        DmlLineage.displayNames(all));
             }
             for (SourceTable source : participants) {
                 String column = resolveOuterColumn(source, rawName);
@@ -1395,8 +1394,8 @@ final class SelectAnalyzer {
                     }
                 }
             }
-            throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                    host.displayNames(owners));
+            throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                    DmlLineage.displayNames(owners));
         }
         if (matchedOutputs.size() == 1) {
             List<SourceTable> participants = currentUsingParticipants(key);
@@ -1417,8 +1416,8 @@ final class SelectAnalyzer {
                 }
             }
             if (owners.size() > matchedSources.size()) {
-                throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                        host.displayNames(owners));
+                throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                        DmlLineage.displayNames(owners));
             }
             for (StarColumn column : matchedOutputs.get(0).sources) {
                 addOuterExpressionColumnMapping(column.source, column.column, target,
@@ -1436,15 +1435,15 @@ final class SelectAnalyzer {
             }
         }
         if (owners.size() > 1) {
-            throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                    host.displayNames(owners));
+            throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                    DmlLineage.displayNames(owners));
         }
         if (owners.size() == 1) {
             if (!unknown.isEmpty()) {
                 List<SourceTable> all = new ArrayList<>(owners);
                 all.addAll(unknown);
-                throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                        host.displayNames(all));
+                throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                        DmlLineage.displayNames(all));
             }
             Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
                     : null;
@@ -1458,8 +1457,8 @@ final class SelectAnalyzer {
             return;
         }
         if (unknown.size() > 1) {
-            throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                    host.displayNames(unknown));
+            throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                    DmlLineage.displayNames(unknown));
         }
         if (host.hasOuterScopeFallback()) {
             List<SourceTable> ancestors = host.resolveCorrelatedUnqualified(rawName);
@@ -1476,8 +1475,8 @@ final class SelectAnalyzer {
                 return;
             }
         }
-        throw new ColumnNotFoundException(host.normalizeIdentifier(rawName),
-                host.displayNames(host.currentSources()));
+        throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(rawName),
+                DmlLineage.displayNames(host.currentSources()));
     }
 
     List<SourceTable> participantsForCurrentUsing(String key) {
@@ -1543,8 +1542,8 @@ final class SelectAnalyzer {
             String resolved = MetadataCatalog.resolveColumnName(source.metadataTable,
                     rawName, host.currentDialect());
             if (resolved == null) {
-                throw new ColumnNotFoundException(host.normalizeIdentifier(rawName),
-                        host.displayNames(host.visibleSources()));
+                throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(rawName),
+                        DmlLineage.displayNames(host.visibleSources()));
             }
             return resolved;
         }
@@ -1553,8 +1552,8 @@ final class SelectAnalyzer {
         for (int i = 0; i < source.outputKeys.size(); i++) {
             if (key != null && key.equals(source.outputKeys.get(i))) {
                 if (found >= 0) {
-                    throw new AmbiguousColumnException(host.normalizeIdentifier(rawName),
-                            host.displayNames(host.visibleSources()));
+                    throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
+                            DmlLineage.displayNames(host.visibleSources()));
                 }
                 found = i;
             }
@@ -1563,17 +1562,17 @@ final class SelectAnalyzer {
             if (found >= 0) {
                 return found < source.outputColumns.size()
                         ? source.outputColumns.get(found)
-                        : host.normalizeIdentifier(rawName);
+                        : DmlLineage.normalizeIdentifier(rawName);
             }
-            throw new ColumnNotFoundException(host.normalizeIdentifier(rawName),
-                    host.displayNames(host.visibleSources()));
+            throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(rawName),
+                    DmlLineage.displayNames(host.visibleSources()));
         }
         if (found >= 0) {
             return found < source.outputColumns.size()
                     ? source.outputColumns.get(found)
-                    : host.normalizeIdentifier(rawName);
+                    : DmlLineage.normalizeIdentifier(rawName);
         }
-        return host.normalizeIdentifier(rawName);
+        return DmlLineage.normalizeIdentifier(rawName);
     }
 
     /**
@@ -1638,7 +1637,6 @@ final class SelectAnalyzer {
 
     int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr,
             int position) {
-        String targetTable = host.state().stackTargetTable.peek();
         int savedOrdinal = host.state().currentOrdinal;
         host.state().currentOrdinal = position;
         try {
@@ -1671,7 +1669,7 @@ final class SelectAnalyzer {
             targetColumn = declaredColumns.get(host.state().currentOrdinal);
             targetKey = host.identifierKey(targetColumn);
         } else if (item.getAlias() != null) {
-            targetColumn = host.normalizeIdentifier(item.getAlias());
+            targetColumn = DmlLineage.normalizeIdentifier(item.getAlias());
             targetKey = host.identifierKey(item.getAlias());
         } else {
             targetColumn = inner.columns.get(0);
@@ -1915,13 +1913,13 @@ final class SelectAnalyzer {
             return 1;
         }
         if (item.getAlias() != null) {
-            name = host.normalizeIdentifier(item.getAlias());
+            name = DmlLineage.normalizeIdentifier(item.getAlias());
             key = host.identifierKey(item.getAlias());
         } else if (base instanceof SQLIdentifierExpr) {
-            name = host.normalizeIdentifier(((SQLIdentifierExpr) base).getName());
+            name = DmlLineage.normalizeIdentifier(((SQLIdentifierExpr) base).getName());
             key = host.identifierKey(((SQLIdentifierExpr) base).getName());
         } else if (base instanceof SQLPropertyExpr && !isStarProperty(base)) {
-            name = host.normalizeIdentifier(((SQLPropertyExpr) base).getName());
+            name = DmlLineage.normalizeIdentifier(((SQLPropertyExpr) base).getName());
             key = host.identifierKey(((SQLPropertyExpr) base).getName());
         } else {
             name = item.getExpr().toString();
@@ -2025,13 +2023,13 @@ final class SelectAnalyzer {
             targetColumn = declaredColumns.get(host.state().currentOrdinal);
             identifierTarget = true;
         } else if (item.getAlias() != null) {
-            targetColumn = host.normalizeIdentifier(item.getAlias());
+            targetColumn = DmlLineage.normalizeIdentifier(item.getAlias());
             identifierTarget = true;
         } else if (baseExpr instanceof SQLIdentifierExpr) {
-            targetColumn = host.normalizeIdentifier(((SQLIdentifierExpr) baseExpr).getName());
+            targetColumn = DmlLineage.normalizeIdentifier(((SQLIdentifierExpr) baseExpr).getName());
             identifierTarget = true;
         } else if (baseExpr instanceof SQLPropertyExpr && !isStarProperty(baseExpr)) {
-            targetColumn = host.normalizeIdentifier(((SQLPropertyExpr) baseExpr).getName());
+            targetColumn = DmlLineage.normalizeIdentifier(((SQLPropertyExpr) baseExpr).getName());
             identifierTarget = true;
         } else {
             targetColumn = item.getExpr().toString();
@@ -2115,7 +2113,7 @@ final class SelectAnalyzer {
             } else {
                 targetKey = host.identifierKey(item.getExpr().toString());
             }
-            host.setTargetOutput(targetTable, host.state().currentOrdinal, host.normalizeIdentifier(targetColumn),
+            host.setTargetOutput(targetTable, host.state().currentOrdinal, DmlLineage.normalizeIdentifier(targetColumn),
                     targetKey);
             if (lockedName == null) {
                 host.markOutputNameKnown(targetTable, host.state().currentOrdinal, true);

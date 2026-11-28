@@ -33,7 +33,7 @@ final class ColumnMappingAnalyzer {
         if (raw == null) {
             return null;
         }
-        String name = host.normalizeIdentifier(raw);
+        String name = DmlLineage.normalizeIdentifier(raw);
         if (!host.detachedMetadata() || MetadataCatalog.isQuotedIdentifier(raw)
                 || host.currentDialect() != DbType.postgresql) {
             return name;
@@ -43,19 +43,19 @@ final class ColumnMappingAnalyzer {
 
     String canonicalColumnName(String table, String rawColumn) {
         if (host.analysisContext() == null || host.state().tempTables.contains(table)) {
-            return host.normalizeIdentifier(rawColumn);
+            return DmlLineage.normalizeIdentifier(rawColumn);
         }
         try {
             Table metadata = host.analysisContext().getCatalog().findTableByDisplayName(table).getTable();
             String resolved = MetadataCatalog.resolveColumnName(metadata, rawColumn,
                     host.currentDialect());
             if (resolved == null) {
-                throw new ColumnNotFoundException(host.normalizeIdentifier(rawColumn),
+                throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(rawColumn),
                         java.util.Collections.singletonList(table));
             }
             return resolved;
         } catch (MetadataNotFoundException e) {
-            return host.normalizeIdentifier(rawColumn);
+            return DmlLineage.normalizeIdentifier(rawColumn);
         }
     }
 
@@ -66,7 +66,7 @@ final class ColumnMappingAnalyzer {
         }
         String resolved = MetadataCatalog.resolveColumnName(metadata, raw, host.currentDialect());
         if (resolved == null) {
-            throw new ColumnNotFoundException(host.normalizeIdentifier(raw),
+            throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(raw),
                     java.util.Collections.singletonList(tableName));
         }
         return resolved;
@@ -92,7 +92,7 @@ final class ColumnMappingAnalyzer {
             String resolved = MetadataCatalog.resolveColumnName(metadata, quoted,
                     dialect);
             if (resolved == null) {
-                throw new ColumnNotFoundException(host.normalizeIdentifier(name),
+                throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(name),
                         java.util.Collections.singletonList(tableName));
             }
             return DmlStatementAnalyzer.renderHiveIdentifier(resolved);
@@ -145,7 +145,7 @@ final class ColumnMappingAnalyzer {
                 }
             }
             if (canonical == null) {
-                addColumnMapping(sourceName, host.normalizeIdentifier(columnName),
+                addColumnMapping(sourceName, DmlLineage.normalizeIdentifier(columnName),
                         source.temporary, null);
             } else {
                 addResolvedColumnMapping(sourceName, canonical,
@@ -173,9 +173,9 @@ final class ColumnMappingAnalyzer {
         if (sourceMetadata != null) {
             String resolved = MetadataCatalog.resolveColumnName(sourceMetadata, columnName,
                     host.currentDialect());
-            columnName = resolved != null ? resolved : host.normalizeIdentifier(columnName);
+            columnName = resolved != null ? resolved : DmlLineage.normalizeIdentifier(columnName);
         } else {
-            columnName = host.normalizeIdentifier(columnName);
+            columnName = DmlLineage.normalizeIdentifier(columnName);
         }
         addResolvedColumnMapping(sourceTable, columnName, sourceTemporary);
     }

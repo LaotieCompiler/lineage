@@ -7,7 +7,6 @@ import java.util.Set;
 
 import com.alibaba.druid.sql.ast.*;
 import com.alibaba.druid.sql.ast.expr.*;
-import com.alibaba.druid.sql.ast.statement.*;
 
 import com.laotie.ast.SqlAst;
 import com.laotie.analysis.AnalysisContext;
@@ -315,7 +314,7 @@ final class ExpressionAnalyzer {
                         }
                     }
                     throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
-                            host.displayNames(all));
+                            DmlLineage.displayNames(all));
                 }
                 List<SourceTable> participants = using.get(key);
                 List<SourceTable> sides = participantsForFrame(frame, key);
@@ -325,7 +324,7 @@ final class ExpressionAnalyzer {
                     List<SourceTable> all = new ArrayList<>(participants);
                     all.addAll(extras);
                     throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
-                            host.displayNames(all));
+                            DmlLineage.displayNames(all));
                 }
                 return participants;
             }
@@ -351,7 +350,7 @@ final class ExpressionAnalyzer {
                     }
                 }
                 throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
-                        host.displayNames(owners));
+                        DmlLineage.displayNames(owners));
             }
             if (matches.size() == 1) {
                 List<SourceTable> owners = new ArrayList<>();
@@ -367,7 +366,7 @@ final class ExpressionAnalyzer {
                     List<SourceTable> all = new ArrayList<>(owners);
                     all.addAll(extras);
                     throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
-                            host.displayNames(all));
+                            DmlLineage.displayNames(all));
                 }
                 return owners;
             }
@@ -391,7 +390,7 @@ final class ExpressionAnalyzer {
                 List<SourceTable> all = new ArrayList<>(owners);
                 all.addAll(unknown);
                 throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(rawName),
-                        host.displayNames(all));
+                        DmlLineage.displayNames(all));
             }
             if (owners.size() == 1) {
                 return owners;
@@ -405,7 +404,7 @@ final class ExpressionAnalyzer {
             return new ArrayList<>();
         }
         throw new ColumnNotFoundException(DmlLineage.normalizeIdentifier(rawName),
-                host.displayNames(host.currentSources()));
+                DmlLineage.displayNames(host.currentSources()));
     }
 
 CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
@@ -416,8 +415,8 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         String ownerKey = host.qualifiedKey(rawOwner);
         List<SourceTable> matches = visibleOwnerMatches(owner);
         if (matches.size() > 1) {
-            throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(host.lastSegment(rawOwner)),
-                    host.displayNames(matches));
+            throw new AmbiguousColumnException(DmlLineage.normalizeIdentifier(DmlLineage.lastSegment(rawOwner)),
+                    DmlLineage.displayNames(matches));
         }
         SourceTable direct = matches.isEmpty() ? null : matches.get(0);
         if (direct != null) {
@@ -428,7 +427,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             return new CorrelatedOwner(null, directBinding);
         }
         String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
-        String aliasKey = host.isSingleSegmentName(rawOwner) ? host.identifierKey(rawOwner) : null;
+        String aliasKey = DmlLineage.isSingleSegmentName(rawOwner) ? host.identifierKey(rawOwner) : null;
         for (int frame = host.state().stackSources.size() - 1; frame >= 0; frame--) {
             if (frame < host.state().stackJoinBindings.size() && aliasKey != null) {
                 SourceNode binding = host.state().stackJoinBindings.get(frame).get(aliasKey);
@@ -449,8 +448,8 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             }
             if (aliasMatches.size() > 1) {
                 throw new AmbiguousColumnException(
-                        DmlLineage.normalizeIdentifier(host.lastSegment(rawOwner)),
-                        host.displayNames(aliasMatches));
+                        DmlLineage.normalizeIdentifier(DmlLineage.lastSegment(rawOwner)),
+                        DmlLineage.displayNames(aliasMatches));
             }
             if (aliasMatches.size() == 1) {
                 return new CorrelatedOwner(aliasMatches.get(0), null);
@@ -464,8 +463,8 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             }
             if (frameMatches.size() > 1) {
                 throw new AmbiguousColumnException(
-                        DmlLineage.normalizeIdentifier(host.lastSegment(rawOwner)),
-                        host.displayNames(frameMatches));
+                        DmlLineage.normalizeIdentifier(DmlLineage.lastSegment(rawOwner)),
+                        DmlLineage.displayNames(frameMatches));
             }
             if (frameMatches.size() == 1) {
                 return new CorrelatedOwner(frameMatches.get(0), null);
@@ -599,7 +598,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
     }
 
     SourceNode exactJoinBinding(SQLExpr owner) {
-        if (owner == null || !host.isSingleSegmentName(owner.toString())
+        if (owner == null || !DmlLineage.isSingleSegmentName(owner.toString())
                 || host.state().stackJoinBindings.isEmpty()) {
             return null;
         }
@@ -743,14 +742,14 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                 throw new MetadataNotFoundException(
                         property.getOwner() == null ? name : property.getOwner().toString());
             }
-            host.addColumnMapping(host.lastIdentifier(property.getOwner() == null
+            host.addColumnMapping(DmlLineage.lastIdentifier(property.getOwner() == null
                     ? null : property.getOwner().toString()), name, false, null);
             return;
         }
         if (source.metadataTable != null
                 && MetadataCatalog.resolveColumnName(source.metadataTable, rawName,
                         host.currentDialect()) == null) {
-            throw new ColumnNotFoundException(name, host.displayNames(host.currentSources()));
+            throw new ColumnNotFoundException(name, DmlLineage.displayNames(host.currentSources()));
         }
         if (source.metadataTable == null) {
             String key = host.identifierKey(rawName);
@@ -762,12 +761,12 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             }
             if (matches > 1) {
                 throw new AmbiguousColumnException(name,
-                        host.displayNames(java.util.Collections.singletonList(source)));
+                        DmlLineage.displayNames(java.util.Collections.singletonList(source)));
             }
         }
         if (source.metadataTable == null && source.outputNamesKnown
                 && !source.outputKeys.contains(host.identifierKey(rawName))) {
-            throw new ColumnNotFoundException(name, host.displayNames(host.currentSources()));
+            throw new ColumnNotFoundException(name, DmlLineage.displayNames(host.currentSources()));
         }
         host.learnColumn(source, rawName, true);
         host.addColumnMapping(source, rawName);
@@ -786,18 +785,18 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         }
         if (binding.knownColumns || host.bindingNamesKnown(binding)) {
             if (matches.isEmpty()) {
-                throw new ColumnNotFoundException(name, host.displayNames(binding.sources));
+                throw new ColumnNotFoundException(name, DmlLineage.displayNames(binding.sources));
             }
             if (matches.size() > 1) {
                 throw new AmbiguousColumnException(name,
-                        host.displayNames(host.planSources(matches)));
+                        DmlLineage.displayNames(DmlLineage.planSources(matches)));
             }
-            List<StarColumn> known = host.knownColumns(matches.get(0));
+            List<StarColumn> known = DmlLineage.knownColumns(matches.get(0));
             if (!known.isEmpty()) {
                 host.emitBindingColumns(known);
             } else if (host.state().uncertainOrdinal < 0 || host.state().currentOrdinal != host.state().uncertainOrdinal) {
                 String targetTable = host.state().stackTargetTable.peek();
-                for (SourceTable source : host.starOutputSources(matches.get(0))) {
+                for (SourceTable source : DmlLineage.starOutputSources(matches.get(0))) {
                     host.instructions().add(new Instruction(OperationType.COLUMNS_INJECT,
                             source.displayName, targetTable, host.state().currentOrdinal,
                             source.temporary, host.state().tempTables.contains(targetTable)));
@@ -814,18 +813,18 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             }
         }
         if (definiteMatches > 1) {
-            throw new AmbiguousColumnException(name, host.displayNames(host.planSources(matches)));
+            throw new AmbiguousColumnException(name, DmlLineage.displayNames(DmlLineage.planSources(matches)));
         }
         if (definiteMatches == 1) {
             for (StarOutput output : matches) {
                 if (!output.nameKnown) {
                     continue;
                 }
-                List<StarColumn> known = host.knownColumns(output);
+                List<StarColumn> known = DmlLineage.knownColumns(output);
                 if (!known.isEmpty()) {
                     host.emitBindingColumns(known);
                 } else {
-                    for (SourceTable source : host.starOutputSources(output)) {
+                    for (SourceTable source : DmlLineage.starOutputSources(output)) {
                         host.instructions().add(new Instruction(OperationType.COLUMNS_INJECT,
                                 source.displayName, host.state().stackTargetTable.peek(), host.state().currentOrdinal,
                                 source.temporary,
@@ -852,7 +851,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         if (sources.isEmpty()) {
             return sources;
         }
-        String columnName = host.normalizeIdentifier(rawColumn);
+        String columnName = DmlLineage.normalizeIdentifier(rawColumn);
         String columnKey = host.identifierKey(rawColumn);
 
         if (host.analysisContext() != null && !host.state().stackStarPlan.isEmpty() && !host.state().stackStarPlan.peek().isEmpty()) {
@@ -885,7 +884,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                     }
                     if (!unknown.isEmpty()) {
                         throw new AmbiguousColumnException(columnName,
-                                host.displayNames(DmlLineage.allSources(matchedSources, unknown)));
+                                DmlLineage.displayNames(DmlLineage.allSources(matchedSources, unknown)));
                     }
                     List<SourceTable> extras = new ArrayList<>();
                     List<SourceTable> usingSides = host.participantsForCurrentUsing(columnKey);
@@ -901,13 +900,13 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                     }
                     if (!extras.isEmpty()) {
                         throw new AmbiguousColumnException(columnName,
-                                host.displayNames(DmlLineage.allSources(matchedSources, extras)));
+                                DmlLineage.displayNames(DmlLineage.allSources(matchedSources, extras)));
                     }
                 }
                 return matchedSources;
             }
             if (matches.size() > 1) {
-                throw new AmbiguousColumnException(columnName, host.displayNames(matchedSources));
+                throw new AmbiguousColumnException(columnName, DmlLineage.displayNames(matchedSources));
             }
         }
 
@@ -932,7 +931,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                 for (StarOutput output : definite) {
                     ambiguous.addAll(DmlLineage.starOutputSources(output));
                 }
-                throw new AmbiguousColumnException(columnName, host.displayNames(ambiguous));
+                throw new AmbiguousColumnException(columnName, DmlLineage.displayNames(ambiguous));
             }
         }
 
@@ -967,9 +966,9 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                 for (StarOutput output : matches) {
                     ambiguous.addAll(DmlLineage.starOutputSources(output));
                 }
-                throw new AmbiguousColumnException(columnName, host.displayNames(ambiguous));
+                throw new AmbiguousColumnException(columnName, DmlLineage.displayNames(ambiguous));
             }
-            throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+            throw new ColumnNotFoundException(columnName, DmlLineage.displayNames(sources));
         }
 
         Map<String, List<SourceTable>> using = host.state().stackUsing.isEmpty()
@@ -990,7 +989,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             if (!extras.isEmpty()) {
                 List<SourceTable> all = new ArrayList<>(participants);
                 all.addAll(extras);
-                throw new AmbiguousColumnException(columnName, host.displayNames(all));
+                throw new AmbiguousColumnException(columnName, DmlLineage.displayNames(all));
             }
             return participants;
         }
@@ -1021,9 +1020,9 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                     return owners;
                 }
                 if (owners.size() > 1) {
-                    throw new AmbiguousColumnException(columnName, host.displayNames(owners));
+                    throw new AmbiguousColumnException(columnName, DmlLineage.displayNames(owners));
                 }
-                throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+                throw new ColumnNotFoundException(columnName, DmlLineage.displayNames(sources));
             }
             // Without metadata, skip temporary sources whose known output list does not
             // contain the column; the first unknown source still accepts any column.
@@ -1034,7 +1033,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                     return result;
                 }
             }
-            throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+            throw new ColumnNotFoundException(columnName, DmlLineage.displayNames(sources));
         }
 
         List<SourceTable> candidates = new ArrayList<>();
@@ -1063,14 +1062,14 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
             return candidates;
         }
         if (candidates.size() > 1) {
-            throw new AmbiguousColumnException(columnName, host.displayNames(candidates));
+            throw new AmbiguousColumnException(columnName, DmlLineage.displayNames(candidates));
         }
         if (hasUnknownSource) {
             List<SourceTable> fallback = new ArrayList<>();
             fallback.add(sources.get(0));
             return fallback;
         }
-        throw new ColumnNotFoundException(columnName, host.displayNames(sources));
+        throw new ColumnNotFoundException(columnName, DmlLineage.displayNames(sources));
     }
     SourceNode joinBinding(SQLExpr owner) {
         if (owner == null || host.state().stackJoinBindings.isEmpty()) {

@@ -9,7 +9,6 @@ import java.util.Set;
 
 import com.alibaba.druid.DbType;
 import com.alibaba.druid.sql.ast.*;
-import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.ast.statement.*;
 
 import com.laotie.analysis.model.SourceNode;
@@ -18,7 +17,6 @@ import com.laotie.analysis.model.StarColumn;
 import com.laotie.analysis.model.StarOutput;
 import com.laotie.exception.AmbiguousColumnException;
 import com.laotie.exception.ColumnNotFoundException;
-import com.laotie.model.Instruction;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.Table;
@@ -101,7 +99,7 @@ final class SourcePlanner {
                 if (left.widthKnown && left.width < leftUsingBound
                         || right.widthKnown && right.width < rightUsingBound) {
                     throw new ColumnNotFoundException(
-                            DmlLineage.normalizeIdentifier(missingKey), host.displayNames(sources));
+                            DmlLineage.normalizeIdentifier(missingKey), DmlLineage.displayNames(sources));
                 }
                 boolean leftNamesKnown = nodeNamesKnown(left);
                 boolean rightNamesKnown = nodeNamesKnown(right);
@@ -111,20 +109,20 @@ final class SourcePlanner {
                     if (!usingKeys.add(column)) {
                         throw new ColumnNotFoundException(
                                 DmlLineage.normalizeIdentifier(expr.toString()),
-                                host.displayNames(sources));
+                                DmlLineage.displayNames(sources));
                     }
                     if (leftNamesKnown && planKeyCount(left.plan, column) != 1
                             || rightNamesKnown && planKeyCount(right.plan, column) != 1) {
                         throw new ColumnNotFoundException(
                                 DmlLineage.normalizeIdentifier(expr.toString()),
-                                host.displayNames(sources));
+                                DmlLineage.displayNames(sources));
                     }
                     if (!leftNamesKnown && planKnownKeyCount(left.plan, column) > 1
                             || !rightNamesKnown
                                     && planKnownKeyCount(right.plan, column) > 1) {
                         throw new AmbiguousColumnException(
                                 DmlLineage.normalizeIdentifier(expr.toString()),
-                                host.displayNames(sources));
+                                DmlLineage.displayNames(sources));
                     }
                 }
                 plan = mergeStarPlan(left.plan, right.plan, join.getJoinType(),
@@ -235,11 +233,11 @@ final class SourcePlanner {
             return joined;
         }
         if (tableSource instanceof SQLExprTableSource
-                && host.queryExpressionSelect(
+                && DmlLineage.queryExpressionSelect(
                         ((SQLExprTableSource) tableSource).getExpr()) != null) {
             // Druid parses LATERAL (SELECT ...) as a method-call expression.
             SQLExprTableSource lateral = (SQLExprTableSource) tableSource;
-            SQLSelect body = host.queryExpressionSelect(lateral.getExpr());
+            SQLSelect body = DmlLineage.queryExpressionSelect(lateral.getExpr());
             String alias = lateral.getAlias();
             String target = alias != null ? host.uniqueTarget(alias) : host.getTempTableName();
             host.state().tempTables.add(target);
@@ -431,7 +429,7 @@ final class SourcePlanner {
                     && source.metadataTable.getFields().get(i).isQuoted()
                     || source.metadataTable == null && key != null
                             && !key.equals(host.identifierKey(names.get(i)));
-            boolean stable = host.sourceColumnsKnown(source) || i < host.firstUnknownIndex(source);
+            boolean stable = host.sourceColumnsKnown(source) || i < DmlLineage.firstUnknownIndex(source);
             plan.add(new StarOutput(java.util.Collections.singletonList(
                     new StarColumn(source, names.get(i), key, nameKnown, quoted, i)),
                     nameKnown, stable));
@@ -980,17 +978,17 @@ final class SourcePlanner {
 
     SourceTable resolveSource(SQLExprTableSource table) {
         String rawName = host.extractTableName(table);
-        String written = host.normalizeQualifiedName(rawName);
+        String written = DmlLineage.normalizeQualifiedName(rawName);
         String alias = table.getAlias();
         // A table function's rendered call is not a relation name: it must never be
         // looked up as a CTE or catalog table.
-        boolean physical = host.isPhysicalTableExpression(table);
+        boolean physical = DmlLineage.isPhysicalTableExpression(table);
         Table metadataTable = null;
         String display = alias != null ? alias
                 : host.detachedMetadata() && rawName != null
                         ? host.sessionPhysicalReference(rawName)
-                        : host.lastIdentifier(written);
-        String cteTarget = physical && host.isSingleSegmentName(rawName)
+                        : DmlLineage.lastIdentifier(written);
+        String cteTarget = physical && DmlLineage.isSingleSegmentName(rawName)
                 ? host.findCteTarget(host.identifierKey(rawName)) : null;
         boolean temporary = cteTarget != null;
         String sourceAlias = alias;
@@ -1032,7 +1030,7 @@ final class SourcePlanner {
                 metadataTable != null ? java.util.Collections.<SourceTable>emptyList()
                         : host.copyUnknownGroups(cteTarget, outputColumns.size()),
                 false, host.hasWildcardContribution(cteTarget),
-                physical, physical ? null : host.implicitRelationName(table));
+                physical, physical ? null : DmlLineage.implicitRelationName(table));
     }
 
 }

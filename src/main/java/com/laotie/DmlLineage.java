@@ -1219,10 +1219,6 @@ public class DmlLineage {
         return expression.matchesOwner(source, ownerKey, ownerParts);
     }
 
-    private static boolean isStarProperty(SQLExpr expr) {
-        return ExpressionAnalyzer.isStarProperty(expr);
-    }
-
     void visitProperty(SQLPropertyExpr property) {
         expression.visitProperty(property);
     }

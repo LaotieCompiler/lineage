@@ -62,15 +62,6 @@ public final class StrictQuotedIdentifierValidator {
         return signature.toString();
     }
     private static final String JDBC_MARKER = "LO_JDBC_";
-    private static final class EscapeUnit {
-        private final String method;
-        private final String unit;
-
-        private EscapeUnit(String method, String unit) {
-            this.method = method;
-            this.unit = unit;
-        }
-    }
 
     public static void annotateJdbcEscapes(SQLStatement statement, String source,
             DbType dialect) {

@@ -277,7 +277,7 @@ final class StaticShapeAnalyzer {
                     names.addAll(star);
                 } else if (isStarProperty(expr)) {
                     String owner = ((SQLPropertyExpr) expr).getOwner().toString();
-                    SQLTableSource table = host.isSingleSegmentName(owner)
+                    SQLTableSource table = DmlLineage.isSingleSegmentName(owner)
                             ? findTableSource(block.getFrom(), lastSegment(owner))
                             : findQualifiedTable(block.getFrom(), host.qualifiedKey(owner),
                                     false, java.util.Collections.<String, Integer>emptyMap());
@@ -417,7 +417,7 @@ final class StaticShapeAnalyzer {
         if (name == null) {
             return null;
         }
-        if (host.isSingleSegmentName(name)) {
+        if (DmlLineage.isSingleSegmentName(name)) {
             String key = host.identifierKey(name);
             if (scope != null && scope.containsKey(key)) {
                 return scope.get(key);
@@ -492,7 +492,7 @@ final class StaticShapeAnalyzer {
         }
         String ownerName = owner.toString();
         SQLTableSource table;
-        if (host.isSingleSegmentName(ownerName)) {
+        if (DmlLineage.isSingleSegmentName(ownerName)) {
             table = findTableSource(from, lastSegment(ownerName));
         } else {
             // A qualified owner must match the whole reference; taking the last
@@ -522,7 +522,7 @@ final class StaticShapeAnalyzer {
             if (name == null) {
                 return null;
             }
-            String leafKey = host.isSingleSegmentName(name) ? host.identifierKey(name) : null;
+            String leafKey = DmlLineage.isSingleSegmentName(name) ? host.identifierKey(name) : null;
             if (leafKey != null && (scope != null && scope.containsKey(leafKey)
                     || host.findCteTarget(leafKey) != null)) {
                 // The leaf binds to a CTE (possibly a nested one registered in the
@@ -692,7 +692,7 @@ final class StaticShapeAnalyzer {
         if (rawName == null) {
             return -1;
         }
-        if (host.isSingleSegmentName(rawName)) {
+        if (DmlLineage.isSingleSegmentName(rawName)) {
             String key = host.identifierKey(rawName);
             if (key != null && scope.containsKey(key)) {
                 return scope.get(key);

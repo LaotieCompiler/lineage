@@ -218,9 +218,6 @@ public class DmlLineage {
     }
 
     /**
-     * Attach the session-scoped metadata learned from earlier statements.
-     */
-    /**
      * Analyze only to discover metadata: instructions are discarded.
      */
     public void setLearningOnly(boolean learningOnly) {
@@ -354,15 +351,6 @@ public class DmlLineage {
         return statement;
     }
 
-    /**
-     * Spark SQL is Hive-compatible; the antspark parser does not accept some Hive
-     * statements (for example INSERT OVERWRITE TABLE). Fall back to the Hive parser
-     * only when the dialect's own parser rejects the statement.
-     */
-    /**
-     * Mark JDBC escape function names so the validation AST can distinguish the
-     * escape form from an ordinary call of the same name.
-     */
     private void validateQuotedIdentifiers(SQLStatement statement) {
         StrictQuotedIdentifierValidator.validate(statement, currentDialect());
     }
@@ -561,9 +549,6 @@ public class DmlLineage {
         return ScriptSplitter.split(sql, dialect);
     }
 
-    private static boolean isIdentifierChar(char ch) {
-        return ScriptSplitter.isIdentifierChar(ch);
-    }
 
     DbType resolveDialect() {
         if (explicitContext != null) {
@@ -1247,10 +1232,6 @@ public class DmlLineage {
         return null;
     }
 
-    private boolean isMySqlFamily() {
-        return context != null && (context.getCatalog().getDialect() == DbType.mysql
-                || context.getCatalog().getDialect() == DbType.mariadb);
-    }
 
     void registerTable(String written, String mappingName, String display, String alias,
             boolean cteReference) {
@@ -1288,45 +1269,7 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     void validateUnboundQualified(SQLExpr expr) {
-        if (expr == null) {
-            return;
-        }
-        if (expr instanceof SQLPropertyExpr) {
-            SQLPropertyExpr property = (SQLPropertyExpr) expr;
-            if (property.getOwner() != null) {
-                throw new MetadataNotFoundException(property.getOwner().toString());
-            }
-        } else if (expr instanceof SQLBinaryOpExpr) {
-            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
-            validateUnboundQualified(binary.getLeft());
-            validateUnboundQualified(binary.getRight());
-        } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                validateUnboundQualified(argument);
-            }
-        } else if (expr instanceof SQLCastExpr) {
-            validateUnboundQualified(((SQLCastExpr) expr).getExpr());
-        } else if (expr instanceof SQLCaseExpr) {
-            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            validateUnboundQualified(caseExpr.getValueExpr());
-            if (caseExpr.getItems() != null) {
-                for (SQLCaseExpr.Item item : caseExpr.getItems()) {
-                    validateUnboundQualified(item.getConditionExpr());
-                    validateUnboundQualified(item.getValueExpr());
-                }
-            }
-            validateUnboundQualified(caseExpr.getElseExpr());
-        } else if (expr instanceof SQLListExpr) {
-            for (SQLExpr item : ((SQLListExpr) expr).getItems()) {
-                validateUnboundQualified(item);
-            }
-        } else if (expr instanceof SQLNotExpr) {
-            validateUnboundQualified(((SQLNotExpr) expr).getExpr());
-        } else if (expr instanceof SQLUnaryExpr) {
-            validateUnboundQualified(((SQLUnaryExpr) expr).getExpr());
-        } else if (expr instanceof SQLExtractExpr) {
-            validateUnboundQualified(((SQLExtractExpr) expr).getValue());
-        }
+        expression.validateUnboundQualified(expr);
     }
 
     private boolean ansiEnabled;
@@ -1387,17 +1330,8 @@ public class DmlLineage {
         return expression.resolveCorrelatedUnqualified(rawName);
     }
 
-    private static boolean hasQuotedSegment(String reference) {
-        return ExpressionAnalyzer.hasQuotedSegment(reference);
-    }
 
-    private static boolean exactNormalizedSuffix(String[] ownerParts, String[] referenceParts) {
-        return ExpressionAnalyzer.exactNormalizedSuffix(ownerParts, referenceParts);
-    }
 
-    private static boolean hasSignificantQuote(String reference) {
-        return ExpressionAnalyzer.hasSignificantQuote(reference);
-    }
 
     List<SourceTable> visibleOwnerMatches(SQLExpr owner) {
         return expression.visibleOwnerMatches(owner);
@@ -1488,34 +1422,6 @@ public class DmlLineage {
         starProjection.visitAllColumn();
     }
 
-
-
-
-
-    /**
-     * Projection in metadata-free mode: known sources are mapped column by column, unknown
-     * ones stay table-level wildcards instead of being expanded into invented names.
-     */
-    /**
-     * Projection in metadata-free mode. Known columns follow the visible plan (so JOIN
-     * USING merges and UNION names still apply), while unknown sources stay table-level
-     * wildcards. Placeholder names are never registered.
-     */
-
-
-
-    /**
-     * The physical table identity of a source: an alias is only a SQL binding, not a
-     * lineage vertex.
-     */
-    /**
-     * A canonical physical table reference: dialect-equivalent spellings such as
-     * PostgreSQL {@code "a"} and {@code a} map to the same identity.
-     */
-    /**
-     * A canonical column identity: PostgreSQL folds unquoted column names to lower
-     * case, quoted names keep their case.
-     */
     String uncatalogedColumnSpelling(String raw) {
         return columnMapping.uncatalogedColumnSpelling(raw);
     }
@@ -1694,17 +1600,8 @@ public class DmlLineage {
         return DmlStatementAnalyzer.hivePlannedColumn(column);
     }
 
-    private static String hiveColumnIdentity(String raw) {
-        return DmlStatementAnalyzer.hiveColumnIdentity(raw);
-    }
 
-    private static String renderHiveIdentifier(String name) {
-        return DmlStatementAnalyzer.renderHiveIdentifier(name);
-    }
 
-    private static String foldCase(String value) {
-        return DmlStatementAnalyzer.foldCase(value);
-    }
 
     private void processCreateTable(SQLCreateTableStatement create) {
         SQLExprTableSource tableSource = create.getTableSource();
@@ -1784,21 +1681,6 @@ public class DmlLineage {
         return expr.toString();
     }
 
-    private String targetColumnName(SQLExpr expr) {
-        if (expr instanceof SQLCastExpr) {
-            return targetColumnName(((SQLCastExpr) expr).getExpr());
-        }
-        if (expr instanceof SQLIdentifierExpr) {
-            return normalizeIdentifier(((SQLIdentifierExpr) expr).getName());
-        }
-        if (expr instanceof SQLPropertyExpr) {
-            SQLPropertyExpr property = (SQLPropertyExpr) expr;
-            if (!"*".equals(property.getName())) {
-                return normalizeIdentifier(property.getName());
-            }
-        }
-        return expr.toString();
-    }
 
     static String normalizeIdentifier(String name) {
         return MetadataCatalog.normalizeIdentifier(name);

@@ -1041,4 +1041,45 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         }
         return null;
     }
+    void validateUnboundQualified(SQLExpr expr) {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof SQLPropertyExpr) {
+            SQLPropertyExpr property = (SQLPropertyExpr) expr;
+            if (property.getOwner() != null) {
+                throw new MetadataNotFoundException(property.getOwner().toString());
+            }
+        } else if (expr instanceof SQLBinaryOpExpr) {
+            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
+            validateUnboundQualified(binary.getLeft());
+            validateUnboundQualified(binary.getRight());
+        } else if (expr instanceof SQLMethodInvokeExpr) {
+            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
+                validateUnboundQualified(argument);
+            }
+        } else if (expr instanceof SQLCastExpr) {
+            validateUnboundQualified(((SQLCastExpr) expr).getExpr());
+        } else if (expr instanceof SQLCaseExpr) {
+            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
+            validateUnboundQualified(caseExpr.getValueExpr());
+            if (caseExpr.getItems() != null) {
+                for (SQLCaseExpr.Item item : caseExpr.getItems()) {
+                    validateUnboundQualified(item.getConditionExpr());
+                    validateUnboundQualified(item.getValueExpr());
+                }
+            }
+            validateUnboundQualified(caseExpr.getElseExpr());
+        } else if (expr instanceof SQLListExpr) {
+            for (SQLExpr item : ((SQLListExpr) expr).getItems()) {
+                validateUnboundQualified(item);
+            }
+        } else if (expr instanceof SQLNotExpr) {
+            validateUnboundQualified(((SQLNotExpr) expr).getExpr());
+        } else if (expr instanceof SQLUnaryExpr) {
+            validateUnboundQualified(((SQLUnaryExpr) expr).getExpr());
+        } else if (expr instanceof SQLExtractExpr) {
+            validateUnboundQualified(((SQLExtractExpr) expr).getValue());
+        }
+    }
 }

@@ -961,7 +961,7 @@ public class DmlLineage {
         }
     }
 
-    private void processSelectQuery(SQLSelectQuery query) {
+    void processSelectQuery(SQLSelectQuery query) {
         if (query instanceof SQLSelectQueryBlock) {
             processQueryBlock((SQLSelectQueryBlock) query);
         } else if (query instanceof SQLUnionQuery) {
@@ -1078,11 +1078,11 @@ public class DmlLineage {
         return shape.staticTableNames(table, scope);
     }
 
-    private static SQLSelect queryExpressionSelect(SQLExpr expr) {
+    static SQLSelect queryExpressionSelect(SQLExpr expr) {
         return StaticShapeAnalyzer.queryExpressionSelect(expr);
     }
 
-    private boolean isLateralSource(SQLTableSource source) {
+    boolean isLateralSource(SQLTableSource source) {
         return shape.isLateralSource(source);
     }
 
@@ -3138,7 +3138,7 @@ public class DmlLineage {
         return 1;
     }
 
-    private int minimumColumns(SourceTable source) {
+    int minimumColumns(SourceTable source) {
         if (source.metadataTable != null) {
             return source.metadataTable.getFields().size();
         }
@@ -3217,7 +3217,7 @@ public class DmlLineage {
         return true;
     }
 
-    private boolean bindingNamesKnown(SourceNode binding) {
+    boolean bindingNamesKnown(SourceNode binding) {
         if (!binding.widthKnown || binding.plan.size() != binding.width) {
             return false;
         }
@@ -3229,7 +3229,7 @@ public class DmlLineage {
         return true;
     }
 
-    private boolean sourceColumnsKnown(SourceTable source) {
+    boolean sourceColumnsKnown(SourceTable source) {
         return source.metadataTable != null || source.outputWidthKnown;
     }
 
@@ -3259,11 +3259,11 @@ public class DmlLineage {
         return false;
     }
 
-    private boolean sourceNamesKnown(SourceTable source) {
+    boolean sourceNamesKnown(SourceTable source) {
         return source.metadataTable != null || source.outputNamesKnown;
     }
 
-    private boolean sourceOutputNameKnown(SourceTable source, int position) {
+    boolean sourceOutputNameKnown(SourceTable source, int position) {
         if (source.metadataTable != null) {
             return true;
         }
@@ -3285,1037 +3285,177 @@ public class DmlLineage {
     /* sources                                                            */
     /* ------------------------------------------------------------------ */
 
-    SourceNode buildSourceNode(SQLTableSource tableSource,
-            Map<String, List<SourceTable>> using) {
-        if (tableSource instanceof SQLJoinTableSource) {
-            SQLJoinTableSource join = (SQLJoinTableSource) tableSource;
-            Map<String, SourceNode> bindingsBefore = state.stackJoinBindings.isEmpty() ? null
-                    : new HashMap<>(state.stackJoinBindings.peek());
-            SourceNode left = buildSourceNode(join.getLeft(), using);
-            boolean lateralRight = isLateralSource(join.getRight());
-            if (lateralRight) {
-                // A correlated LATERAL body can read the left side's columns,
-                // bindings, and hidden-name set.
-                state.stackSources.push(left.sources);
-                state.lateralScopes.push(Boolean.TRUE);
-                state.stackUsing.push(using);
-                state.stackStarPlan.push(left.plan);
-                state.stackSourceNode.push(left);
-                state.stackSourceTable.push(left.sources.isEmpty()
-                        ? "" : left.sources.get(0).displayName);
-                state.stackHiddenSources.push(state.stackHiddenSources.isEmpty()
-                        ? new HashSet<SourceTable>()
-                        : new HashSet<>(state.stackHiddenSources.peek()));
-                state.stackJoinBindings.push(state.stackJoinBindings.isEmpty()
-                        ? new HashMap<String, SourceNode>()
-                        : new HashMap<>(state.stackJoinBindings.peek()));
-            }
-            SourceNode right;
-            try {
-                right = buildSourceNode(join.getRight(), using);
-            } finally {
-                if (lateralRight) {
-                    state.stackJoinBindings.pop();
-                    state.stackHiddenSources.pop();
-                    state.stackSourceTable.pop();
-                    state.stackSourceNode.pop();
-                    state.stackStarPlan.pop();
-                    state.stackUsing.pop();
-                    state.stackSources.pop();
-                    state.lateralScopes.pop();
-                }
-            }
-            List<SourceTable> sources = new ArrayList<>();
-            sources.addAll(left.sources);
-            sources.addAll(right.sources);
-            List<StarOutput> plan;
-            int leftUsingBound = 0;
-            int rightUsingBound = 0;
-            if (join.getUsing() != null && !join.getUsing().isEmpty()) {
-                int usingCount = join.getUsing().size();
-                Set<String> leftKnownKeys = knownOutputKeys(left);
-                Set<String> rightKnownKeys = knownOutputKeys(right);
-                int leftRequired = knownOutputPositionCount(left);
-                int rightRequired = knownOutputPositionCount(right);
-                String missingKey = join.getUsing().get(0).toString();
-                for (SQLExpr expr : join.getUsing()) {
-                    String key = identifierKey(expr.toString());
-                    if (!leftKnownKeys.contains(key)) {
-                        leftRequired++;
-                    }
-                    if (!rightKnownKeys.contains(key)) {
-                        rightRequired++;
-                        missingKey = expr.toString();
-                    }
-                }
-                leftUsingBound = Math.max(usingCount, leftRequired);
-                rightUsingBound = Math.max(usingCount, rightRequired);
-                if (left.widthKnown && left.width < leftUsingBound
-                        || right.widthKnown && right.width < rightUsingBound) {
-                    throw new ColumnNotFoundException(
-                            normalizeIdentifier(missingKey), displayNames(sources));
-                }
-                boolean leftNamesKnown = nodeNamesKnown(left);
-                boolean rightNamesKnown = nodeNamesKnown(right);
-                Set<String> usingKeys = new HashSet<>();
-                for (SQLExpr expr : join.getUsing()) {
-                    String column = identifierKey(expr.toString());
-                    if (!usingKeys.add(column)) {
-                        throw new ColumnNotFoundException(
-                                normalizeIdentifier(expr.toString()),
-                                displayNames(sources));
-                    }
-                    if (leftNamesKnown && planKeyCount(left.plan, column) != 1
-                            || rightNamesKnown && planKeyCount(right.plan, column) != 1) {
-                        throw new ColumnNotFoundException(
-                                normalizeIdentifier(expr.toString()),
-                                displayNames(sources));
-                    }
-                    if (!leftNamesKnown && planKnownKeyCount(left.plan, column) > 1
-                            || !rightNamesKnown
-                                    && planKnownKeyCount(right.plan, column) > 1) {
-                        throw new AmbiguousColumnException(
-                                normalizeIdentifier(expr.toString()),
-                                displayNames(sources));
-                    }
-                }
-                plan = mergeStarPlan(left.plan, right.plan, join.getJoinType(),
-                        join.getUsing(), leftNamesKnown, rightNamesKnown,
-                        left.sources, right.sources, left.widthKnown);
-                Map<String, List<SourceTable>> participants =
-                        state.usingParticipantsByIdentity.computeIfAbsent(using,
-                                key -> new HashMap<String, List<SourceTable>>());
-                for (SQLExpr expr : join.getUsing()) {
-                    String column = identifierKey(expr.toString());
-                    using.put(column, planSourcesForKey(plan, column));
-                    List<SourceTable> sides = new ArrayList<>(
-                            planAllSourcesForKey(left.plan, column));
-                    addSources(sides, planAllSourcesForKey(right.plan, column));
-                    if (!leftNamesKnown) {
-                        addUnknownSources(sides, left.sources);
-                    }
-                    if (!rightNamesKnown) {
-                        addUnknownSources(sides, right.sources);
-                    }
-                    participants.put(column, sides);
-                }
-            } else {
-                plan = new ArrayList<>();
-                plan.addAll(left.plan);
-                for (StarOutput output : right.plan) {
-                    plan.add(left.widthKnown ? output : output.withStable(false));
-                }
-            }
-            int ownUsingCount = join.getUsing() == null ? 0 : join.getUsing().size();
-            int joinUsingCount = left.usingCount + right.usingCount + ownUsingCount;
-            boolean widthKnown = left.widthKnown && right.widthKnown;
-            int width = widthKnown ? left.width + right.width - ownUsingCount : 0;
-            // Each side must at least contain the USING keys, even when its exact
-            // width is unknown.
-            int leftMin = Math.max(left.minWidth, leftUsingBound);
-            int rightMin = Math.max(right.minWidth, rightUsingBound);
-            int minWidth = Math.max(leftMin + rightMin - ownUsingCount, 0);
-            List<SourceTable> leftUnknownSources = new ArrayList<>();
-            for (SourceTable source : left.sources) {
-                if (!sourceColumnsKnown(source)) {
-                    leftUnknownSources.add(source);
-                }
-            }
-            List<SourceTable> rightUnknownSources = new ArrayList<>();
-            for (SourceTable source : right.sources) {
-                if (!sourceColumnsKnown(source)) {
-                    rightUnknownSources.add(source);
-                }
-            }
-            int rightRemaining = Math.max(
-                    right.plan.size() - Math.min(right.plan.size(), ownUsingCount), 0);
-            int rightBoundary = Math.max(plan.size() - rightRemaining, 0);
-            Map<SourceTable, Integer> unknownSectionEnd = new HashMap<>();
-            int leftRemaining = countRemaining(plan, left.plan);
-            int rightRemainingCount = countRemaining(plan, right.plan);
-            int mergedPrefix = Math.max(
-                    plan.size() - leftRemaining - rightRemainingCount, 0);
-            for (SourceTable source : left.sources) {
-                if (!sourceColumnsKnown(source)) {
-                    Integer previous = left.unknownSectionEnd.get(source);
-                    int end = previous == null ? plan.size()
-                            : mergedPrefix + keptBefore(plan, left.plan, previous);
-                    unknownSectionEnd.put(source, ownUsingCount > 0 ? end
-                            : previous != null ? previous : left.plan.size());
-                }
-            }
-            for (SourceTable source : right.sources) {
-                if (!sourceColumnsKnown(source)) {
-                    Integer previous = right.unknownSectionEnd.get(source);
-                    int end = previous == null ? plan.size()
-                            : mergedPrefix + leftRemaining
-                                    + keptBefore(plan, right.plan, previous);
-                    unknownSectionEnd.put(source, ownUsingCount > 0 ? end
-                            : previous != null ? left.plan.size() + previous
-                                    : plan.size());
-                }
-            }
-            SourceNode joined = new SourceNode(sources, plan,
-                    left.knownColumns && right.knownColumns, widthKnown, width, minWidth,
-                    joinUsingCount, rightBoundary, leftUnknownSources, rightUnknownSources,
-                    unknownSectionEnd, left, right);
-            if (join.getAlias() != null) {
-                if (!state.stackJoinBindings.isEmpty()) {
-                    Map<String, SourceNode> bindings = state.stackJoinBindings.peek();
-                    if (bindingsBefore != null) {
-                        // Restore every binding the subtree changed, then expose only
-                        // this join's alias.
-                        Set<String> keys = new HashSet<>(bindings.keySet());
-                        keys.addAll(bindingsBefore.keySet());
-                        for (String key : keys) {
-                            SourceNode previous = bindingsBefore.get(key);
-                            if (previous != null) {
-                                bindings.put(key, previous);
-                            } else {
-                                bindings.remove(key);
-                            }
-                        }
-                    }
-                    bindings.put(identifierKey(join.getAlias()), joined);
-                    state.tableSourceBindings.put(join, joined);
-                }
-                if (!state.stackHiddenSources.isEmpty()) {
-                    // An alias hides every qualifier inside its join subtree.
-                    state.stackHiddenSources.peek().addAll(sources);
-                }
-            }
-            return joined;
-        }
-        if (tableSource instanceof SQLExprTableSource
-                && queryExpressionSelect(
-                        ((SQLExprTableSource) tableSource).getExpr()) != null) {
-            // Druid parses LATERAL (SELECT ...) as a method-call expression.
-            SQLExprTableSource lateral = (SQLExprTableSource) tableSource;
-            SQLSelect body = queryExpressionSelect(lateral.getExpr());
-            String alias = lateral.getAlias();
-            String target = alias != null ? uniqueTarget(alias) : getTempTableName();
-            state.tempTables.add(target);
-            processDerivedBody(target, body, lateral.getColumns());
-            List<String> derivedOutputs = copyOutputs(state.targetOutputs.get(target));
-            boolean widthKnown = isOutputWidthKnown(target, derivedOutputs);
-            boolean namesKnown = isOutputNamesKnown(target, derivedOutputs);
-            int derivedWidth = derivedWidth(target, derivedOutputs, widthKnown);
-            SourceTable source = new SourceTable(target, null, null, alias, null, true,
-                    widthKnown, namesKnown, derivedOutputs, copyKeys(target),
-                    copyNameKnown(target, derivedOutputs.size()),
-                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    copyUnknownGroups(target, derivedOutputs.size()), false,
-                    hasWildcardContribution(target));
-            return new SourceNode(java.util.Collections.singletonList(source),
-                    planFromSource(source), namesKnown, widthKnown, derivedWidth,
-                    targetMinimumColumns(target, widthKnown, derivedWidth), 0,
-                    derivedWidth,
-                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                            : java.util.Collections.singletonList(source),
-                    java.util.Collections.<SourceTable>emptyList(),
-                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
-        }
-        if (tableSource instanceof SQLSubqueryTableSource) {
-            SQLSubqueryTableSource subquery = (SQLSubqueryTableSource) tableSource;
-            String alias = subquery.getAlias();
-            String target = alias != null ? uniqueTarget(alias) : getTempTableName();
-            state.tempTables.add(target);
-            processDerivedBody(target, subquery.getSelect(), subquery.getColumns());
-            List<String> derivedOutputs = copyOutputs(state.targetOutputs.get(target));
-            boolean widthKnown = isOutputWidthKnown(target, derivedOutputs);
-            boolean namesKnown = isOutputNamesKnown(target, derivedOutputs);
-            int derivedWidth = derivedWidth(target, derivedOutputs, widthKnown);
-            SourceTable source = new SourceTable(target, null, null, alias, null, true,
-                    widthKnown, namesKnown, derivedOutputs, copyKeys(target),
-                    copyNameKnown(target, derivedOutputs.size()),
-                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    copyUnknownGroups(target, derivedOutputs.size()), false,
-                    hasWildcardContribution(target));
-            return new SourceNode(java.util.Collections.singletonList(source),
-                    planFromSource(source), namesKnown, widthKnown, derivedWidth,
-                    targetMinimumColumns(target, widthKnown, derivedWidth), 0,
-                    derivedWidth,
-                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                            : java.util.Collections.singletonList(source),
-                    java.util.Collections.<SourceTable>emptyList(),
-                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
-        }
-        if (tableSource instanceof SQLUnionQueryTableSource) {
-            SQLUnionQueryTableSource union = (SQLUnionQueryTableSource) tableSource;
-            String alias = union.getAlias();
-            String target = alias != null ? uniqueTarget(alias) : getTempTableName();
-            state.tempTables.add(target);
-            processDerivedUnion(target, union.getUnion(), union.getColumns());
-            List<String> derivedOutputs = copyOutputs(state.targetOutputs.get(target));
-            boolean widthKnown = isOutputWidthKnown(target, derivedOutputs);
-            boolean namesKnown = isOutputNamesKnown(target, derivedOutputs);
-            int derivedWidth = derivedWidth(target, derivedOutputs, widthKnown);
-            SourceTable source = new SourceTable(target, null, null, alias, null, true,
-                    widthKnown, namesKnown, derivedOutputs, copyKeys(target),
-                    copyNameKnown(target, derivedOutputs.size()),
-                    targetMinimumColumns(target, widthKnown, derivedOutputs.size()),
-                    copyUnknownGroups(target, derivedOutputs.size()), false,
-                    hasWildcardContribution(target));
-            return new SourceNode(java.util.Collections.singletonList(source),
-                    planFromSource(source), namesKnown, widthKnown, derivedWidth,
-                    targetMinimumColumns(target, widthKnown, derivedWidth), 0,
-                    derivedWidth,
-                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                            : java.util.Collections.singletonList(source),
-                    java.util.Collections.<SourceTable>emptyList(),
-                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
-        }
-        if (tableSource instanceof SQLExprTableSource) {
-            SourceTable source = resolveSource((SQLExprTableSource) tableSource);
-            boolean widthKnown = sourceWidthKnown(source);
-            int width = source.metadataTable != null
-                    ? source.metadataTable.getFields().size() : sourceKnownWidth(source);
-            return new SourceNode(java.util.Collections.singletonList(source),
-                    planFromSource(source), sourceNamesKnown(source), widthKnown, width,
-                    minimumColumns(source), 0, width,
-                    widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                            : java.util.Collections.singletonList(source),
-                    java.util.Collections.<SourceTable>emptyList(),
-                    unknownSectionEndFor(source, widthKnown, planSizeFor(source)));
-        }
-        return new SourceNode(new ArrayList<SourceTable>(), new ArrayList<StarOutput>(),
-                false, false, 0, 0, 0, 0, java.util.Collections.<SourceTable>emptyList(),
-                java.util.Collections.<SourceTable>emptyList(),
-                new HashMap<SourceTable, Integer>());
+    private final SourcePlanner planner = new SourcePlanner(this);
+
+    SourceNode buildSourceNode(SQLTableSource tableSource, Map<String, List<SourceTable>> using) {
+        return planner.buildSourceNode(tableSource, using);
     }
 
-    private void processDerivedBody(String target, SQLSelect select,
-            List<com.alibaba.druid.sql.ast.SQLName> columns) {
-        pushDerivedAliases(target, columns);
-        try {
-            state.stackTargetTable.push(target);
-            processSelect(select);
-            state.stackTargetTable.pop();
-            recordTargetShape(target);
-        } finally {
-            state.targetColumnAliases.pop();
-        }
+    private void processDerivedBody(String target, SQLSelect select, List<com.alibaba.druid.sql.ast.SQLName> columns) {
+        planner.processDerivedBody(target, select, columns);
     }
 
-    private void processDerivedUnion(String target, SQLUnionQuery union,
-            List<com.alibaba.druid.sql.ast.SQLName> columns) {
-        pushDerivedAliases(target, columns);
-        try {
-            state.stackTargetTable.push(target);
-            processSelectQuery(union);
-            state.stackTargetTable.pop();
-            recordTargetShape(target);
-        } finally {
-            state.targetColumnAliases.pop();
-        }
+    private void processDerivedUnion(String target, SQLUnionQuery union, List<com.alibaba.druid.sql.ast.SQLName> columns) {
+        planner.processDerivedUnion(target, union, columns);
     }
 
     private void recordTargetShape(String target) {
-        boolean widthKnown = state.lastQueryBlockWidthKnown;
-        boolean namesKnown = state.lastQueryBlockNamesKnown;
-        int width = state.lastQueryBlockWidth;
-        List<String> declared = currentTargetColumnAliases(target);
-        if (declared != null) {
-            DbType dialect = currentDialect();
-            boolean exactCount = dialect == DbType.mysql || dialect == DbType.mariadb;
-            if (widthKnown) {
-                boolean mismatch = exactCount
-                        ? declared.size() != width
-                        : declared.size() > width;
-                if (mismatch) {
-                    throw new IllegalStateException("Column alias count mismatch: "
-                            + declared.size() + " vs " + width);
-                }
-                // A declared column list that covers every output position names them
-                // all, even when the first UNION branch's names were unknown.
-                if (!namesKnown && declared.size() == width) {
-                    namesKnown = true;
-                }
-                fillDeclaredOutputs(target, Math.min(width, declared.size()));
-            } else if (exactCount) {
-                // MySQL/MariaDB require an explicit list to match the projection, so
-                // the declaration itself fixes both width and names.
-                if (declared.size() < state.lastQueryBlockMinWidth) {
-                    throw new IllegalStateException("Column alias count mismatch: "
-                            + declared.size() + " vs at least "
-                            + state.lastQueryBlockMinWidth);
-                }
-                widthKnown = true;
-                namesKnown = true;
-                width = declared.size();
-                fillDeclaredOutputs(target, declared.size());
-            }
-        }
-        state.targetWidthKnown.put(target, widthKnown);
-        state.targetNamesKnown.put(target, namesKnown);
-        state.targetMinWidth.put(target, widthKnown ? width : state.lastQueryBlockMinWidth);
+        planner.recordTargetShape(target);
     }
 
     private void fillDeclaredOutputs(String target, int width) {
-        List<String> declared = currentTargetColumnAliases(target);
-        if (declared == null) {
-            return;
-        }
-        List<String> declaredKeys = currentDeclaredKeys(target);
-        List<String> outputs = state.targetOutputs.get(target);
-        for (int i = 0; i < width; i++) {
-            if (outputs != null && i < outputs.size() && outputs.get(i) != null) {
-                continue;
-            }
-            String name = declared.get(i);
-            String key = declaredKeys != null && i < declaredKeys.size()
-                    ? declaredKeys.get(i) : identifierKey(name);
-            setTargetOutput(target, i, name, key);
-            markOutputNameKnown(target, i, true);
-        }
+        planner.fillDeclaredOutputs(target, width);
     }
 
-    private void pushDerivedAliases(String target,
-            List<com.alibaba.druid.sql.ast.SQLName> columns) {
-        List<String> displays = new ArrayList<>();
-        List<String> keys = new ArrayList<>();
-        if (columns != null) {
-            for (com.alibaba.druid.sql.ast.SQLName column : columns) {
-                String raw = column.toString();
-                displays.add(canonicalIdentifier(raw));
-                keys.add(identifierKey(raw));
-            }
-        }
-        Map<String, List<String>> aliases = new HashMap<>();
-        if (!displays.isEmpty()) {
-            aliases.put(target, displays);
-            state.cteDeclaredColumns.put(target, displays);
-            state.cteDeclaredKeys.put(target, keys);
-        }
-        state.targetColumnAliases.push(aliases);
+    private void pushDerivedAliases(String target, List<com.alibaba.druid.sql.ast.SQLName> columns) {
+        planner.pushDerivedAliases(target, columns);
     }
 
     private List<StarOutput> planFromSource(SourceTable source) {
-        List<String> names = sourceColumnNames(source);
-        List<String> keys = sourceColumnKeys(source);
-        int width = names.size();
-        if (sourceWidthKnown(source)) {
-            width = Math.max(width, sourceKnownWidth(source));
-        }
-        List<StarOutput> plan = new ArrayList<>();
-        for (int i = 0; i < width; i++) {
-            if (i >= names.size()) {
-                names = new ArrayList<>(names);
-                for (int j = names.size(); j <= i; j++) {
-                    names.add("col" + (j + 1));
-                }
-            }
-            String key = i < keys.size() ? keys.get(i) : identifierKey(names.get(i));
-            boolean nameKnown = sourceOutputNameKnown(source, i);
-            boolean quoted = source.metadataTable != null
-                    && i < source.metadataTable.getFields().size()
-                    && source.metadataTable.getFields().get(i).isQuoted()
-                    || source.metadataTable == null && key != null
-                            && !key.equals(identifierKey(names.get(i)));
-            boolean stable = sourceColumnsKnown(source) || i < firstUnknownIndex(source);
-            plan.add(new StarOutput(java.util.Collections.singletonList(
-                    new StarColumn(source, names.get(i), key, nameKnown, quoted, i)),
-                    nameKnown, stable));
-        }
-        return plan;
+        return planner.planFromSource(source);
     }
 
     private List<String> sourceColumnKeys(SourceTable source) {
-        if (source.metadataTable != null) {
-            List<String> keys = new ArrayList<>();
-            DbType dialect = currentDialect();
-            boolean hiveFamily = dialect == DbType.hive
-                    || dialect == DbType.antspark;
-            boolean caseInsensitive = dialect == DbType.mysql
-                    || dialect == DbType.mariadb || hiveFamily;
-            for (Column column : source.metadataTable.getFields()) {
-                if (hiveFamily) {
-                    // The catalog name is already logical: do not strip a second
-                    // quote layer from a name that literally contains quotes.
-                    keys.add(MetadataCatalog.caseFold(column.getColumnName()));
-                } else {
-                    keys.add(!caseInsensitive && column.isQuoted()
-                            ? column.getColumnName()
-                            : identifierKey(column.getColumnName()));
-                }
-            }
-            return keys;
-        }
-        if (!source.outputColumns.isEmpty()) {
-            return source.outputKeys;
-        }
-        return java.util.Collections.singletonList(identifierKey("col1"));
+        return planner.sourceColumnKeys(source);
     }
 
-    private List<StarOutput> mergeStarPlan(List<StarOutput> left, List<StarOutput> right,
-            SQLJoinTableSource.JoinType type, List<SQLExpr> using,
-            boolean leftKnown, boolean rightKnown, List<SourceTable> leftSources,
-            List<SourceTable> rightSources, boolean leftWidthKnown) {
-        List<StarOutput> leftPlan = new ArrayList<>(left);
-        List<StarOutput> rightPlan = new ArrayList<>(right);
-        List<StarOutput> merged = new ArrayList<>();
-        boolean ambiguousMerge = false;
-        for (SQLExpr expr : using) {
-            String key = identifierKey(expr.toString());
-            if (!leftKnown && !hasUniqueUsingColumn(leftPlan, key)
-                    || !rightKnown && !hasUniqueUsingColumn(rightPlan, key)) {
-                // More than one candidate column on an unnamed side: which position the
-                // USING key occupies cannot be determined, so no position may be fixed.
-                ambiguousMerge = true;
-            }
-            StarOutput leftColumn = removeFirstMatching(leftPlan, key);
-            StarOutput rightColumn = removeFirstMatching(rightPlan, key);
-            // When one side's output names are unknown, the USING column still owns a
-            // position on that side even if its placeholder was already consumed.
-            if (leftColumn == null && !leftKnown) {
-                boolean certain = singleSourceCertain(leftSources, key);
-                leftColumn = removeFirstUnknown(leftPlan, expr, key, certain);
-                if (leftColumn == null) {
-                    leftColumn = unknownColumn(leftSources, expr, key, certain);
-                }
-            }
-            if (rightColumn == null && !rightKnown) {
-                boolean certain = singleSourceCertain(rightSources, key);
-                rightColumn = removeFirstUnknown(rightPlan, expr, key, certain);
-                if (rightColumn == null) {
-                    rightColumn = unknownColumn(rightSources, expr, key, certain);
-                }
-            }
-            List<StarColumn> sources = new ArrayList<>();
-            switch (type) {
-                case LEFT_OUTER_JOIN:
-                case LEFT_SEMI_JOIN:
-                case LEFT_ANTI_JOIN:
-                    // LEFT JOIN keeps the left side's value for the merged column.
-                    if (leftColumn != null) {
-                        sources.addAll(leftColumn.sources);
-                    }
-                    break;
-                case RIGHT_OUTER_JOIN:
-                    if (rightColumn != null) {
-                        sources.addAll(rightColumn.sources);
-                    }
-                    break;
-                default:
-                    if (leftColumn != null) {
-                        sources.addAll(leftColumn.sources);
-                    }
-                    if (rightColumn != null) {
-                        sources.addAll(rightColumn.sources);
-                    }
-                    break;
-            }
-            if (!sources.isEmpty()) {
-                // The visible name of a USING column is given by the join condition.
-                merged.add(new StarOutput(sources, true));
-            }
-        }
-        merged.addAll(leftPlan);
-        for (StarOutput output : rightPlan) {
-            // Right-side positions shift when the left subtree's width is unknown.
-            merged.add(leftWidthKnown ? output : output.withStable(false));
-        }
-        if (ambiguousMerge) {
-            for (int i = 0; i < merged.size(); i++) {
-                merged.set(i, merged.get(i).withAmbiguous(true));
-            }
-        }
-        return merged;
+    private List<StarOutput> mergeStarPlan(List<StarOutput> left, List<StarOutput> right, SQLJoinTableSource.JoinType type, List<SQLExpr> using, boolean leftKnown, boolean rightKnown, List<SourceTable> leftSources, List<SourceTable> rightSources, boolean leftWidthKnown) {
+        return planner.mergeStarPlan(left, right, type, using, leftKnown, rightKnown, leftSources, rightSources, leftWidthKnown);
     }
 
     private static boolean hasUniqueUsingColumn(List<StarOutput> plan, String key) {
-        int known = 0;
-        int unknown = 0;
-        for (StarOutput output : plan) {
-            if (!output.nameKnown) {
-                unknown++;
-                continue;
-            }
-            for (StarColumn column : output.sources) {
-                if (key.equals(column.key)) {
-                    known++;
-                    break;
-                }
-            }
-        }
-        return known == 1 || known == 0 && unknown == 1;
+        return SourcePlanner.hasUniqueUsingColumn(plan, key);
     }
 
     private static boolean sameUnknownGroup(SourceTable source) {
-        SourceTable group = null;
-        boolean seen = false;
-        for (int i = 0; i < source.outputNameKnown.size(); i++) {
-            if (Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
-                continue;
-            }
-            SourceTable current = i < source.outputUnknownGroups.size()
-                    ? source.outputUnknownGroups.get(i) : null;
-            if (current == null) {
-                return false;
-            }
-            if (!seen) {
-                group = current;
-                seen = true;
-            } else if (group != current) {
-                return false;
-            }
-        }
-        return seen;
+        return SourcePlanner.sameUnknownGroup(source);
     }
 
     private static boolean containsSource(List<SourceTable> sources, SourceTable source) {
-        for (SourceTable candidate : sources) {
-            if (candidate == source) {
-                return true;
-            }
-        }
-        return false;
+        return SourcePlanner.containsSource(sources, source);
     }
 
     private static int totalWildcardOccurrences(SourceTable source) {
-        int total = 0;
-        for (int run : unknownRegionRuns(source)) {
-            total += run;
-        }
-        return total;
+        return SourcePlanner.totalWildcardOccurrences(source);
     }
 
     private static List<Integer> unknownRegionRuns(SourceTable source) {
-        List<Integer> runs = new ArrayList<>();
-        int current = 0;
-        for (int i = 0; i < source.outputNameKnown.size(); i++) {
-            if (!Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
-                current++;
-            } else if (current > 0) {
-                runs.add(current);
-                current = 0;
-            }
-        }
-        if (current > 0) {
-            runs.add(current);
-        }
-        return runs;
+        return SourcePlanner.unknownRegionRuns(source);
     }
 
     private static List<Integer> unknownRegionEnds(SourceTable source) {
-        List<Integer> ends = new ArrayList<>();
-        boolean inRegion = false;
-        for (int i = 0; i < source.outputNameKnown.size(); i++) {
-            boolean known = Boolean.TRUE.equals(source.outputNameKnown.get(i));
-            if (!known) {
-                inRegion = true;
-            } else if (inRegion) {
-                ends.add(i);
-                inRegion = false;
-            }
-        }
-        if (inRegion) {
-            ends.add(source.outputNameKnown.size());
-        }
-        return ends;
+        return SourcePlanner.unknownRegionEnds(source);
     }
 
-    private static int firstUnknownIndex(SourceTable source) {
-        for (int i = 0; i < source.outputNameKnown.size(); i++) {
-            if (!Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
-                return i;
-            }
-        }
-        return Integer.MAX_VALUE;
+    static int firstUnknownIndex(SourceTable source) {
+        return SourcePlanner.firstUnknownIndex(source);
     }
 
     private static int unknownRegionCount(SourceTable source) {
-        int regions = 0;
-        boolean previousKnown = true;
-        for (int i = 0; i < source.outputNameKnown.size(); i++) {
-            boolean known = Boolean.TRUE.equals(source.outputNameKnown.get(i));
-            if (!known && previousKnown) {
-                regions++;
-            }
-            previousKnown = known;
-        }
-        return regions;
+        return SourcePlanner.unknownRegionCount(source);
     }
 
     private int planSizeFor(SourceTable source) {
-        return sourceColumnNames(source).size();
+        return planner.planSizeFor(source);
     }
 
     private SourceNode sourcePlanNode(SourceTable source) {
-        List<StarOutput> plan = planFromSource(source);
-        boolean widthKnown = sourceColumnsKnown(source);
-        int width = source.metadataTable != null
-                ? source.metadataTable.getFields().size() : source.outputColumns.size();
-        return new SourceNode(java.util.Collections.singletonList(source), plan,
-                sourceNamesKnown(source), widthKnown, width, minimumColumns(source), 0,
-                plan.size(),
-                widthKnown ? java.util.Collections.<SourceTable>emptyList()
-                        : java.util.Collections.singletonList(source),
-                java.util.Collections.<SourceTable>emptyList(),
-                unknownSectionEndFor(source, widthKnown, plan.size()));
+        return planner.sourcePlanNode(source);
     }
 
-    private static Map<SourceTable, Integer> unknownSectionEndFor(SourceTable source,
-            boolean widthKnown, int planSize) {
-        Map<SourceTable, Integer> ends = new HashMap<>();
-        if (widthKnown || source == null) {
-            return ends;
-        }
-        int end = 0;
-        for (int i = 0; i < source.outputNameKnown.size(); i++) {
-            if (!Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
-                end = i + 1;
-            }
-        }
-        ends.put(source, end);
-        return ends;
+    private static Map<SourceTable, Integer> unknownSectionEndFor(SourceTable source, boolean widthKnown, int planSize) {
+        return SourcePlanner.unknownSectionEndFor(source, widthKnown, planSize);
     }
 
     private static boolean singleSourceCertain(List<SourceTable> sources, String key) {
-        if (sources == null || sources.size() != 1) {
-            return false;
-        }
-        SourceTable source = sources.get(0);
-        if (source.metadataTable != null) {
-            return true;
-        }
-        if (source.outputColumns.isEmpty()) {
-            // A physical table with unknown columns: the USING key must exist once the
-            // statement is valid.
-            return true;
-        }
-        for (int i = 0; i < source.outputKeys.size(); i++) {
-            if (source.outputKeys.get(i) != null
-                    && source.outputKeys.get(i).equals(key)
-                    && i < source.outputNameKnown.size()
-                    && Boolean.TRUE.equals(source.outputNameKnown.get(i))) {
-                return true;
-            }
-        }
-        return false;
+        return SourcePlanner.singleSourceCertain(sources, key);
     }
 
-    private static StarOutput unknownColumn(List<SourceTable> sources, SQLExpr expr,
-            String key, boolean certain) {
-        if (sources == null || sources.isEmpty()) {
-            return null;
-        }
-        List<StarColumn> columns = new ArrayList<>();
-        String name = normalizeIdentifier(expr.toString());
-        boolean quoted = MetadataCatalog.isQuotedIdentifier(expr.toString());
-        for (SourceTable source : sources) {
-            columns.add(new StarColumn(source, name, key, certain, quoted));
-        }
-        return new StarOutput(columns, certain);
+    private static StarOutput unknownColumn(List<SourceTable> sources, SQLExpr expr, String key, boolean certain) {
+        return SourcePlanner.unknownColumn(sources, expr, key, certain);
     }
 
-    private static StarOutput removeFirstUnknown(List<StarOutput> plan, SQLExpr expr,
-            String key, boolean certain) {
-        for (int i = 0; i < plan.size(); i++) {
-            if (!plan.get(i).nameKnown) {
-                return positionalColumn(plan.remove(i), expr, key, certain);
-            }
-        }
-        return null;
+    private static StarOutput removeFirstUnknown(List<StarOutput> plan, SQLExpr expr, String key, boolean certain) {
+        return SourcePlanner.removeFirstUnknown(plan, expr, key, certain);
     }
 
-    private static StarOutput positionalColumn(StarOutput output, SQLExpr expr, String key,
-            boolean certain) {
-        List<StarColumn> columns = new ArrayList<>();
-        String name = normalizeIdentifier(expr.toString());
-        boolean quoted = MetadataCatalog.isQuotedIdentifier(expr.toString());
-        for (StarColumn column : output.sources) {
-            columns.add(new StarColumn(column.source, name, key, certain, quoted,
-                    column.index));
-        }
-        return new StarOutput(columns, certain);
+    private static StarOutput positionalColumn(StarOutput output, SQLExpr expr, String key, boolean certain) {
+        return SourcePlanner.positionalColumn(output, expr, key, certain);
     }
 
     private static int planKeyCount(List<StarOutput> plan, String key) {
-        int count = 0;
-        for (StarOutput output : plan) {
-            boolean matched = false;
-            for (StarColumn column : output.sources) {
-                if (column.key != null && column.key.equals(key)) {
-                    matched = true;
-                }
-            }
-            if (matched) {
-                count++;
-            }
-        }
-        return count;
+        return SourcePlanner.planKeyCount(plan, key);
     }
 
-    /**
-     * Every source that takes part in a USING merge, including sides whose column names
-     * are unknown. Such sides are merged, not independent candidates.
-     */
     private static void addSources(List<SourceTable> target, List<SourceTable> extra) {
-        for (SourceTable source : extra) {
-            if (!target.contains(source)) {
-                target.add(source);
-            }
-        }
+        SourcePlanner.addSources(target, extra);
     }
 
     private void addUnknownSources(List<SourceTable> target, List<SourceTable> candidates) {
-        for (SourceTable source : candidates) {
-            if (!sourceNamesKnown(source) && !target.contains(source)) {
-                target.add(source);
-            }
-        }
+        planner.addUnknownSources(target, candidates);
     }
 
-    private static List<SourceTable> planAllSourcesForKey(List<StarOutput> plan,
-            String key) {
-        for (StarOutput output : plan) {
-            boolean matched = false;
-            for (StarColumn column : output.sources) {
-                if (column.key != null && column.key.equals(key)) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (matched) {
-                List<SourceTable> sources = new ArrayList<>();
-                for (StarColumn column : output.sources) {
-                    if (!sources.contains(column.source)) {
-                        sources.add(column.source);
-                    }
-                }
-                return sources;
-            }
-        }
-        return new ArrayList<>();
+    private static List<SourceTable> planAllSourcesForKey(List<StarOutput> plan, String key) {
+        return SourcePlanner.planAllSourcesForKey(plan, key);
     }
 
     private static List<SourceTable> planSourcesForKey(List<StarOutput> plan, String key) {
-        for (StarOutput output : plan) {
-            List<SourceTable> sources = new ArrayList<>();
-            for (StarColumn column : output.sources) {
-                if (column.key != null && column.key.equals(key) && column.nameKnown
-                        && !sources.contains(column.source)) {
-                    sources.add(column.source);
-                }
-            }
-            if (!sources.isEmpty()) {
-                return sources;
-            }
-        }
-        return new ArrayList<>();
+        return SourcePlanner.planSourcesForKey(plan, key);
     }
 
-    private static int insertionPoint(List<StarOutput> plan, List<SourceTable> sources,
-            int fallback, Map<SourceTable, Integer> sectionEnd) {
-        // The translated internal section end preserves the source's own order
-        // (including explicit columns before or after its wildcard).
-        Integer end = sources.isEmpty() ? null : sectionEnd.get(sources.get(0));
-        if (end != null) {
-            return Math.min(end, plan.size());
-        }
-        int lastUncertain = lastIndexOfUncertainSource(plan, sources);
-        if (lastUncertain >= 0) {
-            return lastUncertain + 1;
-        }
-        int last = lastIndexOfSource(plan, sources);
-        if (last >= 0) {
-            return last + 1;
-        }
-        return fallback;
+    private static int insertionPoint(List<StarOutput> plan, List<SourceTable> sources, int fallback, Map<SourceTable, Integer> sectionEnd) {
+        return SourcePlanner.insertionPoint(plan, sources, fallback, sectionEnd);
     }
 
-    private static int lastIndexOfUncertainSource(List<StarOutput> plan,
-            List<SourceTable> sources) {
-        int last = -1;
-        for (int i = 0; i < plan.size(); i++) {
-            for (StarColumn column : plan.get(i).sources) {
-                if (!column.nameKnown && sources.contains(column.source)) {
-                    last = i;
-                    break;
-                }
-            }
-        }
-        return last;
+    private static int lastIndexOfUncertainSource(List<StarOutput> plan, List<SourceTable> sources) {
+        return SourcePlanner.lastIndexOfUncertainSource(plan, sources);
     }
 
     private static int countRemaining(List<StarOutput> plan, List<StarOutput> originals) {
-        int count = 0;
-        for (StarOutput output : originals) {
-            if (containsIdentity(plan, output)) {
-                count++;
-            }
-        }
-        return count;
+        return SourcePlanner.countRemaining(plan, originals);
     }
 
     private static boolean containsIdentity(List<StarOutput> plan, StarOutput output) {
-        for (StarOutput candidate : plan) {
-            if (candidate.origin == output.origin) {
-                return true;
-            }
-        }
-        return false;
+        return SourcePlanner.containsIdentity(plan, output);
     }
 
-    private static int keptBefore(List<StarOutput> plan, List<StarOutput> originals,
-            int boundary) {
-        int kept = 0;
-        int limit = Math.min(boundary, originals.size());
-        for (int i = 0; i < limit; i++) {
-            if (containsIdentity(plan, originals.get(i))) {
-                kept++;
-            }
-        }
-        return kept;
+    private static int keptBefore(List<StarOutput> plan, List<StarOutput> originals, int boundary) {
+        return SourcePlanner.keptBefore(plan, originals, boundary);
     }
 
     private static int lastIndexOfSource(List<StarOutput> plan, List<SourceTable> sources) {
-        int last = -1;
-        for (int i = 0; i < plan.size(); i++) {
-            for (StarColumn column : plan.get(i).sources) {
-                if (sources.contains(column.source)) {
-                    last = i;
-                    break;
-                }
-            }
-        }
-        return last;
+        return SourcePlanner.lastIndexOfSource(plan, sources);
     }
 
     private static int knownOutputPositionCount(SourceNode node) {
-        int count = 0;
-        for (StarOutput output : node.plan) {
-            if (output.nameKnown) {
-                count++;
-            }
-        }
-        return count;
+        return SourcePlanner.knownOutputPositionCount(node);
     }
 
     private static Set<String> knownOutputKeys(SourceNode node) {
-        Set<String> keys = new HashSet<>();
-        for (StarOutput output : node.plan) {
-            if (!output.nameKnown) {
-                continue;
-            }
-            for (StarColumn column : output.sources) {
-                keys.add(column.key);
-            }
-        }
-        return keys;
+        return SourcePlanner.knownOutputKeys(node);
     }
 
     private boolean nodeNamesKnown(SourceNode node) {
-        return node.knownColumns || bindingNamesKnown(node);
+        return planner.nodeNamesKnown(node);
     }
 
     private static int planKnownKeyCount(List<StarOutput> plan, String key) {
-        int count = 0;
-        for (StarOutput output : plan) {
-            if (!output.nameKnown) {
-                continue;
-            }
-            for (StarColumn column : output.sources) {
-                if (column.key != null && column.key.equals(key)) {
-                    count++;
-                    break;
-                }
-            }
-        }
-        return count;
+        return SourcePlanner.planKnownKeyCount(plan, key);
     }
 
     private StarOutput removeFirstMatching(List<StarOutput> plan, String key) {
-        for (int i = 0; i < plan.size(); i++) {
-            StarOutput output = plan.get(i);
-            for (StarColumn column : output.sources) {
-                if (column.key != null && column.key.equals(key)
-                        && (column.nameKnown || output.nameKnown)) {
-                    return plan.remove(i);
-                }
-            }
-        }
-        return null;
+        return planner.removeFirstMatching(plan, key);
     }
 
-    private static List<SourceTable> mergedSources(SQLJoinTableSource.JoinType type,
-            List<SourceTable> left, List<SourceTable> right) {
-        List<SourceTable> merged = new ArrayList<>();
-        switch (type) {
-            case LEFT_OUTER_JOIN:
-            case LEFT_SEMI_JOIN:
-            case LEFT_ANTI_JOIN:
-                merged.addAll(left);
-                break;
-            case RIGHT_OUTER_JOIN:
-                merged.addAll(right);
-                break;
-            default:
-                merged.addAll(left);
-                merged.addAll(right);
-                break;
-        }
-        return merged;
+    private static List<SourceTable> mergedSources(SQLJoinTableSource.JoinType type, List<SourceTable> left, List<SourceTable> right) {
+        return SourcePlanner.mergedSources(type, left, right);
     }
 
     private SourceTable resolveSource(SQLExprTableSource table) {
-        String rawName = extractTableName(table);
-        String written = normalizeQualifiedName(rawName);
-        String alias = table.getAlias();
-        Table metadataTable = null;
-        String display = alias != null ? alias
-                : detachedMetadata() && rawName != null
-                        ? sessionPhysicalReference(rawName)
-                        : lastIdentifier(written);
-        String cteTarget = isPhysicalTableExpression(table)
-                && isSingleSegmentName(rawName)
-                ? findCteTarget(identifierKey(rawName)) : null;
-        boolean temporary = cteTarget != null;
-        String sourceAlias = alias;
-
-        if (temporary) {
-            display = cteTarget;
-            if (sourceAlias == null) {
-                sourceAlias = rawName;
-            }
-        }
-
-        if (context != null && !temporary) {
-            TableLocation location = resolveMetadataTable(rawName);
-            if (location != null) {
-                metadataTable = location.getTable();
-                display = location.getDisplayName();
-            }
-        }
-
-        String mappingName = metadataTable != null ? display : written;
-        registerTable(written, mappingName, display, alias, temporary);
-
-        List<String> outputColumns = cteTarget == null
-                ? java.util.Collections.<String>emptyList()
-                : copyOutputs(state.targetOutputs.get(cteTarget));
-        boolean widthKnown = metadataTable != null || cteTarget != null
-                && isOutputWidthKnown(cteTarget, outputColumns);
-        boolean namesKnown = metadataTable != null || cteTarget != null
-                && isOutputNamesKnown(cteTarget, outputColumns);
-        int outputWidth = derivedWidth(cteTarget, outputColumns, widthKnown);
-        int minOutputColumns = metadataTable != null
-                ? metadataTable.getFields().size()
-                : targetMinimumColumns(cteTarget, widthKnown, outputWidth);
-        return new SourceTable(display, written, rawName, sourceAlias, metadataTable, temporary,
-                widthKnown, namesKnown, outputColumns, copyKeys(cteTarget),
-                metadataTable != null ? java.util.Collections.<Boolean>emptyList()
-                        : copyNameKnown(cteTarget, outputColumns.size()),
-                minOutputColumns,
-                metadataTable != null ? java.util.Collections.<SourceTable>emptyList()
-                        : copyUnknownGroups(cteTarget, outputColumns.size()),
-                false, hasWildcardContribution(cteTarget),
-                isPhysicalTableExpression(table),
-                isPhysicalTableExpression(table) ? null : implicitRelationName(table));
+        return planner.resolveSource(table);
     }
 
-    private int targetMinimumColumns(String target, boolean widthKnown, int outputCount) {
+    int targetMinimumColumns(String target, boolean widthKnown, int outputCount) {
         if (widthKnown) {
             return outputCount;
         }
@@ -4428,11 +3568,11 @@ public class DmlLineage {
         return refs;
     }
 
-private boolean hasWildcardContribution(String target) {
+boolean hasWildcardContribution(String target) {
         return target != null && Boolean.TRUE.equals(state.targetWildcardContribution.get(target));
     }
 
-    private List<SourceTable> copyUnknownGroups(String target, int size) {
+    List<SourceTable> copyUnknownGroups(String target, int size) {
         List<SourceTable> groups = target == null ? null
                 : state.targetOutputUnknownGroup.get(target);
         List<SourceTable> result = new ArrayList<>();
@@ -4442,7 +3582,7 @@ private boolean hasWildcardContribution(String target) {
         return result;
     }
 
-    private List<Boolean> copyNameKnown(String target, int size) {
+    List<Boolean> copyNameKnown(String target, int size) {
         List<Boolean> flags = target == null ? null : state.targetOutputNameKnown.get(target);
         List<Boolean> result = new ArrayList<>();
         for (int i = 0; i < size; i++) {
@@ -4451,20 +3591,20 @@ private boolean hasWildcardContribution(String target) {
         return result;
     }
 
-    private boolean isOutputWidthKnown(String target, List<String> outputs) {
+    boolean isOutputWidthKnown(String target, List<String> outputs) {
         return Boolean.TRUE.equals(state.targetWidthKnown.get(target));
     }
 
-    private boolean isOutputNamesKnown(String target, List<String> outputs) {
+    boolean isOutputNamesKnown(String target, List<String> outputs) {
         return !outputs.isEmpty() && Boolean.TRUE.equals(state.targetNamesKnown.get(target));
     }
 
-    private static List<String> copyOutputs(List<String> outputs) {
+    static List<String> copyOutputs(List<String> outputs) {
         return outputs == null ? java.util.Collections.<String>emptyList()
                 : new ArrayList<>(outputs);
     }
 
-    private List<String> copyKeys(String target) {
+    List<String> copyKeys(String target) {
         List<String> keys = target == null ? null : state.targetOutputKeys.get(target);
         return keys == null ? java.util.Collections.<String>emptyList()
                 : new ArrayList<>(keys);
@@ -4490,7 +3630,7 @@ private boolean hasWildcardContribution(String target) {
         return MetadataCatalog.splitQualifiedNamePreservingQuotes(rawName).length == 1;
     }
 
-    private String canonicalIdentifier(String rawName) {
+    String canonicalIdentifier(String rawName) {
         return DialectRules.of(currentDialect())
                 .canonical(Identifier.of(rawName));
     }
@@ -4552,7 +3692,7 @@ private boolean hasWildcardContribution(String target) {
         groups.set(position, source);
     }
 
-    private void markOutputNameKnown(String target, int position, boolean known) {
+    void markOutputNameKnown(String target, int position, boolean known) {
         if (target == null || position < 0) {
             return;
         }
@@ -4573,7 +3713,7 @@ private boolean hasWildcardContribution(String target) {
         setTargetOutput(target, position, name, identifierKey(name));
     }
 
-    private void setTargetOutput(String target, int position, String name, String key) {
+    void setTargetOutput(String target, int position, String name, String key) {
         List<String> outputs = state.targetOutputs.computeIfAbsent(target,
                 k -> new ArrayList<String>());
         List<String> keys = state.targetOutputKeys.computeIfAbsent(target,
@@ -4686,7 +3826,7 @@ private boolean hasWildcardContribution(String target) {
         return entries;
     }
 
-    private List<String> currentDeclaredKeys(String target) {
+    List<String> currentDeclaredKeys(String target) {
         for (int i = state.targetColumnAliases.size() - 1; i >= 0; i--) {
             if (state.targetColumnAliases.get(i).containsKey(target)) {
                 List<String> keys = state.cteDeclaredKeys.get(target);
@@ -4708,7 +3848,7 @@ private boolean hasWildcardContribution(String target) {
         return false;
     }
 
-    private List<String> sourceColumnNames(SourceTable source) {
+    List<String> sourceColumnNames(SourceTable source) {
         if (source.metadataTable != null) {
             List<String> columns = new ArrayList<>();
             for (Column column : source.metadataTable.getFields()) {
@@ -4735,7 +3875,7 @@ private boolean hasWildcardContribution(String target) {
 
 
 
-    private List<String> currentTargetColumnAliases(String target) {
+    List<String> currentTargetColumnAliases(String target) {
         for (int i = state.targetColumnAliases.size() - 1; i >= 0; i--) {
             Map<String, List<String>> aliases = state.targetColumnAliases.get(i);
             if (aliases.containsKey(target)) {
@@ -6466,7 +5606,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return true;
     }
 
-    private boolean sourceWidthKnown(SourceTable source) {
+    boolean sourceWidthKnown(SourceTable source) {
         if (source.metadataTable != null || source.outputWidthKnown) {
             return true;
         }
@@ -6474,7 +5614,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                 && Boolean.TRUE.equals(state.targetWidthKnown.get(source.displayName));
     }
 
-    private int derivedWidth(String target, List<String> outputs, boolean widthKnown) {
+    int derivedWidth(String target, List<String> outputs, boolean widthKnown) {
         int width = outputs.size();
         if (widthKnown) {
             Integer known = state.targetMinWidth.get(target);
@@ -6485,7 +5625,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return width;
     }
 
-    private int sourceKnownWidth(SourceTable source) {
+    int sourceKnownWidth(SourceTable source) {
         if (source.metadataTable != null) {
             return Math.max(source.metadataTable.getFields().size(), 1);
         }
@@ -6570,7 +5710,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return sources;
     }
 
-    private static List<String> displayNames(List<SourceTable> sources) {
+    static List<String> displayNames(List<SourceTable> sources) {
         List<String> names = new ArrayList<>();
         for (SourceTable source : sources) {
             names.add(source.displayName);
@@ -7044,7 +6184,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return name;
     }
 
-    private String uniqueTarget(String preferred) {
+    String uniqueTarget(String preferred) {
         String candidate = preferred;
         int suffix = 1;
         while (state.usedTargets.contains(candidate)) {

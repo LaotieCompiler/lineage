@@ -19,7 +19,6 @@ import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
-import com.laotie.model.metadata.MetadataMode;
 
 /**
  * DML forms that appear in production SQL logs.
@@ -32,13 +31,11 @@ import com.laotie.model.metadata.MetadataMode;
 public class AdvancedDmlTest {
 
     private static LineageOptions optional() {
-        return LineageOptions.of(MetadataMode.OPTIONAL, false);
+        return LineageTestSupport.optional();
     }
 
     private static MetadataContext catalog(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.postgres(ddl);
     }
 
     private static Set<Column> sources(ScanResult result, String column) {

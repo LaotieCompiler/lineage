@@ -7,11 +7,9 @@ import java.util.List;
 
 import org.junit.Test;
 
-import com.alibaba.druid.DbType;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
-import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
 
 /**
@@ -77,16 +75,12 @@ public class LineageWithLineageTest {
     }
 
     private static MetadataContext mysqlContext(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.mysql(ddl);
     }
 
     private static void assertInstruction(Instruction instruction, OperationType operation,
             String from, String to) {
-        assertEquals(operation, instruction.getOperation());
-        assertEquals(from, instruction.getFrom());
-        assertEquals(to, instruction.getTo());
+        LineageTestSupport.assertInstruction(instruction, operation, from, to);
     }
 
     private static void assertContains(List<Instruction> instructions, OperationType operation,

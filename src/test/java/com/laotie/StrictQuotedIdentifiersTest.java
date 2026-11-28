@@ -10,6 +10,12 @@ import java.util.HashSet;
 import org.junit.Test;
 
 import com.alibaba.druid.DbType;
+import com.alibaba.druid.sql.ast.SQLExpr;
+import com.alibaba.druid.sql.ast.SQLStatement;
+import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr;
+import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
+import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.laotie.exception.UnquotedIdentifierException;
 import com.laotie.model.ScanResult;
 import com.laotie.model.metadata.Column;
@@ -27,7 +33,7 @@ public class StrictQuotedIdentifiersTest {
     }
 
     private static LineageOptions optional() {
-        return LineageOptions.of(MetadataMode.OPTIONAL, false);
+        return LineageTestSupport.optional();
     }
 
     @Test
@@ -42,31 +48,22 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
-    public void unquotedColumnIsRejected() {
-        ScanResult result = LineageScanner.withoutMetadata(
-                DbType.mysql, strict()).scan("SELECT c1 FROM `t`;");
+    public void unquotedIdentifiersAreRejected() {
+        String[] sqls = {
+            "SELECT c1 FROM `t`;",
+            "SELECT `c1` FROM t;",
+            "SELECT `t`.`c1` FROM `a` AS t;",
+            "WITH q AS (SELECT `c1` FROM `a`) SELECT `q`.`c1` FROM `q`;",
+            "INSERT INTO `t` (c1) SELECT `c1` FROM `a`;",
+            "SELECT `c1` FROM db.`t`;",
+        };
+        for (String sql : sqls) {
+            ScanResult result = LineageScanner.withoutMetadata(
+                    DbType.mysql, strict()).scan(sql);
 
-        assertTrue(result.getResults().get(0).getError()
-                instanceof UnquotedIdentifierException);
-    }
-
-    @Test
-    public void unquotedTableIsRejected() {
-        ScanResult result = LineageScanner.withoutMetadata(
-                DbType.mysql, strict()).scan("SELECT `c1` FROM t;");
-
-        assertTrue(result.getResults().get(0).getError()
-                instanceof UnquotedIdentifierException);
-    }
-
-    @Test
-    public void unquotedAliasIsRejected() {
-        ScanResult result = LineageScanner.withoutMetadata(
-                DbType.mysql, strict()).scan(
-                "SELECT `t`.`c1` FROM `a` AS t;");
-
-        assertTrue(result.getResults().get(0).getError()
-                instanceof UnquotedIdentifierException);
+            assertTrue(sql, result.getResults().get(0).getError()
+                    instanceof UnquotedIdentifierException);
+        }
     }
 
     @Test
@@ -82,17 +79,6 @@ public class StrictQuotedIdentifiersTest {
     }
 
     @Test
-    public void unquotedCteIsRejected() {
-        ScanResult result = LineageScanner.withoutMetadata(
-                DbType.mysql, strict()).scan(
-                "WITH q AS (SELECT `c1` FROM `a`)"
-                        + " SELECT `q`.`c1` FROM `q`;");
-
-        assertTrue(result.getResults().get(0).getError()
-                instanceof UnquotedIdentifierException);
-    }
-
-    @Test
     public void quotedCteIsAccepted() {
         ScanResult result = LineageScanner.withoutMetadata(
                 DbType.mysql, strict()).scan(
@@ -100,16 +86,6 @@ public class StrictQuotedIdentifiersTest {
                         + " SELECT `q`.`c1` FROM `q`;");
 
         assertEquals(0, result.getFailures().size());
-    }
-
-    @Test
-    public void unquotedInsertColumnIsRejected() {
-        ScanResult result = LineageScanner.withoutMetadata(
-                DbType.mysql, strict()).scan(
-                "INSERT INTO `t` (c1) SELECT `c1` FROM `a`;");
-
-        assertTrue(result.getResults().get(0).getError()
-                instanceof UnquotedIdentifierException);
     }
 
     @Test
@@ -121,16 +97,6 @@ public class StrictQuotedIdentifiersTest {
         assertEquals(0, result.getFailures().size());
         assertEquals(new HashSet<>(Arrays.asList(new Column("a.c1"))),
                 result.getGraph().getSources(new Column("t.c1")));
-    }
-
-    @Test
-    public void unquotedQualifiedTableSegmentIsRejected() {
-        ScanResult result = LineageScanner.withoutMetadata(
-                DbType.mysql, strict()).scan(
-                "SELECT `c1` FROM db.`t`;");
-
-        assertTrue(result.getResults().get(0).getError()
-                instanceof UnquotedIdentifierException);
     }
 
     @Test
@@ -674,37 +640,15 @@ public class StrictQuotedIdentifiersTest {
 
     @Test
     public void replacedEscapeArgumentsLoseTheExemption() {
-        LineageOptions options = LineageOptions.of(
-                MetadataMode.OPTIONAL, false, true);
-        DmlLineage lineage = new DmlLineage(DbType.derby, options);
-        com.alibaba.druid.sql.ast.SQLStatement escaped = lineage.parseStatement(
+        DmlLineage lineage = derbyStrictQuoting();
+        SQLStatement escaped = lineage.parseStatement(
                 "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
                         + " FROM \"t\";");
-        com.alibaba.druid.sql.ast.SQLStatement plain = lineage.parseStatement(
+        SQLStatement plain = lineage.parseStatement(
                 "SELECT TIMESTAMPADD(sql_tsi_day, 1) FROM \"t\";");
-        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr escapedCall =
-                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
-                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
-                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
-                                        escaped).getSelect().getQuery())
-                                .getSelectList().get(0).getExpr();
-        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr plainCall =
-                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
-                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
-                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
-                                        plain).getSelect().getQuery())
-                                .getSelectList().get(0).getExpr();
-        escapedCall.getArguments().clear();
-        for (com.alibaba.druid.sql.ast.SQLExpr argument
-                : plainCall.getArguments()) {
-            escapedCall.addArgument(argument);
-        }
-        try {
-            lineage.getLineage(escaped);
-            org.junit.Assert.fail("replaced arguments must lose the exemption");
-        } catch (UnquotedIdentifierException expected) {
-            // expected
-        }
+        replaceArguments(firstCall(escaped), firstCall(plain));
+        assertLosesExemption(lineage, escaped,
+                "replaced arguments must lose the exemption");
     }
 
     @Test
@@ -719,60 +663,27 @@ public class StrictQuotedIdentifiersTest {
 
     @Test
     public void inPlaceEscapeEditLosesTheExemption() {
-        DmlLineage lineage = new DmlLineage(DbType.derby,
-                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
-        com.alibaba.druid.sql.ast.SQLStatement statement =
-                lineage.parseStatement("SELECT {fn TIMESTAMPADD("
-                        + "SQL_TSI_DAY, 1, \"c\")} FROM \"t\";");
-        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr call =
-                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
-                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
-                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
-                                        statement).getSelect().getQuery())
-                                .getSelectList().get(0).getExpr();
-        ((com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr)
-                call.getArguments().get(0)).setName("sql_tsi_day");
+        DmlLineage lineage = derbyStrictQuoting();
+        SQLStatement statement = lineage.parseStatement("SELECT {fn TIMESTAMPADD("
+                + "SQL_TSI_DAY, 1, \"c\")} FROM \"t\";");
+        SQLMethodInvokeExpr call = firstCall(statement);
+        ((SQLIdentifierExpr) call.getArguments().get(0)).setName("sql_tsi_day");
         call.getArguments().remove(2);
-        try {
-            lineage.getLineage(statement);
-            org.junit.Assert.fail("edited escape must lose its exemption");
-        } catch (UnquotedIdentifierException expected) {
-            // expected
-        }
+        assertLosesExemption(lineage, statement,
+                "edited escape must lose its exemption");
     }
 
     @Test
     public void sameArityReplacementLosesTheExemption() {
-        DmlLineage lineage = new DmlLineage(DbType.derby,
-                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
-        com.alibaba.druid.sql.ast.SQLStatement escaped = lineage.parseStatement(
+        DmlLineage lineage = derbyStrictQuoting();
+        SQLStatement escaped = lineage.parseStatement(
                 "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
                         + " FROM \"t\";");
-        com.alibaba.druid.sql.ast.SQLStatement plain = lineage.parseStatement(
+        SQLStatement plain = lineage.parseStatement(
                 "SELECT TIMESTAMPADD(sql_tsi_day, 2, \"c\") FROM \"t\";");
-        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr escapedCall =
-                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
-                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
-                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
-                                        escaped).getSelect().getQuery())
-                                .getSelectList().get(0).getExpr();
-        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr plainCall =
-                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
-                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
-                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
-                                        plain).getSelect().getQuery())
-                                .getSelectList().get(0).getExpr();
-        escapedCall.getArguments().clear();
-        for (com.alibaba.druid.sql.ast.SQLExpr argument
-                : plainCall.getArguments()) {
-            escapedCall.addArgument(argument);
-        }
-        try {
-            lineage.getLineage(escaped);
-            org.junit.Assert.fail("same-arity replacement must reject");
-        } catch (UnquotedIdentifierException expected) {
-            // expected
-        }
+        replaceArguments(firstCall(escaped), firstCall(plain));
+        assertLosesExemption(lineage, escaped,
+                "same-arity replacement must reject");
     }
 
     @Test
@@ -782,32 +693,44 @@ public class StrictQuotedIdentifiersTest {
         // equivalent plain call's arguments yields the same signature and cannot be
         // told apart from an untouched (or cloned) escape. Rejecting it would also
         // reject clones, so this is the documented, accepted limitation.
-        DmlLineage lineage = new DmlLineage(DbType.derby,
-                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
-        com.alibaba.druid.sql.ast.SQLStatement escaped = lineage.parseStatement(
+        DmlLineage lineage = derbyStrictQuoting();
+        SQLStatement escaped = lineage.parseStatement(
                 "SELECT {fn TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\")}"
                         + " FROM \"t\";");
-        com.alibaba.druid.sql.ast.SQLStatement plain = lineage.parseStatement(
+        SQLStatement plain = lineage.parseStatement(
                 "SELECT TIMESTAMPADD(SQL_TSI_DAY, 1, \"c\") FROM \"t\";");
-        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr escapedCall =
-                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
-                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
-                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
-                                        escaped).getSelect().getQuery())
-                                .getSelectList().get(0).getExpr();
-        com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr plainCall =
-                (com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr)
-                        ((com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock)
-                                ((com.alibaba.druid.sql.ast.statement.SQLSelectStatement)
-                                        plain).getSelect().getQuery())
-                                .getSelectList().get(0).getExpr();
-        escapedCall.getArguments().clear();
-        for (com.alibaba.druid.sql.ast.SQLExpr argument
-                : plainCall.getArguments()) {
-            escapedCall.addArgument(argument);
-        }
+        replaceArguments(firstCall(escaped), firstCall(plain));
 
         lineage.getLineage(escaped);
+    }
+
+    private static DmlLineage derbyStrictQuoting() {
+        return new DmlLineage(DbType.derby,
+                LineageOptions.of(MetadataMode.OPTIONAL, false, true));
+    }
+
+    private static SQLMethodInvokeExpr firstCall(SQLStatement statement) {
+        return (SQLMethodInvokeExpr) ((SQLSelectQueryBlock)
+                ((SQLSelectStatement) statement).getSelect().getQuery())
+                .getSelectList().get(0).getExpr();
+    }
+
+    private static void replaceArguments(SQLMethodInvokeExpr target,
+            SQLMethodInvokeExpr source) {
+        target.getArguments().clear();
+        for (SQLExpr argument : source.getArguments()) {
+            target.addArgument(argument);
+        }
+    }
+
+    private static void assertLosesExemption(DmlLineage lineage,
+            SQLStatement statement, String message) {
+        try {
+            lineage.getLineage(statement);
+            org.junit.Assert.fail(message);
+        } catch (UnquotedIdentifierException expected) {
+            // expected
+        }
     }
 
     @Test

@@ -177,18 +177,15 @@ public class GlobalLineageTest {
     }
 
     @Test
-    public void onlyTheInstanceLevelDiffers() {
-        assertDistinctSources("ins1.db1.sch1.A", "ins2.db1.sch1.A");
-    }
-
-    @Test
-    public void onlyTheDatabaseLevelDiffers() {
-        assertDistinctSources("ins1.db1.sch1.A", "ins1.db2.sch1.A");
-    }
-
-    @Test
-    public void onlyTheSchemaLevelDiffers() {
-        assertDistinctSources("ins1.db1.sch1.A", "ins1.db1.sch2.A");
+    public void eachQualifierLevelDefinesADistinctTable() {
+        String[][] pairs = {
+            {"ins1.db1.sch1.A", "ins2.db1.sch1.A"},
+            {"ins1.db1.sch1.A", "ins1.db2.sch1.A"},
+            {"ins1.db1.sch1.A", "ins1.db1.sch2.A"},
+        };
+        for (String[] pair : pairs) {
+            assertDistinctSources(pair[0], pair[1]);
+        }
     }
 
     @Test
@@ -229,20 +226,10 @@ public class GlobalLineageTest {
     }
 
     private static MetadataContext mysqlContext(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.mysql(ddl);
     }
 
     private static Set<Column> columns(String... names) {
-        return new HashSet<>(Arrays.asList(toColumns(names)));
-    }
-
-    private static Column[] toColumns(String... names) {
-        Column[] columns = new Column[names.length];
-        for (int i = 0; i < names.length; i++) {
-            columns[i] = new Column(names[i]);
-        }
-        return columns;
+        return LineageTestSupport.columns(names);
     }
 }

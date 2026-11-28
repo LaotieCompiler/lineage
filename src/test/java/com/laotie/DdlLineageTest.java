@@ -15,7 +15,6 @@ import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
 import com.laotie.model.ScanResult;
-import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
 import com.laotie.model.metadata.MetadataMode;
 
@@ -26,13 +25,11 @@ import com.laotie.model.metadata.MetadataMode;
 public class DdlLineageTest {
 
     private static LineageOptions strict() {
-        return LineageOptions.of(MetadataMode.STRICT, false);
+        return LineageTestSupport.strict();
     }
 
     private static MetadataContext catalog(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.postgres(ddl);
     }
 
     private static MetadataContext base() {

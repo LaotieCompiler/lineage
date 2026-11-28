@@ -25,7 +25,7 @@ import com.laotie.model.metadata.MetadataMode;
 public class DialectSupportTest {
 
     private static LineageOptions optional() {
-        return LineageOptions.of(MetadataMode.OPTIONAL, false);
+        return LineageTestSupport.optional();
     }
 
     private static void assertWildcardEdge(DbType dialect) {
@@ -1045,31 +1045,21 @@ public class DialectSupportTest {
     }
 
     @Test
-    public void hiveBacktickQualifiedNamesUseCatalog() {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
-        catalog.loadDdl("CREATE TABLE `db`.`a` (`c1` INT, `c2` INT);"
-                + " CREATE TABLE `db`.`t` (`c1` INT, `c2` INT);");
-        ScanResult result = LineageScanner.withMetadata(
-                MetadataContext.of(catalog), optional()).scan(
-                "INSERT INTO `db`.`t` SELECT `c2` FROM `db`.`a`;");
+    public void hiveFamilyBacktickQualifiedNamesUseCatalog() {
+        for (DbType dialect : new DbType[]{DbType.hive, DbType.antspark}) {
+            MetadataCatalog catalog = new MetadataCatalog(dialect);
+            catalog.loadDdl("CREATE TABLE `db`.`a` (`c1` INT, `c2` INT);"
+                    + " CREATE TABLE `db`.`t` (`c1` INT, `c2` INT);");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "INSERT INTO `db`.`t` SELECT `c2` FROM `db`.`a`;");
 
-        assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(Arrays.asList(new Column("db.a.c2"))),
-                result.getGraph().getSources(new Column("db.t.c1")));
-    }
-
-    @Test
-    public void sparkBacktickQualifiedNamesUseCatalog() {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.antspark);
-        catalog.loadDdl("CREATE TABLE `db`.`a` (`c1` INT, `c2` INT);"
-                + " CREATE TABLE `db`.`t` (`c1` INT, `c2` INT);");
-        ScanResult result = LineageScanner.withMetadata(
-                MetadataContext.of(catalog), optional()).scan(
-                "INSERT INTO `db`.`t` SELECT `c2` FROM `db`.`a`;");
-
-        assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(Arrays.asList(new Column("db.a.c2"))),
-                result.getGraph().getSources(new Column("db.t.c1")));
+            assertEquals(dialect + ": " + result.getFailures(),
+                    0, result.getFailures().size());
+            assertEquals(dialect.toString(),
+                    new HashSet<>(Arrays.asList(new Column("db.a.c2"))),
+                    result.getGraph().getSources(new Column("db.t.c1")));
+        }
     }
 
     @Test

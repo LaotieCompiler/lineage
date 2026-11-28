@@ -2,7 +2,6 @@ package com.laotie;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 
@@ -150,9 +149,6 @@ public class LineageMetadataResultTest {
 
     private static void assertInstruction(Instruction instruction, OperationType operation,
             String from, String to) {
-        assertNotNull("instruction should not be null", instruction);
-        assertEquals("operation", operation, instruction.getOperation());
-        assertEquals("from", from, instruction.getFrom());
-        assertEquals("to", to, instruction.getTo());
+        LineageTestSupport.assertInstruction(instruction, operation, from, to);
     }
 }

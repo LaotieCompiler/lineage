@@ -56,7 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 937 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
+当前为 922 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
 
 Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 `JdbcMetadataScannerDockerTest`：

@@ -40,7 +40,7 @@ import com.laotie.model.metadata.MetadataMode;
 public class MetadataFreeAnalysisTest {
 
     private static LineageOptions optional() {
-        return LineageOptions.of(MetadataMode.OPTIONAL, false);
+        return LineageTestSupport.optional();
     }
 
     private static LineageOptions inferring() {
@@ -57,9 +57,7 @@ public class MetadataFreeAnalysisTest {
     }
 
     private static MetadataContext catalog(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.postgres(ddl);
     }
 
     @Test

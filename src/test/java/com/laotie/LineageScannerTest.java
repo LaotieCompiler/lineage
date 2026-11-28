@@ -19,7 +19,6 @@ import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.ScanResult;
 import com.laotie.model.metadata.Column;
-import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
 import com.laotie.model.metadata.MetadataContextHolder;
 
@@ -431,51 +430,22 @@ public class LineageScannerTest {
     }
 
     @Test
-    public void nestedCteWildcardUsesDeclaredWidth() {
-        MetadataContext context = pgContext("CREATE TABLE a (c1 INT, c2 INT);");
+    public void nestedCteWildcardWidthFollowsTheDeclaration() {
+        String[] declarations = {"r(v,w)", "r(v)", "r"};
+        for (String declaration : declarations) {
+            MetadataContext context = pgContext("CREATE TABLE a (c1 INT, c2 INT);");
 
-        ScanResult result = new LineageScanner(context).scan(
-                "WITH r(v,w) AS (SELECT * FROM a),"
-                        + " q(x,y) AS (SELECT r.* FROM r) SELECT x,y FROM q;");
+            ScanResult result = new LineageScanner(context).scan(
+                    "WITH " + declaration + " AS (SELECT * FROM a),"
+                            + " q(x,y) AS (SELECT r.* FROM r) SELECT x,y FROM q;");
 
-        assertEquals(1, result.getResults().size());
-        assertEquals(0, result.getFailures().size());
-        assertEquals(columns("a.c1"),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.x")));
-        assertEquals(columns("a.c2"),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.y")));
-    }
-
-    @Test
-    public void nestedCtePartialDeclarationUsesActualWidth() {
-        MetadataContext context = pgContext("CREATE TABLE a (c1 INT, c2 INT);");
-
-        ScanResult result = new LineageScanner(context).scan(
-                "WITH r(v) AS (SELECT * FROM a),"
-                        + " q(x,y) AS (SELECT r.* FROM r) SELECT x,y FROM q;");
-
-        assertEquals(1, result.getResults().size());
-        assertEquals(0, result.getFailures().size());
-        assertEquals(columns("a.c1"),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.x")));
-        assertEquals(columns("a.c2"),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.y")));
-    }
-
-    @Test
-    public void nestedCteWithoutDeclarationUsesActualWidth() {
-        MetadataContext context = pgContext("CREATE TABLE a (c1 INT, c2 INT);");
-
-        ScanResult result = new LineageScanner(context).scan(
-                "WITH r AS (SELECT * FROM a),"
-                        + " q(x,y) AS (SELECT r.* FROM r) SELECT x,y FROM q;");
-
-        assertEquals(1, result.getResults().size());
-        assertEquals(0, result.getFailures().size());
-        assertEquals(columns("a.c1"),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.x")));
-        assertEquals(columns("a.c2"),
-                result.getGraph().getSources(Column.temporary("stmt0.temp0.y")));
+            assertEquals(declaration, 1, result.getResults().size());
+            assertEquals(declaration, 0, result.getFailures().size());
+            assertEquals(declaration, columns("a.c1"),
+                    result.getGraph().getSources(Column.temporary("stmt0.temp0.x")));
+            assertEquals(declaration, columns("a.c2"),
+                    result.getGraph().getSources(Column.temporary("stmt0.temp0.y")));
+        }
     }
 
     @Test
@@ -2902,15 +2872,11 @@ public class LineageScannerTest {
     }
 
     private static MetadataContext mysqlContext(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.mysql(ddl);
     }
 
     private static MetadataContext pgContext(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.postgres(ddl);
     }
 
     private static boolean hasMapping(ScanResult result, String from, String to) {

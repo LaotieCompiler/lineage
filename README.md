@@ -52,7 +52,7 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 937 tests; 2 are always skipped and the
+Run the full unit suite with `mvn test` (currently 922 tests; 2 are always skipped and the
 optional TPC-H corpus is skipped until its queries are fetched).
 
 The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and

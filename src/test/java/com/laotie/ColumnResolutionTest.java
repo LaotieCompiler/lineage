@@ -549,23 +549,15 @@ public class ColumnResolutionTest {
     }
 
     private static MetadataContext mysqlContext(String ddl) {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
-        catalog.loadDdl(ddl);
-        return MetadataContext.of(catalog);
+        return LineageTestSupport.mysql(ddl);
     }
 
     private static Set<Column> columns(String... names) {
-        Set<Column> columns = new HashSet<>();
-        for (String name : names) {
-            columns.add(new Column(name));
-        }
-        return columns;
+        return LineageTestSupport.columns(names);
     }
 
     private static void assertInstruction(Instruction instruction, OperationType operation,
             String from, String to) {
-        assertEquals("operation", operation, instruction.getOperation());
-        assertEquals("from", from, instruction.getFrom());
-        assertEquals("to", to, instruction.getTo());
+        LineageTestSupport.assertInstruction(instruction, operation, from, to);
     }
 }

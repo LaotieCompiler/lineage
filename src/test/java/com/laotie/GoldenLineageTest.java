@@ -85,13 +85,14 @@ public class GoldenLineageTest {
                 String name = string(testCase, "name", "<unnamed>");
                 String script = string(testCase, "script", "");
                 Random random = new Random(script.hashCode());
+                LineageScanner scanner = scannerFor(testCase);
                 for (int i = 0; i < 5; i++) {
                     String mutated = mutate(script, random);
                     if (mutated.trim().isEmpty()) {
                         continue;
                     }
                     try {
-                        ScanResult result = scannerFor(testCase).scan(mutated);
+                        ScanResult result = scanner.scan(mutated);
                         assertTrue(name + " mutation produced no result: " + mutated,
                                 !result.getResults().isEmpty());
                     } catch (Throwable error) {

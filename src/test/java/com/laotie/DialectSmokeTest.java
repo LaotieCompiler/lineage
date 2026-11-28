@@ -9,7 +9,6 @@ import org.junit.Test;
 import com.alibaba.druid.DbType;
 import com.laotie.model.LineageResult;
 import com.laotie.model.ScanResult;
-import com.laotie.model.metadata.MetadataMode;
 
 /**
  * Statement-level smoke coverage for dialects that the supported-database list claims
@@ -18,7 +17,7 @@ import com.laotie.model.metadata.MetadataMode;
 public class DialectSmokeTest {
 
     private static LineageOptions optional() {
-        return LineageOptions.of(MetadataMode.OPTIONAL, false);
+        return LineageTestSupport.optional();
     }
 
     private static ScanResult scan(DbType dialect, String sql) {
@@ -51,32 +50,24 @@ public class DialectSmokeTest {
     }
 
     @Test
-    public void sqliteSupportsBasicStatements() {
-        assertBasicStatements(DbType.sqlite);
+    public void basicStatementsAreSupported() {
+        for (DbType dialect : new DbType[]{DbType.sqlite, DbType.db2,
+                DbType.sybase, DbType.oracle}) {
+            assertBasicStatements(dialect);
+        }
     }
 
     @Test
-    public void db2SupportsBasicStatements() {
-        assertBasicStatements(DbType.db2);
-    }
+    public void doubleQuotedIdentifiersAreAccepted() {
+        for (DbType dialect : new DbType[]{DbType.sqlite, DbType.oracle}) {
+            ScanResult result = scan(dialect, "SELECT \"c1\" FROM \"t\";");
 
-    @Test
-    public void sybaseSupportsBasicStatements() {
-        assertBasicStatements(DbType.sybase);
-    }
-
-    @Test
-    public void oracleSupportsBasicStatements() {
-        assertBasicStatements(DbType.oracle);
-    }
-
-    @Test
-    public void sqliteDoubleQuotedIdentifiersAreAccepted() {
-        ScanResult result = scan(DbType.sqlite, "SELECT \"c1\" FROM \"t\";");
-
-        assertNull(result.getResults().get(0).getError());
-        assertTrue(result.getResults().get(0).getInstructions().toString()
-                .contains("c1"));
+            assertNull(dialect + ": " + result.getResults().get(0).getError(),
+                    result.getResults().get(0).getError());
+            assertTrue(dialect + ": " + result.getResults().get(0).getInstructions(),
+                    result.getResults().get(0).getInstructions().toString()
+                            .contains("c1"));
+        }
     }
 
     @Test
@@ -86,14 +77,5 @@ public class DialectSmokeTest {
         assertNull(result.getResults().get(0).getError());
         assertTrue(result.getResults().get(0).getInstructions().toString()
                 .contains("[c1]"));
-    }
-
-    @Test
-    public void oracleQuotedIdentifiersAreAccepted() {
-        ScanResult result = scan(DbType.oracle, "SELECT \"c1\" FROM \"t\";");
-
-        assertNull(result.getResults().get(0).getError());
-        assertTrue(result.getResults().get(0).getInstructions().toString()
-                .contains("c1"));
     }
 }

@@ -308,9 +308,6 @@ public class LineageScriptTest {
 
     private static void assertInstruction(Instruction instruction, OperationType operation,
             String from, String to) {
-        assertNotNull("instruction should not be null", instruction);
-        assertEquals("operation", operation, instruction.getOperation());
-        assertEquals("from", from, instruction.getFrom());
-        assertEquals("to", to, instruction.getTo());
+        LineageTestSupport.assertInstruction(instruction, operation, from, to);
     }
 }

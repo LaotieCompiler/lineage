@@ -22,25 +22,30 @@ import com.laotie.model.metadata.TableLocation;
 public class CrossDatabaseSchemaTest {
 
     private static LineageOptions optional() {
-        return LineageOptions.of(MetadataMode.OPTIONAL, false);
+        return LineageTestSupport.optional();
     }
 
     @Test
-    public void mysqlJoinsAcrossDatabases() {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.mysql);
-        catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"
-                + " CREATE TABLE db2.b (c2 INT);"
-                + " CREATE TABLE db3.t (c1 INT, c2 INT);");
-        ScanResult result = LineageScanner.withMetadata(
-                MetadataContext.of(catalog), optional()).scan(
-                "INSERT INTO db3.t SELECT db1.a.c1, db2.b.c2"
-                        + " FROM db1.a JOIN db2.b ON db1.a.c1 = db2.b.c2;");
+    public void joinsAcrossDatabases() {
+        for (DbType dialect : new DbType[]{DbType.mysql, DbType.hive}) {
+            MetadataCatalog catalog = new MetadataCatalog(dialect);
+            catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"
+                    + " CREATE TABLE db2.b (c2 INT);"
+                    + " CREATE TABLE db3.t (c1 INT, c2 INT);");
+            ScanResult result = LineageScanner.withMetadata(
+                    MetadataContext.of(catalog), optional()).scan(
+                    "INSERT INTO db3.t SELECT db1.a.c1, db2.b.c2"
+                            + " FROM db1.a JOIN db2.b ON db1.a.c1 = db2.b.c2;");
 
-        assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(Arrays.asList(new Column("db1.a.c1"))),
-                result.getGraph().getSources(new Column("db3.t.c1")));
-        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.b.c2"))),
-                result.getGraph().getSources(new Column("db3.t.c2")));
+            assertEquals(dialect + ": " + result.getFailures(),
+                    0, result.getFailures().size());
+            assertEquals(dialect.toString(),
+                    new HashSet<>(Arrays.asList(new Column("db1.a.c1"))),
+                    result.getGraph().getSources(new Column("db3.t.c1")));
+            assertEquals(dialect.toString(),
+                    new HashSet<>(Arrays.asList(new Column("db2.b.c2"))),
+                    result.getGraph().getSources(new Column("db3.t.c2")));
+        }
     }
 
     @Test
@@ -953,21 +958,4 @@ public class CrossDatabaseSchemaTest {
                 result.getGraph().getSources(new Column("dst.t.a")));
     }
 
-    @Test
-    public void hiveJoinsAcrossDatabases() {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
-        catalog.loadDdl("CREATE TABLE db1.a (c1 INT);"
-                + " CREATE TABLE db2.b (c2 INT);"
-                + " CREATE TABLE db3.t (c1 INT, c2 INT);");
-        ScanResult result = LineageScanner.withMetadata(
-                MetadataContext.of(catalog), optional()).scan(
-                "INSERT INTO db3.t SELECT db1.a.c1, db2.b.c2"
-                        + " FROM db1.a JOIN db2.b ON db1.a.c1 = db2.b.c2;");
-
-        assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(Arrays.asList(new Column("db1.a.c1"))),
-                result.getGraph().getSources(new Column("db3.t.c1")));
-        assertEquals(new HashSet<>(Arrays.asList(new Column("db2.b.c2"))),
-                result.getGraph().getSources(new Column("db3.t.c2")));
-    }
 }

@@ -21,7 +21,6 @@ public class AnalysisContextTest {
         context.learningOnly = true;
         context.tempTableNum = 7;
         context.scalarSubqueryDepth = 2;
-        context.learningBindings.put("a", "b");
 
         context.reset();
 
@@ -33,6 +32,5 @@ public class AnalysisContextTest {
         assertTrue(context.learningOnly);
         assertEquals(7, context.tempTableNum);
         assertEquals(2, context.scalarSubqueryDepth);
-        assertEquals("b", context.learningBindings.get("a"));
     }
 }

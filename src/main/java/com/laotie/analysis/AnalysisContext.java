@@ -45,7 +45,6 @@ public final class AnalysisContext {
     public boolean learningOnly;
     public boolean metadataPass;
     public boolean learningDisabled;
-    public Map<String, Object> learningBindings = new HashMap<>();
     public Map<SQLTableSource, SourceNode> tableSourceBindings = new IdentityHashMap<>();
     public Map<SourceTable, SourceNode> currentExpandedSourceNodes = new HashMap<>();
 

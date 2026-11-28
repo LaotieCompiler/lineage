@@ -163,6 +163,14 @@ public class DmlLineage {
         return learnedMetadata;
     }
 
+    String sessionDatabase() {
+        return sessionDatabase;
+    }
+
+    String sessionSchema() {
+        return sessionSchema;
+    }
+
     private final DbType dbType;
     private final boolean explicitDialect;
     private final MetadataContext explicitContext;
@@ -241,20 +249,29 @@ public class DmlLineage {
      * resolve an unqualified column against it.
      */
     void learnColumn(SourceTable source, String columnName) {
-        learnColumn(source, columnName, false);
+        learning.learnColumn(source, columnName);
     }
 
     void learnColumn(SourceTable source, String columnName, boolean explicit) {
-        if (state.learningDisabled || learnedMetadata == null || source == null
-                || source.temporary || !source.learnable
-                || source.rawName == null || columnName == null
-                || state.metadataPass && !explicit) {
-            return;
-        }
-        String key = learnedTableKey(source.rawName);
-        pendingLearned.computeIfAbsent(key, k -> new LinkedHashSet<String>())
-                .add(identifierKey(columnName));
+        learning.learnColumn(source, columnName, explicit);
     }
+
+    String quoteForLearning(String name) {
+        return learning.quoteForLearning(name);
+    }
+
+    Set<String> currentCteKeys() {
+        return learning.currentCteKeys();
+    }
+
+    String learnedTableKey(String rawName) {
+        return learning.learnedTableKey(rawName);
+    }
+
+    void publishLearned() {
+        learning.publishLearned();
+    }
+
 
     /**
      * The learned-metadata key of a table, scoped to the session database so that
@@ -271,48 +288,13 @@ public class DmlLineage {
         return key.toString();
     }
 
-    String quoteForLearning(String name) {
-        return DialectRules.of(currentDialect()).quoteForLearning(name);
-    }
 
-    Set<String> currentCteKeys() {
-        Set<String> ctes = new HashSet<>();
-        for (Map<String, String> frame : state.cteScopes) {
-            ctes.addAll(frame.keySet());
-        }
-        return ctes;
-    }
 
-    String learnedTableKey(String rawName) {
-        StringBuilder key = new StringBuilder();
-        if (sessionDatabase != null) {
-            key.append(identifierKey(sessionDatabase)).append('\u0001');
-        }
-        if (sessionSchema != null) {
-            key.append(sessionSchema).append('\u0001');
-        }
-        key.append(qualifiedKey(rawName));
-        return key.toString();
-    }
 
     /**
      * Publish the observations of a successful statement. A failed statement must not
      * teach anything.
      */
-    private void publishLearned() {
-        if (state.learningDisabled) {
-            pendingLearned = new HashMap<>();
-            return;
-        }
-        if (learnedMetadata != null) {
-            for (Map.Entry<String, Set<String>> entry : pendingLearned.entrySet()) {
-                for (String column : entry.getValue()) {
-                    learnedMetadata.learnNormalized(entry.getKey(), column);
-                }
-            }
-        }
-        pendingLearned = new HashMap<>();
-    }
 
     /* ------------------------------------------------------------------ */
     /* public API                                                         */
@@ -1156,23 +1138,17 @@ public class DmlLineage {
     }
 
     String extractTableName(SQLExprTableSource table) {
-        SQLExpr expr = table.getExpr();
-        return expr != null ? expr.toString() : table.getTableName();
+        return tableCollector.extractTableName(table);
     }
 
     /** A FROM item is a table only when its expression is a relation name. */
     static boolean isPhysicalTableExpression(SQLExprTableSource table) {
-        SQLExpr expr = table.getExpr();
-        return expr == null || expr instanceof SQLName;
+        return TableCollector.isPhysicalTableExpression(table);
     }
 
     /** The implicit visible name of a table function in FROM. */
     static String implicitRelationName(SQLExprTableSource table) {
-        SQLExpr expr = table.getExpr();
-        if (expr instanceof SQLMethodInvokeExpr) {
-            return ((SQLMethodInvokeExpr) expr).getMethodName();
-        }
-        return null;
+        return TableCollector.implicitRelationName(table);
     }
 
     /* ------------------------------------------------------------------ */

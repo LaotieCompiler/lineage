@@ -18,6 +18,7 @@ import com.laotie.analysis.model.SourceNode;
 import com.laotie.analysis.model.StarColumn;
 import com.laotie.analysis.model.StarOutput;
 import com.laotie.analysis.model.SourceTable;
+import com.laotie.dialect.DialectRules;
 import com.laotie.model.metadata.MetadataCatalog;
 
 /** Explicit-reference discovery for learned metadata. */
@@ -708,4 +709,59 @@ final class LearningAnalyzer {
         }
     }
 
+
+    void learnColumn(SourceTable source, String columnName) {
+        learnColumn(source, columnName, false);
+    }
+
+    void learnColumn(SourceTable source, String columnName, boolean explicit) {
+        if (host.state().learningDisabled || host.learnedMetadata() == null || source == null
+                || source.temporary || !source.learnable
+                || source.rawName == null || columnName == null
+                || host.state().metadataPass && !explicit) {
+            return;
+        }
+        String key = learnedTableKey(source.rawName);
+        host.pendingLearned().computeIfAbsent(key, k -> new LinkedHashSet<String>())
+                .add(host.identifierKey(columnName));
+    }
+
+    String quoteForLearning(String name) {
+        return DialectRules.of(host.currentDialect()).quoteForLearning(name);
+    }
+
+    Set<String> currentCteKeys() {
+        Set<String> ctes = new HashSet<>();
+        for (Map<String, String> frame : host.state().cteScopes) {
+            ctes.addAll(frame.keySet());
+        }
+        return ctes;
+    }
+
+    String learnedTableKey(String rawName) {
+        StringBuilder key = new StringBuilder();
+        if (host.sessionDatabase() != null) {
+            key.append(host.identifierKey(host.sessionDatabase())).append('\u0001');
+        }
+        if (host.sessionSchema() != null) {
+            key.append(host.sessionSchema()).append('\u0001');
+        }
+        key.append(host.qualifiedKey(rawName));
+        return key.toString();
+    }
+
+    void publishLearned() {
+        if (host.state().learningDisabled) {
+            host.pendingLearned().clear();
+            return;
+        }
+        if (host.learnedMetadata() != null) {
+            for (Map.Entry<String, Set<String>> entry : host.pendingLearned().entrySet()) {
+                for (String column : entry.getValue()) {
+                    host.learnedMetadata().learnNormalized(entry.getKey(), column);
+                }
+            }
+        }
+        host.pendingLearned().clear();
+    }
 }

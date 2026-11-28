@@ -4,12 +4,14 @@ import java.util.HashSet;
 import java.util.Set;
 
 import com.alibaba.druid.sql.ast.SQLExpr;
+import com.alibaba.druid.sql.ast.SQLName;
 import com.alibaba.druid.sql.ast.expr.SQLBetweenExpr;
 import com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr;
 import com.alibaba.druid.sql.ast.expr.SQLExistsExpr;
 import com.alibaba.druid.sql.ast.expr.SQLInListExpr;
 import com.alibaba.druid.sql.ast.expr.SQLInSubQueryExpr;
 import com.alibaba.druid.sql.ast.expr.SQLNotExpr;
+import com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr;
 import com.alibaba.druid.sql.ast.expr.SQLQueryExpr;
 import com.alibaba.druid.sql.ast.expr.SQLUnaryExpr;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
@@ -137,5 +139,25 @@ final class TableCollector {
             }
             host.resolveSource(exprTable);
         }
+    }
+
+    String extractTableName(SQLExprTableSource table) {
+        SQLExpr expr = table.getExpr();
+        return expr != null ? expr.toString() : table.getTableName();
+    }
+
+    /** A FROM item is a table only when its expression is a relation name. */
+    static boolean isPhysicalTableExpression(SQLExprTableSource table) {
+        SQLExpr expr = table.getExpr();
+        return expr == null || expr instanceof SQLName;
+    }
+
+    /** The implicit visible name of a table function in FROM. */
+    static String implicitRelationName(SQLExprTableSource table) {
+        SQLExpr expr = table.getExpr();
+        if (expr instanceof SQLMethodInvokeExpr) {
+            return ((SQLMethodInvokeExpr) expr).getMethodName();
+        }
+        return null;
     }
 }

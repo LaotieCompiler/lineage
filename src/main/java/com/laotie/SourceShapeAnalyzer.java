@@ -4,6 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import com.alibaba.druid.sql.ast.SQLExpr;
+import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
+import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
+import com.alibaba.druid.sql.ast.statement.SQLSelectItem;
+import com.laotie.analysis.model.SourceNode;
 import com.laotie.analysis.model.SourceTable;
 import com.laotie.analysis.model.StarColumn;
 import com.laotie.analysis.model.StarOutput;
@@ -137,5 +142,138 @@ final class SourceShapeAnalyzer {
             names.add(source.displayName);
         }
         return names;
+    }
+
+    boolean starOutputWidthKnown(SQLExpr expr) {
+        if (expr instanceof SQLAllColumnExpr) {
+            if (!host.state().stackSourceNode.isEmpty()) {
+                return host.state().stackSourceNode.peek().widthKnown;
+            }
+            List<SourceTable> sources = host.currentSources();
+            if (sources.isEmpty()) {
+                return false;
+            }
+            for (SourceTable source : sources) {
+                if (!source.outputWidthKnown) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (ExpressionAnalyzer.isStarProperty(expr)) {
+            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
+            SourceTable source = host.findByOwner(owner);
+            if (source != null) {
+                if (source.metadataTable != null || source.outputWidthKnown) {
+                    return true;
+                }
+                return source.temporary
+                        && Boolean.TRUE.equals(host.state().targetWidthKnown.get(source.displayName));
+            }
+            SourceNode binding = host.joinBinding(owner);
+            return binding != null && binding.widthKnown;
+        }
+        return true;
+    }
+
+    boolean outputWidthKnown(SQLSelectItem item) {
+        SQLExpr expr = item.getExpr();
+        if (expr instanceof SQLAllColumnExpr || ExpressionAnalyzer.isStarProperty(expr)) {
+            // A wildcard's width can be known even when its column names are not.
+            return starOutputWidthKnown(expr);
+        }
+        return true;
+    }
+
+    boolean outputNamesKnown(SQLSelectItem item) {
+        SQLExpr expr = item.getExpr();
+        if (host.detachedMetadata() && hasUnknownStarSource(expr)) {
+            return false;
+        }
+        if (expr instanceof SQLAllColumnExpr) {
+            if (!host.state().stackSourceNode.isEmpty()) {
+                return bindingNamesKnown(host.state().stackSourceNode.peek());
+            }
+            for (SourceTable source : host.currentSources()) {
+                if (!sourceNamesKnown(source)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (ExpressionAnalyzer.isStarProperty(expr)) {
+            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
+            SourceTable source = host.findByOwner(owner);
+            if (source != null) {
+                return sourceNamesKnown(source);
+            }
+            SourceNode binding = host.joinBinding(owner);
+            return binding != null && bindingNamesKnown(binding);
+        }
+        return true;
+    }
+
+    boolean bindingNamesKnown(SourceNode binding) {
+        if (!binding.widthKnown || binding.plan.size() != binding.width) {
+            return false;
+        }
+        for (StarOutput output : binding.plan) {
+            if (!output.nameKnown || !output.stable) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    boolean sourceColumnsKnown(SourceTable source) {
+        return source.metadataTable != null || source.outputWidthKnown;
+    }
+
+    boolean hasUnknownStarSource(SQLExpr expr) {
+        if (expr instanceof SQLAllColumnExpr) {
+            for (SourceTable source : host.currentSources()) {
+                if (!sourceNamesKnown(source)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (ExpressionAnalyzer.isStarProperty(expr)) {
+            SourceTable source = host.findByOwner(((SQLPropertyExpr) expr).getOwner());
+            if (source != null) {
+                return !sourceNamesKnown(source);
+            }
+            SourceNode binding = host.joinBinding(((SQLPropertyExpr) expr).getOwner());
+            if (binding != null) {
+                for (SourceTable candidate : binding.sources) {
+                    if (!sourceNamesKnown(candidate)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    boolean sourceNamesKnown(SourceTable source) {
+        return source.metadataTable != null || source.outputNamesKnown;
+    }
+
+    boolean sourceOutputNameKnown(SourceTable source, int position) {
+        if (source.metadataTable != null) {
+            return true;
+        }
+        return position >= 0 && position < source.outputNameKnown.size()
+                && Boolean.TRUE.equals(source.outputNameKnown.get(position));
+    }
+
+    int columnCount(SourceTable source) {
+        if (source.metadataTable != null) {
+            return Math.max(source.metadataTable.getFields().size(), 1);
+        }
+        if (!source.outputColumns.isEmpty()) {
+            return source.outputColumns.size();
+        }
+        return 1;
     }
 }

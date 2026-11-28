@@ -770,137 +770,48 @@ public class DmlLineage {
     }
 
     boolean starOutputWidthKnown(SQLExpr expr) {
-        if (expr instanceof SQLAllColumnExpr) {
-            if (!state.stackSourceNode.isEmpty()) {
-                return state.stackSourceNode.peek().widthKnown;
-            }
-            List<SourceTable> sources = currentSources();
-            if (sources.isEmpty()) {
-                return false;
-            }
-            for (SourceTable source : sources) {
-                if (!source.outputWidthKnown) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (isStarProperty(expr)) {
-            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
-            SourceTable source = findByOwner(owner);
-            if (source != null) {
-                if (source.metadataTable != null || source.outputWidthKnown) {
-                    return true;
-                }
-                return source.temporary
-                        && Boolean.TRUE.equals(state.targetWidthKnown.get(source.displayName));
-            }
-            SourceNode binding = joinBinding(owner);
-            return binding != null && binding.widthKnown;
-        }
-        return true;
+        return sourceShape.starOutputWidthKnown(expr);
     }
 
     boolean outputWidthKnown(SQLSelectItem item) {
-        SQLExpr expr = item.getExpr();
-        if (expr instanceof SQLAllColumnExpr || isStarProperty(expr)) {
-            // A wildcard's width can be known even when its column names are not.
-            return starOutputWidthKnown(expr);
-        }
-        return true;
+        return sourceShape.outputWidthKnown(item);
     }
 
     boolean outputNamesKnown(SQLSelectItem item) {
-        SQLExpr expr = item.getExpr();
-        if (detachedMetadata() && hasUnknownStarSource(expr)) {
-            return false;
-        }
-        if (expr instanceof SQLAllColumnExpr) {
-            if (!state.stackSourceNode.isEmpty()) {
-                return bindingNamesKnown(state.stackSourceNode.peek());
-            }
-            for (SourceTable source : currentSources()) {
-                if (!sourceNamesKnown(source)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (isStarProperty(expr)) {
-            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
-            SourceTable source = findByOwner(owner);
-            if (source != null) {
-                return sourceNamesKnown(source);
-            }
-            SourceNode binding = joinBinding(owner);
-            return binding != null && bindingNamesKnown(binding);
-        }
-        return true;
+        return sourceShape.outputNamesKnown(item);
     }
 
     boolean bindingNamesKnown(SourceNode binding) {
-        if (!binding.widthKnown || binding.plan.size() != binding.width) {
-            return false;
-        }
-        for (StarOutput output : binding.plan) {
-            if (!output.nameKnown || !output.stable) {
-                return false;
-            }
-        }
-        return true;
+        return sourceShape.bindingNamesKnown(binding);
     }
 
     boolean sourceColumnsKnown(SourceTable source) {
-        return source.metadataTable != null || source.outputWidthKnown;
+        return sourceShape.sourceColumnsKnown(source);
     }
 
     boolean hasUnknownStarSource(SQLExpr expr) {
-        if (expr instanceof SQLAllColumnExpr) {
-            for (SourceTable source : currentSources()) {
-                if (!sourceNamesKnown(source)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (isStarProperty(expr)) {
-            SourceTable source = findByOwner(((SQLPropertyExpr) expr).getOwner());
-            if (source != null) {
-                return !sourceNamesKnown(source);
-            }
-            SourceNode binding = joinBinding(((SQLPropertyExpr) expr).getOwner());
-            if (binding != null) {
-                for (SourceTable candidate : binding.sources) {
-                    if (!sourceNamesKnown(candidate)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
+        return sourceShape.hasUnknownStarSource(expr);
     }
 
     boolean sourceNamesKnown(SourceTable source) {
-        return source.metadataTable != null || source.outputNamesKnown;
+        return sourceShape.sourceNamesKnown(source);
     }
 
     boolean sourceOutputNameKnown(SourceTable source, int position) {
-        if (source.metadataTable != null) {
-            return true;
-        }
-        return position >= 0 && position < source.outputNameKnown.size()
-                && Boolean.TRUE.equals(source.outputNameKnown.get(position));
+        return sourceShape.sourceOutputNameKnown(source, position);
     }
 
     int columnCount(SourceTable source) {
-        if (source.metadataTable != null) {
-            return Math.max(source.metadataTable.getFields().size(), 1);
-        }
-        if (!source.outputColumns.isEmpty()) {
-            return source.outputColumns.size();
-        }
-        return 1;
+        return sourceShape.columnCount(source);
     }
+
+
+
+
+
+
+
+
 
     /* ------------------------------------------------------------------ */
     /* sources                                                            */

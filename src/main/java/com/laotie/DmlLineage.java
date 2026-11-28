@@ -2111,724 +2111,89 @@ boolean hasWildcardContribution(String target) {
         return learning.outerBlockLocals(includeCurrentFrame);
     }
 
+    final ExpressionAnalyzer expression = new ExpressionAnalyzer(this);
+
     void visitExpr(SQLExpr expr) {
-        if (expr == null) {
-            return;
-        }
-        if (expr instanceof SQLIdentifierExpr) {
-            visitIdentifier((SQLIdentifierExpr) expr);
-        } else if (expr instanceof SQLPropertyExpr) {
-            visitProperty((SQLPropertyExpr) expr);
-        } else if (expr instanceof SQLAllColumnExpr) {
-            visitAllColumn();
-        } else if (expr instanceof SQLBinaryOpExpr) {
-            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
-            visitExpr(binary.getLeft());
-            visitExpr(binary.getRight());
-        } else if (expr instanceof SQLMethodInvokeExpr) {
-            List<SQLExpr> arguments = ((SQLMethodInvokeExpr) expr).getArguments();
-            if (arguments != null) {
-                for (SQLExpr argument : arguments) {
-                    visitExpr(argument);
-                }
-            }
-        } else if (expr instanceof SQLCastExpr) {
-            visitExpr(((SQLCastExpr) expr).getExpr());
-        } else if (expr instanceof SQLCaseExpr) {
-            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            visitExpr(caseExpr.getValueExpr());
-            if (caseExpr.getItems() != null) {
-                for (SQLCaseExpr.Item item : caseExpr.getItems()) {
-                    visitExpr(item.getConditionExpr());
-                    visitExpr(item.getValueExpr());
-                }
-            }
-            visitExpr(caseExpr.getElseExpr());
-        } else if (expr instanceof SQLListExpr) {
-            for (SQLExpr item : ((SQLListExpr) expr).getItems()) {
-                visitExpr(item);
-            }
-        } else if (expr instanceof SQLInListExpr) {
-            SQLInListExpr inList = (SQLInListExpr) expr;
-            visitExpr(inList.getExpr());
-            for (SQLExpr target : inList.getTargetList()) {
-                visitExpr(target);
-            }
-        } else if (expr instanceof SQLInSubQueryExpr) {
-            visitExpr(((SQLInSubQueryExpr) expr).getExpr());
-        } else if (expr instanceof SQLQueryExpr) {
-            visitScalarSubquery((SQLQueryExpr) expr);
-        } else if (expr instanceof SQLBetweenExpr) {
-            SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            visitExpr(between.getTestExpr());
-            visitExpr(between.getBeginExpr());
-            visitExpr(between.getEndExpr());
-        } else if (expr instanceof SQLNotExpr) {
-            visitExpr(((SQLNotExpr) expr).getExpr());
-        } else if (expr instanceof SQLUnaryExpr) {
-            visitExpr(((SQLUnaryExpr) expr).getExpr());
-        } else if (expr instanceof SQLExtractExpr) {
-            visitExpr(((SQLExtractExpr) expr).getValue());
-        }
+        expression.visitExpr(expr);
     }
 
-    private void visitScalarSubquery(SQLQueryExpr expr) {
-        ScalarSubquery inner = analyzeScalarSubquery(expr);
-        if (inner == null) {
-            return;
-        }
-        if (inner.columns.isEmpty()) {
-            recordScalarTableLevel(inner, state.stackTargetTable.peek(), state.currentOrdinal,
-                    state.stackTargetColumn.peek());
-            return;
-        }
-        String targetTable = state.stackTargetTable.peek();
-        String targetColumn = state.stackTargetColumn.peek();
-        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
-            return;
-        }
-        for (int i = 0; i < inner.columns.size(); i++) {
-            String source = inner.references.get(i);
-            instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
-                    targetTable + "." + targetColumn, state.currentOrdinal, true,
-                    state.tempTables.contains(targetTable)));
-        }
+    void visitScalarSubquery(SQLQueryExpr expr) {
+        expression.visitScalarSubquery(expr);
     }
 
-    private void visitIdentifier(SQLIdentifierExpr identifier) {
-        if (!state.inTargetExpression) {
-            return;
-        }
-        String rawName = identifier.getName();
-        List<SourceTable> sources;
-        try {
-            sources = resolveUnqualified(rawName);
-        } catch (ColumnNotFoundException e) {
-            if (!hasOuterScopeFallback()) {
-                throw e;
-            }
-            sources = resolveCorrelatedUnqualified(rawName);
-        }
-        if (sources.isEmpty() && hasOuterScopeFallback()) {
-            sources = resolveCorrelatedUnqualified(rawName);
-        }
-        for (SourceTable source : sources) {
-            learnColumn(source, rawName);
-            addColumnMapping(source, rawName);
-        }
+    void visitIdentifier(SQLIdentifierExpr identifier) {
+        expression.visitIdentifier(identifier);
     }
 
-    private List<SourceTable> participantsForFrame(int frame, String key) {
-        if (frame >= state.stackUsing.size() || state.usingParticipantsByIdentity.isEmpty()) {
-            return new ArrayList<>();
-        }
-        Map<String, List<SourceTable>> using = state.stackUsing.get(frame);
-        if (using == null) {
-            return new ArrayList<>();
-        }
-        Map<String, List<SourceTable>> participants =
-                state.usingParticipantsByIdentity.get(using);
-        if (participants == null || !participants.containsKey(key)) {
-            return new ArrayList<>();
-        }
-        return new ArrayList<>(participants.get(key));
+    List<SourceTable> participantsForFrame(int frame, String key) {
+        return expression.participantsForFrame(frame, key);
     }
 
-    private List<SourceTable> frameCandidates(int frame, String key,
-            List<SourceTable> participants, List<SourceTable> excluded) {
-        Set<SourceTable> hidden = frame < state.stackHiddenSources.size()
-                ? state.stackHiddenSources.get(frame)
-                : java.util.Collections.<SourceTable>emptySet();
-        List<SourceTable> candidates = new ArrayList<>();
-        for (SourceTable source : state.stackSources.get(frame)) {
-            if (hidden.contains(source) || participants.contains(source)
-                    || excluded.contains(source)) {
-                continue;
-            }
-            if (ownsOuterColumn(source, key) || !sourceColumnNamesKnown(source)) {
-                candidates.add(source);
-            }
-        }
-        return candidates;
+    List<SourceTable> frameCandidates(int frame, String key, List<SourceTable> participants, List<SourceTable> excluded) {
+        return expression.frameCandidates(frame, key, participants, excluded);
     }
 
-    private boolean lateralScopeActive() {
-        int current = state.stackSources.size() - 1;
-        return current >= 0 && current < state.lateralScopes.size()
-                && Boolean.TRUE.equals(state.lateralScopes.get(current))
-                || hasLateralAncestorScope();
+    boolean lateralScopeActive() {
+        return expression.lateralScopeActive();
     }
 
     boolean hasOuterScopeFallback() {
-        return hasLateralAncestorScope() || state.scalarSubqueryDepth > 0;
+        return expression.hasOuterScopeFallback();
     }
 
     boolean hasLateralAncestorScope() {
-        for (int frame = 0; frame < state.stackSources.size() - 1; frame++) {
-            if (frame < state.lateralScopes.size()
-                    && Boolean.TRUE.equals(state.lateralScopes.get(frame))) {
-                return true;
-            }
-        }
-        return false;
+        return expression.hasLateralAncestorScope();
     }
 
     List<SourceTable> resolveCorrelatedUnqualified(String rawName) {
-        String key = identifierKey(rawName);
-        boolean lateralScope = false;
-        for (int frame = state.stackSources.size() - 2; frame >= 0; frame--) {
-            boolean lateralFrame = frame < state.lateralScopes.size()
-                    && Boolean.TRUE.equals(state.lateralScopes.get(frame));
-            if (!lateralFrame && state.scalarSubqueryDepth == 0) {
-                continue;
-            }
-            lateralScope = true;
-            Map<String, List<SourceTable>> using = frame < state.stackUsing.size()
-                    ? state.stackUsing.get(frame) : null;
-            if (using != null && using.containsKey(key)) {
-                List<StarOutput> framePlan = frame < state.stackStarPlan.size()
-                        ? state.stackStarPlan.get(frame)
-                        : java.util.Collections.<StarOutput>emptyList();
-                List<StarOutput> planMatches = new ArrayList<>();
-                for (StarOutput output : framePlan) {
-                    for (StarColumn column : output.sources) {
-                        if (key.equals(column.key)) {
-                            planMatches.add(output);
-                            break;
-                        }
-                    }
-                }
-                if (planMatches.size() > 1) {
-                    List<SourceTable> all = new ArrayList<>();
-                    for (StarOutput output : planMatches) {
-                        for (StarColumn column : output.sources) {
-                            if (!all.contains(column.source)) {
-                                all.add(column.source);
-                            }
-                        }
-                    }
-                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                            displayNames(all));
-                }
-                List<SourceTable> participants = using.get(key);
-                List<SourceTable> sides = participantsForFrame(frame, key);
-                List<SourceTable> extras = frameCandidates(frame, key, sides,
-                        new ArrayList<SourceTable>());
-                if (!extras.isEmpty()) {
-                    List<SourceTable> all = new ArrayList<>(participants);
-                    all.addAll(extras);
-                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                            displayNames(all));
-                }
-                return participants;
-            }
-            List<StarOutput> plan = frame < state.stackStarPlan.size()
-                    ? state.stackStarPlan.get(frame)
-                    : java.util.Collections.<StarOutput>emptyList();
-            List<StarOutput> matches = new ArrayList<>();
-            for (StarOutput output : plan) {
-                for (StarColumn column : output.sources) {
-                    if (key != null && key.equals(column.key)) {
-                        matches.add(output);
-                        break;
-                    }
-                }
-            }
-            if (matches.size() > 1) {
-                List<SourceTable> owners = new ArrayList<>();
-                for (StarOutput output : matches) {
-                    for (StarColumn column : output.sources) {
-                        if (!owners.contains(column.source)) {
-                            owners.add(column.source);
-                        }
-                    }
-                }
-                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                        displayNames(owners));
-            }
-            if (matches.size() == 1) {
-                List<SourceTable> owners = new ArrayList<>();
-                for (StarColumn column : matches.get(0).sources) {
-                    if (!owners.contains(column.source)) {
-                        owners.add(column.source);
-                    }
-                }
-                List<SourceTable> participants = participantsForFrame(frame, key);
-                List<SourceTable> extras = frameCandidates(frame, key, participants,
-                        owners);
-                if (!extras.isEmpty()) {
-                    List<SourceTable> all = new ArrayList<>(owners);
-                    all.addAll(extras);
-                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                            displayNames(all));
-                }
-                return owners;
-            }
-            Set<SourceTable> hidden = frame < state.stackHiddenSources.size()
-                    ? state.stackHiddenSources.get(frame)
-                    : java.util.Collections.<SourceTable>emptySet();
-            List<SourceTable> owners = new ArrayList<>();
-            List<SourceTable> unknown = new ArrayList<>();
-            for (SourceTable source : state.stackSources.get(frame)) {
-                if (hidden.contains(source)) {
-                    continue;
-                }
-                if (ownsOuterColumn(source, key)) {
-                    owners.add(source);
-                } else if (!sourceColumnNamesKnown(source)) {
-                    unknown.add(source);
-                }
-            }
-            if (owners.size() > 1 || !owners.isEmpty() && !unknown.isEmpty()
-                    || unknown.size() > 1) {
-                List<SourceTable> all = new ArrayList<>(owners);
-                all.addAll(unknown);
-                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                        displayNames(all));
-            }
-            if (owners.size() == 1) {
-                return owners;
-            }
-            if (unknown.size() == 1) {
-                return unknown;
-            }
-        }
-        if (!lateralScope) {
-            // Preserve lenient behavior for normal (non-LATERAL) resolution.
-            return new ArrayList<>();
-        }
-        throw new ColumnNotFoundException(normalizeIdentifier(rawName),
-                displayNames(currentSources()));
-    }
-
-CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
-        if (owner == null) {
-            return null;
-        }
-        String rawOwner = owner.toString();
-        String ownerKey = qualifiedKey(rawOwner);
-        List<SourceTable> matches = visibleOwnerMatches(owner);
-        if (matches.size() > 1) {
-            throw new AmbiguousColumnException(normalizeIdentifier(lastSegment(rawOwner)),
-                    displayNames(matches));
-        }
-        SourceTable direct = matches.isEmpty() ? null : matches.get(0);
-        if (direct != null) {
-            return new CorrelatedOwner(direct, null);
-        }
-        SourceNode directBinding = exactJoinBinding(owner);
-        if (directBinding != null) {
-            return new CorrelatedOwner(null, directBinding);
-        }
-        String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
-        String aliasKey = isSingleSegmentName(rawOwner) ? identifierKey(rawOwner) : null;
-        for (int frame = state.stackSources.size() - 1; frame >= 0; frame--) {
-            if (frame < state.stackJoinBindings.size() && aliasKey != null) {
-                SourceNode binding = state.stackJoinBindings.get(frame).get(aliasKey);
-                if (binding != null) {
-                    return new CorrelatedOwner(null, binding);
-                }
-            }
-            Set<SourceTable> hidden = frame < state.stackHiddenSources.size()
-                    ? state.stackHiddenSources.get(frame)
-                    : java.util.Collections.<SourceTable>emptySet();
-            // An explicit alias wins over a same-spelled table name in this frame.
-            List<SourceTable> aliasMatches = new ArrayList<>();
-            for (SourceTable source : state.stackSources.get(frame)) {
-                if (!hidden.contains(source) && source.alias != null
-                        && qualifiedKey(source.alias).equals(ownerKey)) {
-                    aliasMatches.add(source);
-                }
-            }
-            if (aliasMatches.size() > 1) {
-                throw new AmbiguousColumnException(
-                        normalizeIdentifier(lastSegment(rawOwner)),
-                        displayNames(aliasMatches));
-            }
-            if (aliasMatches.size() == 1) {
-                return new CorrelatedOwner(aliasMatches.get(0), null);
-            }
-            List<SourceTable> frameMatches = new ArrayList<>();
-            for (SourceTable source : state.stackSources.get(frame)) {
-                if (!hidden.contains(source) && source.alias == null
-                        && matchesOwner(source, ownerKey, ownerParts)) {
-                    frameMatches.add(source);
-                }
-            }
-            if (frameMatches.size() > 1) {
-                throw new AmbiguousColumnException(
-                        normalizeIdentifier(lastSegment(rawOwner)),
-                        displayNames(frameMatches));
-            }
-            if (frameMatches.size() == 1) {
-                return new CorrelatedOwner(frameMatches.get(0), null);
-            }
-        }
-        return null;
+        return expression.resolveCorrelatedUnqualified(rawName);
     }
 
     private static boolean hasQuotedSegment(String reference) {
-        return hasSignificantQuote(reference);
+        return ExpressionAnalyzer.hasQuotedSegment(reference);
     }
 
-    private static boolean exactNormalizedSuffix(String[] ownerParts,
-            String[] referenceParts) {
-        if (ownerParts.length == 0 || ownerParts.length > referenceParts.length) {
-            return false;
-        }
-        for (int i = 0; i < ownerParts.length; i++) {
-            String ownerName = MetadataCatalog.normalizeIdentifier(ownerParts[i]);
-            String referenceName = MetadataCatalog.normalizeIdentifier(
-                    referenceParts[referenceParts.length - ownerParts.length + i]);
-            if (ownerName == null || !ownerName.equals(referenceName)) {
-                return false;
-            }
-        }
-        return true;
+    private static boolean exactNormalizedSuffix(String[] ownerParts, String[] referenceParts) {
+        return ExpressionAnalyzer.exactNormalizedSuffix(ownerParts, referenceParts);
     }
 
     private static boolean hasSignificantQuote(String reference) {
-        for (String part : MetadataCatalog
-                .splitQualifiedNamePreservingQuotes(reference)) {
-            if (!MetadataCatalog.isQuotedIdentifier(part)) {
-                continue;
-            }
-            String name = MetadataCatalog.normalizeIdentifier(part);
-            // A quoted spelling that folds to itself (for example "b" in
-            // PostgreSQL) is equivalent to the unquoted spelling.
-            if (name == null || !name.equals(name.toLowerCase())) {
-                return true;
-            }
-        }
-        return false;
+        return ExpressionAnalyzer.hasSignificantQuote(reference);
     }
 
-    private List<SourceTable> visibleOwnerMatches(SQLExpr owner) {
-        List<SourceTable> matches = new ArrayList<>();
-        if (owner == null) {
-            return matches;
-        }
-        String rawOwner = owner.toString();
-        String ownerKey = qualifiedKey(rawOwner);
-        String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
-        for (SourceTable source : visibleSources()) {
-            boolean matched;
-            if (source.alias != null) {
-                // An alias hides the original table name.
-                matched = qualifiedKey(source.alias).equals(ownerKey);
-            } else if (!source.learnable) {
-                // A table function is visible only through its implicit FROM name;
-                // its call text is not a qualifier.
-                matched = source.implicitName != null
-                        && qualifiedKey(source.implicitName).equals(ownerKey);
-            } else {
-                String reference = source.rawName != null
-                        ? source.rawName : source.displayName;
-                matched = qualifiedKey(reference).equals(ownerKey);
-                if (!matched && source.displayName != null
-                        && (source.rawName == null
-                                || !hasQuotedSegment(source.rawName))) {
-                    matched = qualifiedKey(source.displayName).equals(ownerKey);
-                }
-                if (!matched && source.displayName != null
-                        && source.rawName != null
-                        && hasQuotedSegment(source.rawName)) {
-                    matched = exactNormalizedSuffix(ownerParts,
-                            MetadataCatalog.splitQualifiedNamePreservingQuotes(
-                                    source.displayName));
-                }
-                if (!matched && source.implicitName != null) {
-                    matched = qualifiedKey(source.implicitName).equals(ownerKey);
-                }
-                if (!matched && ownerParts.length > 0) {
-                    String[] referenceParts = MetadataCatalog
-                            .splitQualifiedNamePreservingQuotes(reference);
-                    if (ownerParts.length <= referenceParts.length) {
-                        matched = true;
-                        for (int i = 0; i < ownerParts.length; i++) {
-                            if (!identifierKey(ownerParts[i]).equals(identifierKey(
-                                    referenceParts[referenceParts.length
-                                            - ownerParts.length + i]))) {
-                                matched = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if (matched) {
-                matches.add(source);
-            }
-        }
-        return matches;
+    List<SourceTable> visibleOwnerMatches(SQLExpr owner) {
+        return expression.visibleOwnerMatches(owner);
     }
 
-    private SourceTable findVisibleOwnerStrict(SQLExpr owner) {
-        if (owner == null) {
-            return null;
-        }
-        String rawOwner = owner.toString();
-        String ownerKey = qualifiedKey(rawOwner);
-        for (SourceTable source : visibleSources()) {
-            boolean matched;
-            if (source.alias != null) {
-                // An alias hides the original table name.
-                matched = qualifiedKey(source.alias).equals(ownerKey);
-            } else if (!source.learnable) {
-                matched = source.implicitName != null
-                        && qualifiedKey(source.implicitName).equals(ownerKey);
-            } else {
-                matched = qualifiedKey(source.displayName).equals(ownerKey)
-                        || source.rawName != null
-                                && qualifiedKey(source.rawName).equals(ownerKey)
-                        || source.writtenName != null
-                                && qualifiedKey(source.writtenName).equals(ownerKey);
-            }
-            if (matched) {
-                return source;
-            }
-        }
-        return null;
+    SourceTable findVisibleOwnerStrict(SQLExpr owner) {
+        return expression.findVisibleOwnerStrict(owner);
     }
 
-    private SourceNode exactJoinBinding(SQLExpr owner) {
-        if (owner == null || !isSingleSegmentName(owner.toString())
-                || state.stackJoinBindings.isEmpty()) {
-            return null;
-        }
-        String key = identifierKey(owner.toString());
-        return key == null ? null : state.stackJoinBindings.peek().get(key);
+    SourceNode exactJoinBinding(SQLExpr owner) {
+        return expression.exactJoinBinding(owner);
     }
 
-    private boolean matchesOwner(SourceTable source, String ownerKey,
-            String[] ownerParts) {
-        if (source.alias != null) {
-            return qualifiedKey(source.alias).equals(ownerKey);
-        }
-        if (!source.learnable) {
-            return source.implicitName != null
-                    && qualifiedKey(source.implicitName).equals(ownerKey);
-        }
-        String reference = source.rawName != null
-                ? source.rawName : source.displayName;
-        if (reference == null) {
-            return false;
-        }
-        if (qualifiedKey(reference).equals(ownerKey)) {
-            return true;
-        }
-        if (source.displayName != null
-                && (source.rawName == null
-                        || !hasQuotedSegment(source.rawName))
-                && qualifiedKey(source.displayName).equals(ownerKey)) {
-            return true;
-        }
-        if (source.implicitName != null
-                && qualifiedKey(source.implicitName).equals(ownerKey)) {
-            return true;
-        }
-        if (source.displayName != null && source.rawName != null
-                && hasQuotedSegment(source.rawName)
-                && exactNormalizedSuffix(ownerParts, MetadataCatalog
-                        .splitQualifiedNamePreservingQuotes(source.displayName))) {
-            return true;
-        }
-        String[] referenceParts = MetadataCatalog
-                .splitQualifiedNamePreservingQuotes(reference);
-        if (ownerParts.length > 0 && ownerParts.length <= referenceParts.length) {
-            for (int i = 0; i < ownerParts.length; i++) {
-                if (!identifierKey(ownerParts[i]).equals(identifierKey(
-                        referenceParts[referenceParts.length - ownerParts.length
-                                + i]))) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        return false;
+    CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
+        return expression.findCorrelatedOwner(owner);
+    }
+
+    boolean matchesOwner(SourceTable source, String ownerKey, String[] ownerParts) {
+        return expression.matchesOwner(source, ownerKey, ownerParts);
     }
 
     private static boolean isStarProperty(SQLExpr expr) {
-        if (!(expr instanceof SQLPropertyExpr)) {
-            return false;
-        }
-        String rawName = ((SQLPropertyExpr) expr).getName();
-        return "*".equals(normalizeIdentifier(rawName))
-                && !MetadataCatalog.isQuotedIdentifier(rawName);
+        return ExpressionAnalyzer.isStarProperty(expr);
     }
 
-    private void visitProperty(SQLPropertyExpr property) {
-        String rawName = property.getName();
-        String name = normalizeIdentifier(rawName);
-        if ("*".equals(name) && !MetadataCatalog.isQuotedIdentifier(rawName)) {
-            if (!state.inTargetExpression) {
-                return;
-            }
-            CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
-            SourceTable source = correlated == null ? null : correlated.source;
-            if (source == null) {
-                SourceNode binding = correlated == null ? null : correlated.binding;
-                if (binding != null) {
-                    mapBindingStar(state.stackTargetTable.peek(), binding, state.currentOrdinal);
-                    return;
-                }
-                if (context != null) {
-                    throw new MetadataNotFoundException(property.getOwner() == null
-                            ? name : property.getOwner().toString());
-                }
-                return;
-            }
-            String targetTable = state.stackTargetTable.peek();
-            if (detachedMetadata()) {
-                emitDetachedPlan(targetTable, planFromSource(source),
-                        java.util.Collections.singletonList(source), null, state.currentOrdinal);
-                return;
-            }
-            SourceNode expanded = state.currentExpandedSourceNodes.get(source);
-            if (expanded != null) {
-                mapBindingStar(targetTable, expanded, state.currentOrdinal);
-                return;
-            }
-            SourceNode leafNode = state.stackSourceNode.isEmpty()
-                    ? null : state.stackSourceNode.peek();
-            if (context == null && state.currentStarBudget > 0 && leafNode != null
-                    && leafNode.sources.size() == 1
-                    && leafNode.sources.get(0) == source
-                    && !sourceColumnsKnown(source)) {
-                mapBindingStar(targetTable, leafNode, state.currentOrdinal);
-                return;
-            }
-            if (context == null && sourceNamesKnown(source)
-                    && !source.outputColumns.isEmpty()) {
-                mapSourceStar(source, targetTable, state.currentOrdinal);
-                return;
-            }
-            instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                    source.displayName, targetTable, state.currentOrdinal, source.temporary,
-                    state.tempTables.contains(targetTable)));
-            return;
-        }
-
-        if (!state.inTargetExpression) {
-            return;
-        }
-        CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
-        SourceTable source = correlated == null ? null : correlated.source;
-        if (source == null) {
-            SourceNode binding = correlated == null ? null : correlated.binding;
-            if (binding != null) {
-                bindJoinProperty(binding, rawName, name);
-                return;
-            }
-            if (context != null || lateralScopeActive()) {
-                throw new MetadataNotFoundException(
-                        property.getOwner() == null ? name : property.getOwner().toString());
-            }
-            addColumnMapping(lastIdentifier(property.getOwner() == null
-                    ? null : property.getOwner().toString()), name, false, null);
-            return;
-        }
-        if (source.metadataTable != null
-                && MetadataCatalog.resolveColumnName(source.metadataTable, rawName,
-                        currentDialect()) == null) {
-            throw new ColumnNotFoundException(name, displayNames(currentSources()));
-        }
-        if (source.metadataTable == null) {
-            String key = identifierKey(rawName);
-            int matches = 0;
-            for (String outputKey : source.outputKeys) {
-                if (key != null && key.equals(outputKey)) {
-                    matches++;
-                }
-            }
-            if (matches > 1) {
-                throw new AmbiguousColumnException(name,
-                        displayNames(java.util.Collections.singletonList(source)));
-            }
-        }
-        if (source.metadataTable == null && source.outputNamesKnown
-                && !source.outputKeys.contains(identifierKey(rawName))) {
-            throw new ColumnNotFoundException(name, displayNames(currentSources()));
-        }
-        learnColumn(source, rawName, true);
-        addColumnMapping(source, rawName);
+    void visitProperty(SQLPropertyExpr property) {
+        expression.visitProperty(property);
     }
 
-    private void bindJoinProperty(SourceNode binding, String rawName, String name) {
-        String key = identifierKey(rawName);
-        List<StarOutput> matches = new ArrayList<>();
-        for (StarOutput output : binding.plan) {
-            for (StarColumn column : output.sources) {
-                if (column.key != null && column.key.equals(key)) {
-                    matches.add(output);
-                    break;
-                }
-            }
-        }
-        if (binding.knownColumns || bindingNamesKnown(binding)) {
-            if (matches.isEmpty()) {
-                throw new ColumnNotFoundException(name, displayNames(binding.sources));
-            }
-            if (matches.size() > 1) {
-                throw new AmbiguousColumnException(name,
-                        displayNames(planSources(matches)));
-            }
-            List<StarColumn> known = knownColumns(matches.get(0));
-            if (!known.isEmpty()) {
-                emitBindingColumns(known);
-            } else if (state.uncertainOrdinal < 0 || state.currentOrdinal != state.uncertainOrdinal) {
-                String targetTable = state.stackTargetTable.peek();
-                for (SourceTable source : starOutputSources(matches.get(0))) {
-                    instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                            source.displayName, targetTable, state.currentOrdinal,
-                            source.temporary, state.tempTables.contains(targetTable)));
-                }
-            }
-            return;
-        }
-        // A USING-merged output names its column even when the source identity is
-        // unknown, so ambiguity is decided by visible output positions first.
-        int definiteMatches = 0;
-        for (StarOutput output : matches) {
-            if (output.nameKnown) {
-                definiteMatches++;
-            }
-        }
-        if (definiteMatches > 1) {
-            throw new AmbiguousColumnException(name, displayNames(planSources(matches)));
-        }
-        if (definiteMatches == 1) {
-            for (StarOutput output : matches) {
-                if (!output.nameKnown) {
-                    continue;
-                }
-                List<StarColumn> known = knownColumns(output);
-                if (!known.isEmpty()) {
-                    emitBindingColumns(known);
-                } else {
-                    for (SourceTable source : starOutputSources(output)) {
-                        instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                                source.displayName, state.stackTargetTable.peek(), state.currentOrdinal,
-                                source.temporary,
-                                state.tempTables.contains(state.stackTargetTable.peek())));
-                    }
-                }
-                return;
-            }
-        }
-        // Only bind when exactly one source can own the column.
-        List<SourceTable> candidates = new ArrayList<>();
-        for (SourceTable source : binding.sources) {
-            if (!sourceNamesKnown(source) || source.outputKeys.contains(key)) {
-                candidates.add(source);
-            }
-        }
-        if (candidates.size() == 1) {
-            addColumnMapping(candidates.get(0), rawName);
-        }
+    void bindJoinProperty(SourceNode binding, String rawName, String name) {
+        expression.bindJoinProperty(binding, rawName, name);
     }
 
-    private static List<StarColumn> knownColumns(StarOutput output) {
+    static List<StarColumn> knownColumns(StarOutput output) {
         List<StarColumn> known = new ArrayList<>();
         for (StarColumn column : output.sources) {
             if (column.nameKnown) {
@@ -2838,7 +2203,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return known;
     }
 
-    private static List<SourceTable> planSources(List<StarOutput> outputs) {
+    static List<SourceTable> planSources(List<StarOutput> outputs) {
         List<SourceTable> sources = new ArrayList<>();
         for (StarOutput output : outputs) {
             for (StarColumn column : knownColumns(output)) {
@@ -2850,7 +2215,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return sources;
     }
 
-    private void emitBindingColumns(List<StarColumn> columns) {
+    void emitBindingColumns(List<StarColumn> columns) {
         if (columns.isEmpty()) {
             return;
         }
@@ -2942,7 +2307,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         }
     }
 
-    private void mapBindingStar(String targetTable, SourceNode binding, int startPosition) {
+    void mapBindingStar(String targetTable, SourceNode binding, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
         List<String> registered = state.targetOutputs.get(targetTable);
         boolean uncertain = state.uncertainOrdinal >= 0 && state.uncertainOrdinal == startPosition;
@@ -3376,7 +2741,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return true;
     }
 
-    private void mapSourceStar(SourceTable source, String targetTable, int startPosition) {
+    void mapSourceStar(SourceTable source, String targetTable, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean uncertain = state.uncertainOrdinal >= 0 && state.uncertainOrdinal == startPosition;
         boolean targetTemporary = state.tempTables.contains(targetTable);
@@ -3401,7 +2766,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         }
     }
 
-    private void visitAllColumn() {
+    void visitAllColumn() {
         if (!state.inTargetExpression) {
             return;
         }
@@ -3814,7 +3179,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return true;
     }
 
-    private static List<SourceTable> starOutputSources(StarOutput output) {
+    static List<SourceTable> starOutputSources(StarOutput output) {
         List<SourceTable> sources = new ArrayList<>();
         for (StarColumn column : output.sources) {
             if (!sources.contains(column.source)) {
@@ -3974,7 +3339,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return context != null ? context.getCatalog().getDialect() : dbType;
     }
 
-    private void addColumnMapping(SourceTable source, String columnName) {
+    void addColumnMapping(SourceTable source, String columnName) {
         String sourceName = detachedMetadata() && !source.temporary
                 ? lineageTableName(source) : source.displayName;
         if (source.wildcardContribution && source.temporary) {
@@ -4029,7 +3394,7 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
                 source.metadataTable);
     }
 
-    private void addColumnMapping(String sourceTable, String columnName,
+    void addColumnMapping(String sourceTable, String columnName,
             boolean sourceTemporary, Table sourceMetadata) {
         if (sourceMetadata != null) {
             String resolved = MetadataCatalog.resolveColumnName(sourceMetadata, columnName,

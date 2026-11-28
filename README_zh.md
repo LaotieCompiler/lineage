@@ -10,6 +10,31 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 
 对 AST 进行后序遍历:先处理内层查询和派生表,再处理消费它们的查询的 SELECT 列表,从而收集表和列级别的数据血缘信息。
 
+## 代码结构
+
+`DmlLineage` 是公共 facade。它持有语句级状态，负责脚本解析、会话跟踪（`USE` / `SET`）和
+语句分发；具体分析拆分为包内协作类：
+
+| 类 | 职责 |
+| --- | --- |
+| `DmlLineage` | 公共 API、会话/脚本编排、语句分发、表与指令注册 |
+| `QueryDispatcher` | `SELECT` / `UNION` / `WITH` 调度与静态形状作用域 |
+| `SelectAnalyzer` | 投影分析、外层引用、标量子查询 |
+| `SourcePlanner` | `FROM` / `JOIN` 来源解析与 star 计划 |
+| `ExpressionAnalyzer` | 表达式遍历、owner 解析、非限定列解析 |
+| `TargetShapeAnalyzer` | 目标输出列、通配符范围、未知列分组 |
+| `StarProjectionAnalyzer` | `SELECT *` 的列映射与通配符指令生成 |
+| `StaticShapeAnalyzer` | 静态宽度与输出名推断 |
+| `DmlStatementAnalyzer` | `INSERT` / `REPLACE` / `UPDATE` / `DELETE` / `MERGE` / `TRUNCATE` |
+| `LearningAnalyzer` | 显式引用元数据发现 |
+| `SourceShapeAnalyzer` | 来源宽度/列名已知性查询 |
+| `TableCollector` | 仅收集物理表，不做列分析 |
+| `ColumnMappingAnalyzer` | 列身份解析与映射边生成 |
+
+支撑包分别承载方言策略（`dialect`）、标识符值对象（`identifier`）、语句切分与解析回退
+（`parse`）、会话/元数据解析（`metadata`）、严格引用校验（`validation`），以及共享分析
+状态与模型类型（`analysis`）。
+
 ## SQL执行顺序
 
 | 子句           | 功能                                                                                      |
@@ -25,7 +50,20 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 
 ## 测试
 
-所有功能和测试用例都在 `SelectLineageTest.java` 中。
+运行完整单元测试：
+
+```bash
+mvn test
+```
+
+当前为 908 个测试通过、2 个跳过。
+
+Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
+`JdbcMetadataScannerDockerTest`：
+
+```bash
+./scripts/run-jdbc-docker-tests.sh
+```
 
 ## 功能
 
@@ -45,13 +83,21 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 
 1. `insert into A (c1, c2) from select c1, c2`
 2. `select 1,2`  //ignore constants
-3. `select 1 as c1 from A`  //ignore constnts
-4. `select c1+c2 from A`
-5. `select max(c1) from A`
-6. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
-7. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
+3. `select 1 as c1 from A`  //ignore constants
+4. `select now() as c1 from A`
+5. `select c1+c2 from A`
+6. `select max(c1) from A`
+7. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
+8. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
+9. `select * from A` //依赖元数据
 
-### 元数据分析模式
+### 元数据
+
+1. 一些列的定义是模糊的，比如 `*` 和来自多个源表的同名列。因此，我们需要引入来自真实数据库的元数据来确定表结构。
+2. 在解析过程中，分析器会为中间表生成元数据，保存信息以供后续检查。
+3. 使用元数据执行原始指令，获取每个列的明确列名。
+
+#### 元数据分析模式
 
 `LineageOptions` 控制元数据缺失时的行为：
 
@@ -109,8 +155,6 @@ AST，把转义调用的参数替换为等价普通调用的参数，二者无�
 
 该契约是有意收敛的。相关 `LATERAL` 子查询、前向引用的递归 CTE、派生表重复输出名，以及
 未知宽度通配与显式投影混合的 `UNION`，按尽力而为分析：当位置无法唯一确定时保留表级边，
-不编造列名。该契约是有意收敛的。相关 `LATERAL` 子查询、前向引用的递归 CTE、派生表重复输出名，以及
-未知宽度通配与显式投影混合的 `UNION`，按尽力而为分析：当位置无法唯一确定时保留表级边，
 不编造列名。上述已列出的组合有回归测试覆盖，但不对同一特性的无限嵌套承诺逐列解析。
 
 #### 已知限制
@@ -150,22 +194,18 @@ catalog 的表 `ext.missing` 中得到列名 `p`；在无元数据契约下该�
 
 ### 待开发的 select 语法
 
-1. select * from A  //dependence on metadata
-4. select c1, c2 from A as TA
-5. select * from A,B
-6. select c1,c2 from A,B //c1 from A or B
-7. select A.c1,B.c2 from A,B  
-7. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column or strict string pattern.
-8. select c1,c2,c3 from A where ci in (select ...)
-9. specify default database/schema
-8. update ...
+1. select * from A,B
+2. select c1,c2 from A,B //c1 from A or B
+3. select A.c1,B.c2 from A,B
+4. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column or strict string pattern.
+5. select c1,c2,c3 from A where ci in (select ...)
+6. specify default database/schema
+7. update ...
 
-### 元数据  
+### 元数据
 
-1. 一些列的定义是模糊的,比如`*`和来自多个源表的同名列。因此,我们需要引入来自真实数据库的元数据来确定表结构。
-2. 在解析过程中,它将为中间表生成元数据,保存信息以供以后检查。
-3. 使用元数据执行原始指令,获取每个列的明确列名。
-4. 跨越多个数据库的语句
+跨数据库、跨 schema 的血缘（包括通过 `USE` 或 `search_path` 选择的默认数据库/schema）
+由 `CrossDatabaseSchemaTest` 覆盖。
 
 #### 步骤
 
@@ -174,6 +214,10 @@ catalog 的表 `ext.missing` 中得到列名 `p`；在无元数据契约下该�
 3. 使用元数据二次编译，以获取确切的列的关系。同时更新中间表的元数据。
 4. 构建血缘地图。
 
+### 支持的数据库
+
+Hive 与 Spark 已有 catalog 与通配符回归测试覆盖。Spark 语句仅在 Spark 解析器拒绝时才回退到
+Hive 解析器，因此 `INSERT OVERWRITE TABLE` 等 Hive 兼容 DML 可以正常分析。
 
 ## 许可证
 

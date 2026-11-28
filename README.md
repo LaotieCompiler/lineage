@@ -10,6 +10,33 @@ The SQL is parsed into an AST (Abstract Syntax Tree) by [Alibaba Druid](https://
 
 The AST is traversed in post-order: nested queries and derived tables are processed before the select list of the query that consumes them, then the lineage information in table and column level is collected.
 
+## Code structure
+
+`DmlLineage` is the public facade. It owns the statement-level state, parses scripts,
+tracks the session (`USE` / `SET`), and dispatches each statement; the analysis itself is
+split into package-private collaborators:
+
+| Class | Responsibility |
+| --- | --- |
+| `DmlLineage` | public API, session/script orchestration, statement dispatch, table and instruction registry |
+| `QueryDispatcher` | `SELECT` / `UNION` / `WITH` dispatch and static shape scopes |
+| `SelectAnalyzer` | projection analysis, outer references, scalar subqueries |
+| `SourcePlanner` | `FROM` / `JOIN` source resolution and star plans |
+| `ExpressionAnalyzer` | expression traversal, owner resolution, unqualified column resolution |
+| `TargetShapeAnalyzer` | target output columns, wildcard spans, unknown column groups |
+| `StarProjectionAnalyzer` | column mapping and wildcard emission for `SELECT *` |
+| `StaticShapeAnalyzer` | static width and output-name inference |
+| `DmlStatementAnalyzer` | `INSERT` / `REPLACE` / `UPDATE` / `DELETE` / `MERGE` / `TRUNCATE` |
+| `LearningAnalyzer` | explicit-reference metadata discovery |
+| `SourceShapeAnalyzer` | source width/name knownness queries |
+| `TableCollector` | physical table collection without column analysis |
+| `ColumnMappingAnalyzer` | column identity resolution and mapping edges |
+
+Supporting packages hold the dialect strategy (`dialect`), identifier value objects
+(`identifier`), statement splitting and parser fallback (`parse`), session/metadata
+resolution (`metadata`), strict-quoting validation (`validation`), and the shared analysis
+state and model types (`analysis`).
+
 ## Order of Execution in SQL
 
 | Clause         | Function                                                                                                          |
@@ -25,7 +52,14 @@ The AST is traversed in post-order: nested queries and derived tables are proces
 
 ## Tests
 
-All the features and test cases in `SelectLineageTest.java`.
+Run the full unit suite with `mvn test` (currently 908 tests, 2 skipped).
+
+The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
+run `JdbcMetadataScannerDockerTest`:
+
+```bash
+./scripts/run-jdbc-docker-tests.sh
+```
 
 ## Feature
 
@@ -44,20 +78,20 @@ All the features and test cases in `SelectLineageTest.java`.
 ### select parser
 
 1. `insert into A (c1, c2) from select c1, c2`
-4. `select c1, c2 from A as TA`
-3. `select 1 as c1 from A` 
-3. `select now() as c1 from A` 
-4. `select c1+c2 from A`
-5. `select max(c1) from A`
-6. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
-7. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
-1. `select * from A`  //dependence on metadata
+2. `select 1, 2` // ignore constants
+3. `select 1 as c1 from A` // ignore constants
+4. `select now() as c1 from A`
+5. `select c1+c2 from A`
+6. `select max(c1) from A`
+7. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
+8. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
+9. `select * from A` // dependence on metadata
 
 ### metadata
 
-1. Some columns define are ambiguous such as * and same column name from multiple source table. So we need to introduce metadata from real DB to determine the source table.
-2. In the progress of parsing, it will generate metadata for middle table, save the infomation for checking in later.
-3. excute the origin instructions with metadata, get the full qualified column name for each column.
+1. Some column definitions are ambiguous, such as `*` and the same column name coming from multiple source tables. We therefore introduce metadata from the real database to determine the source table.
+2. While parsing, the analyzer generates metadata for intermediate tables and keeps it for later checks.
+3. The original instructions are executed with metadata to obtain the fully qualified column name for each column.
 
 #### analysis modes
 
@@ -128,10 +162,6 @@ The contract is intentionally bounded. Correlated `LATERAL` bodies, forward-refe
 recursive CTEs, repeated derived output names, and unions that mix unknown-width wildcards
 with explicit projections are analyzed on a best-effort basis: when a position cannot be
 derived unambiguously the analyzer keeps table-level edges instead of inventing a column.
-The contract is intentionally bounded. Correlated `LATERAL` bodies, forward-referenced
-recursive CTEs, repeated derived output names, and unions that mix unknown-width wildcards
-with explicit projections are analyzed on a best-effort basis: when a position cannot be
-derived unambiguously the analyzer keeps table-level edges instead of inventing a column.
 These combinations are covered by regression tests for the cases listed above, but are not
 guaranteed to resolve every further nesting of the same features to column level.
 
@@ -159,28 +189,6 @@ The Hive/Spark support batch was closed after 31 failed Codex review rounds. Eve
 finding was fixed before closure; the final fix was locale-independent matching of Spark
 ANSI settings. No further adversarial review rounds were run for that batch.
 
-### lineage graph
-
-1. build lineage graph by direct relations
-2. export global lineage for each target fields
-
-## TODO
-
-### select parser
-
-5. select * from A,B
-6. select c1,c2 from A,B //c1 from A or B
-7. select A.c1,B.c2 from A,B  
-7. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column or strict string pattern.
-8. select c1,c2,c3 from A where ci in (select ...)
-9. specify default database/schema
-8. update ...
-
-### metadata
-
-Cross-database and cross-schema lineage, including default database/schema selected via
-`USE` or `search_path`, is covered by `CrossDatabaseSchemaTest`.
-
 #### Known limitation: nested derived/union output names
 
 Cross-database resolution is covered by regression tests, but nested derived tables whose
@@ -190,11 +198,27 @@ from a table that was explicitly left uncataloged; that column cannot be derived
 metadata-free contract. When a branch's output names are unknown, the analyzer keeps
 table-level edges instead of guessing.
 
-### support DB
+### lineage graph
 
-Hive and Spark are covered by the catalog and wildcard regression tests. Spark
-statements fall back to the Hive parser only when the Spark parser rejects them, so
-Hive-compatible DML such as `INSERT OVERWRITE TABLE` is analyzed normally.
+1. build lineage graph by direct relations
+2. export global lineage for each target fields
+
+## TODO
+
+### select parser
+
+1. select * from A,B
+2. select c1,c2 from A,B //c1 from A or B
+3. select A.c1,B.c2 from A,B
+4. (select A.c1,B.c2 from A,B) as T  // bug: output T.A.c1, use Column Object to represent the column or strict string pattern.
+5. select c1,c2,c3 from A where ci in (select ...)
+6. specify default database/schema
+7. update ...
+
+### metadata
+
+Cross-database and cross-schema lineage, including default database/schema selected via
+`USE` or `search_path`, is covered by `CrossDatabaseSchemaTest`.
 
 #### steps
 
@@ -202,6 +226,12 @@ Hive-compatible DML such as `INSERT OVERWRITE TABLE` is analyzed normally.
 2. import metadata information from real database.
 3. execute relations with metadata to get exactly relations. Meanwhile update metadata for middle tables.
 4. build lineage map.
+
+### support DB
+
+Hive and Spark are covered by the catalog and wildcard regression tests. Spark
+statements fall back to the Hive parser only when the Spark parser rejects them, so
+Hive-compatible DML such as `INSERT OVERWRITE TABLE` is analyzed normally.
 
 ## License
 

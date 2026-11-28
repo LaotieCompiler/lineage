@@ -56,7 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 936 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
+当前为 937 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
 
 Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 `JdbcMetadataScannerDockerTest`：
@@ -67,9 +67,10 @@ Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 
 ### 黄金语料
 
-`src/test/resources/golden` 存放数据驱动的回归用例。每个 JSON 用例声明方言、分析选项、
-可选的 catalog DDL、SQL 脚本以及每条语句的期望 instructions 或错误；`GoldenLineageTest`
-会运行全部用例。
+`src/test/resources/golden` 存放 41 个数据驱动的回归用例。每个 JSON 用例声明方言、分析
+选项、可选的 catalog DDL、SQL 脚本以及每条语句的期望 instructions 或错误；
+`GoldenLineageTest` 会运行全部用例，并对每个用例做确定性的 token 变异，验证畸形 SQL
+不会逃逸出扫描器。
 
 在有意的行为变更之后，重新生成期望并**审查 JSON diff** 后再提交：
 
@@ -94,6 +95,9 @@ mvn test -Dtest=TpchCorpusTest
 项目目标为 Java 8；JUnit 4 与 JUnit 5 测试由 Maven Surefire 一起运行。Druid 固定为
 1.2.23，因为其解析结果属于受测试约束的契约；升级 Druid 是独立的变更，必须通过全量回归
 测试。
+
+GitHub Actions（`.github/workflows/ci.yml`）会在每次 push 与 pull request 上运行
+`mvn clean test` 与 Docker JDBC 集成测试。
 
 ## 功能
 

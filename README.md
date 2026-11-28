@@ -52,7 +52,7 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 936 tests; 2 are always skipped and the
+Run the full unit suite with `mvn test` (currently 937 tests; 2 are always skipped and the
 optional TPC-H corpus is skipped until its queries are fetched).
 
 The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
@@ -64,9 +64,10 @@ run `JdbcMetadataScannerDockerTest`:
 
 ### golden corpus
 
-`src/test/resources/golden` holds data-driven regression cases. Each JSON case declares a
-dialect, analysis options, an optional catalog DDL, a SQL script and the expected
-per-statement instructions or error. `GoldenLineageTest` runs every case.
+`src/test/resources/golden` holds 41 data-driven regression cases. Each JSON case declares
+a dialect, analysis options, an optional catalog DDL, a SQL script and the expected
+per-statement instructions or error. `GoldenLineageTest` runs every case, then re-runs each
+one under deterministic token mutations to prove malformed SQL never escapes the scanner.
 
 After an intentional behavior change, regenerate the expectations and review the JSON diff
 before committing it:
@@ -93,6 +94,9 @@ Without the download the test is skipped, so offline builds stay green.
 The project targets Java 8. JUnit 4 and JUnit 5 tests run together through Maven Surefire.
 Druid is pinned to 1.2.23 because its parser output is part of the tested contract; a Druid
 upgrade is a separate change that must pass the full regression suite.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `mvn clean test` and the Docker-backed
+JDBC suite on every push and pull request.
 
 ## Feature
 

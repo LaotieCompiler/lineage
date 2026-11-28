@@ -520,24 +520,6 @@ public class CrossDatabaseSchemaTest {
     }
 
     @Test
-    public void jdbcScannedTableKeepsQuotedIdentity() {
-        MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
-        catalog.addScannedTable(null, null, "s1", "A",
-                Arrays.asList(new Column("A", "k")));
-        catalog.addScannedTable(null, null, "s2", "a",
-                Arrays.asList(new Column("a", "k")));
-        ScanResult result = LineageScanner.withMetadata(
-                MetadataContext.of(catalog),
-                LineageOptions.of(MetadataMode.STRICT, false)).scan(
-                "SET search_path TO s1, s2; SELECT k FROM a;");
-
-        assertEquals(0, result.getFailures().size());
-        assertEquals(new HashSet<>(Arrays.asList(new Column("s2.a.k"))),
-                result.getGraph().getSources(
-                        Column.temporary("stmt1.temp0.k")));
-    }
-
-    @Test
     public void quotedDatabaseQualifierIsExact() {
         MetadataCatalog catalog = new MetadataCatalog(DbType.postgresql);
         catalog.loadDdl("CREATE TABLE db1.public.a (k INT);");

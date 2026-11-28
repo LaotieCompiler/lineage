@@ -285,34 +285,16 @@ public class MetadataCatalog {
 
     public synchronized TableLocation addTable(String instance, String database, String schema,
             String tableName, List<Column> columns) {
-        return addTableInternal(instance, database, schema, tableName, columns, false);
-    }
-
-    /**
-     * Register a table discovered from JDBC. Such paths may not be representable as DDL text
-     * (for example a MySQL table with an instance name and no schema); they remain usable for
-     * lineage and snapshots, while {@link #toDdl()} rejects the catalog.
-     */
-    public synchronized TableLocation addScannedTable(String instance, String database,
-            String schema, String tableName, List<Column> columns) {
-        TableLocation location = addTableInternal(instance, database, schema,
-                tableName, columns, true);
-        if (dialect == DbType.postgresql && tableName != null
-                && (!tableName.equals(tableName.toLowerCase(Locale.ROOT))
-                        || !tableName.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
-            location.getTable().setQuotedName(true);
-            cachedChecksum = null;
-        }
-        return location;
+        return addTableInternal(instance, database, schema, tableName, columns);
     }
 
     private TableLocation addTableInternal(String instance, String database, String schema,
-            String tableName, List<Column> columns, boolean allowNonRepresentable) {
+            String tableName, List<Column> columns) {
         checkMutable();
         if (tableName == null || tableName.isEmpty()) {
             throw new MetadataPersistenceException("table name is empty");
         }
-        if (!allowNonRepresentable && !isRepresentable(instance, database, schema)) {
+        if (!isRepresentable(instance, database, schema)) {
             throw new MetadataPersistenceException("table path cannot be represented as DDL: "
                     + path(instance, database, schema, tableName));
         }
@@ -643,7 +625,7 @@ public class MetadataCatalog {
             for (Database database : instance.getDatabases()) {
                 for (Schema schema : database.getSchemas()) {
                     for (Table table : schema.getTables()) {
-                        TableLocation location = copy.addScannedTable(instance.getName(),
+                        TableLocation location = copy.addTableInternal(instance.getName(),
                                 database.getName(), schema.getName(), table.getName(),
                                 new ArrayList<>(table.getFields()));
                         location.getTable().setQuotedName(table.isQuotedName());

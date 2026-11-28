@@ -56,14 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 940 个测试；其中 2 个始终跳过，可选的 TPC-H 语料在未下载查询时也会跳过。
-
-Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
-`JdbcMetadataScannerDockerTest`：
-
-```bash
-./scripts/run-jdbc-docker-tests.sh
-```
+当前为 925 个测试；可选的 TPC-H 语料在未下载查询时会跳过。
 
 ### 黄金语料
 
@@ -111,7 +104,7 @@ target/sqlglot-venv/bin/python scripts/differential-sqlglot.py
 测试。
 
 GitHub Actions（`.github/workflows/ci.yml`）会在每次 push 与 pull request 上运行
-`mvn clean test` 与 Docker JDBC 集成测试。
+`mvn clean test`。
 
 ## ODPS 血缘报告
 
@@ -201,9 +194,24 @@ node scripts/lineage-report/render.js output
 
 ### 元数据
 
-1. 一些列的定义是模糊的，比如 `*` 和来自多个源表的同名列。因此，我们需要引入来自真实数据库的元数据来确定表结构。
+1. 一些列的定义是模糊的，比如 `*` 和来自多个源表的同名列。因此，我们需要元数据来确定表结构。
 2. 在解析过程中，分析器会为中间表生成元数据，保存信息以供后续检查。
 3. 使用元数据执行原始指令，获取每个列的明确列名。
+
+#### 元数据来源
+
+元数据来自 DDL 分析或序列化后的元数据文件，无需连接真实数据库。
+
+```java
+// 通过分析 DDL 构建 catalog
+MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+catalog.loadDdl(createTableStatements);
+
+// 导出为自描述的 DDL 文件（文件头包含方言、版本、校验和）
+catalog.saveDdl(Paths.get("metadata.sql"));
+// 直接加载，无需重新分析源脚本
+MetadataCatalog reloaded = MetadataCatalog.fromDdlFile(Paths.get("metadata.sql"));
+```
 
 #### 元数据分析模式
 
@@ -311,8 +319,8 @@ catalog 的表 `ext.missing` 中得到列名 `p`；在无元数据契约下该�
 - 通过 `USE` 或 `search_path` 选择的默认数据库/schema 由 `CrossDatabaseSchemaTest`
   覆盖。
 - `UPDATE` 语句（包括 join 与标量子查询）由 `AdvancedDmlTest` 覆盖。
-- 元数据可从真实数据库导入（`JdbcMetadataScanner`），与 DDL/推导元数据合并后供第二轮
-  分析使用；全局血缘从 `ScanResult` 导出。
+- 元数据来自 DDL 分析或序列化后的元数据文件（`toDdl`/`saveDdl`/`fromDdlFile`），与推导
+  元数据合并后供第二轮分析使用；全局血缘从 `ScanResult` 导出。
 
 ### 支持的数据库
 

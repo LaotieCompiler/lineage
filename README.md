@@ -52,15 +52,8 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 940 tests; 2 are always skipped and the
-optional TPC-H corpus is skipped until its queries are fetched).
-
-The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
-run `JdbcMetadataScannerDockerTest`:
-
-```bash
-./scripts/run-jdbc-docker-tests.sh
-```
+Run the full unit suite with `mvn test` (currently 925 tests; the optional TPC-H corpus is
+skipped until its queries are fetched).
 
 ### golden corpus
 
@@ -111,8 +104,8 @@ The project targets Java 8. JUnit 4 and JUnit 5 tests run together through Maven
 Druid is pinned to 1.2.23 because its parser output is part of the tested contract; a Druid
 upgrade is a separate change that must pass the full regression suite.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `mvn clean test` and the Docker-backed
-JDBC suite on every push and pull request.
+GitHub Actions (`.github/workflows/ci.yml`) runs `mvn clean test` on every push and pull
+request.
 
 ## ODPS lineage report
 
@@ -215,9 +208,25 @@ interactions.
 
 ### metadata
 
-1. Some column definitions are ambiguous, such as `*` and the same column name coming from multiple source tables. We therefore introduce metadata from the real database to determine the source table.
+1. Some column definitions are ambiguous, such as `*` and the same column name coming from multiple source tables. Metadata therefore determines the source table.
 2. While parsing, the analyzer generates metadata for intermediate tables and keeps it for later checks.
 3. The original instructions are executed with metadata to obtain the fully qualified column name for each column.
+
+#### metadata sources
+
+Metadata comes from analyzed DDL or from a serialized catalog file; no live database
+connection is required.
+
+```java
+// build a catalog by analyzing DDL
+MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+catalog.loadDdl(createTableStatements);
+
+// export it as a self-describing DDL file (header carries dialect, version, checksum)
+catalog.saveDdl(Paths.get("metadata.sql"));
+// load it back directly, without re-analyzing the source scripts
+MetadataCatalog reloaded = MetadataCatalog.fromDdlFile(Paths.get("metadata.sql"));
+```
 
 #### analysis modes
 
@@ -343,9 +352,9 @@ The former TODO list is complete:
   `CrossDatabaseSchemaTest`.
 - `UPDATE` statements, including joins and scalar subqueries, are covered by
   `AdvancedDmlTest`.
-- Metadata is imported from a real database (`JdbcMetadataScanner`), merged with
-  DDL/inferred metadata, and consumed by the second analysis pass; global lineage is
-  exported from `ScanResult`.
+- Metadata comes from analyzed DDL or a serialized catalog file
+  (`toDdl`/`saveDdl`/`fromDdlFile`), is merged with inferred metadata, and is consumed by
+  the second analysis pass; global lineage is exported from `ScanResult`.
 
 ### support DB
 

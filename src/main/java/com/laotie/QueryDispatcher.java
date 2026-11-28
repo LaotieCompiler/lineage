@@ -488,15 +488,7 @@ final class QueryDispatcher {
         return StaticShapeAnalyzer.unescapeQuotedName(raw);
     }
 
-    private List<String> staticFromNames(SQLTableSource from,
-            Map<String, List<String>> scope) {
-        return shape.staticFromNames(from, scope);
-    }
 
-    private List<String> staticTableNames(SQLTableSource table,
-            Map<String, List<String>> scope) {
-        return shape.staticTableNames(table, scope);
-    }
 
     static SQLSelect queryExpressionSelect(SQLExpr expr) {
         return StaticShapeAnalyzer.queryExpressionSelect(expr);
@@ -506,33 +498,16 @@ final class QueryDispatcher {
         return shape.isLateralSource(source);
     }
 
-    private List<String> staticSourceNames(SQLExprTableSource table,
-            Map<String, List<String>> scope) {
-        return shape.staticSourceNames(table, scope);
-    }
 
     private int staticUnionWidth(SQLSelectQuery query, Map<String, Integer> scope) {
         return shape.staticUnionWidth(query, scope);
     }
 
-    private int staticStarWidth(SQLTableSource from, SQLExpr owner,
-            Map<String, Integer> scope) {
-        return shape.staticStarWidth(from, owner, scope);
-    }
 
-    private int staticTableWidth(SQLTableSource table, Map<String, Integer> scope) {
-        return shape.staticTableWidth(table, scope);
-    }
 
     static String lastSegment(String qualifiedName) {
         return StaticShapeAnalyzer.lastSegment(qualifiedName);
     }
 
-    private int staticFromWidth(SQLTableSource from, Map<String, Integer> scope) {
-        return shape.staticFromWidth(from, scope);
-    }
 
-    private int staticSourceWidth(SQLExprTableSource table, Map<String, Integer> scope) {
-        return shape.staticSourceWidth(table, scope);
-    }
 }

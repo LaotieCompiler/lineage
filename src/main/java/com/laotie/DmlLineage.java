@@ -122,6 +122,8 @@ public class DmlLineage {
     final TargetShapeAnalyzer targetShape = new TargetShapeAnalyzer(this);
     final StarProjectionAnalyzer starProjection = new StarProjectionAnalyzer(this);
     final QueryDispatcher queryDispatcher = new QueryDispatcher(this);
+    final TableCollector tableCollector = new TableCollector(this);
+    final ColumnMappingAnalyzer columnMapping = new ColumnMappingAnalyzer(this);
 
     List<Instruction> instructions() {
         return instructions;
@@ -1514,22 +1516,31 @@ public class DmlLineage {
      * case, quoted names keep their case.
      */
     String uncatalogedColumnSpelling(String raw) {
-        DbType dialect = currentDialect();
-        return dialect == DbType.hive || dialect == DbType.antspark
-                ? hiveColumnIdentity(raw) : canonicalColumnName(raw);
+        return columnMapping.uncatalogedColumnSpelling(raw);
     }
 
     String canonicalColumnName(String raw) {
-        if (raw == null) {
-            return null;
-        }
-        String name = normalizeIdentifier(raw);
-        if (!detachedMetadata() || MetadataCatalog.isQuotedIdentifier(raw)
-                || currentDialect() != DbType.postgresql) {
-            return name;
-        }
-        return name.toLowerCase(Locale.ROOT);
+        return columnMapping.canonicalColumnName(raw);
     }
+
+    String canonicalColumnName(String table, String rawColumn) {
+        return columnMapping.canonicalColumnName(table, rawColumn);
+    }
+
+    String renderInsertColumn(Table metadata, String tableName, SQLExpr column) {
+        return columnMapping.renderInsertColumn(metadata, tableName, column);
+    }
+
+    void addColumnMapping(SourceTable source, String columnName) {
+        columnMapping.addColumnMapping(source, columnName);
+    }
+
+    void addColumnMapping(String sourceTable, String columnName,
+            boolean sourceTemporary, Table sourceMetadata) {
+        columnMapping.addColumnMapping(sourceTable, columnName, sourceTemporary,
+                sourceMetadata);
+    }
+
 
 
 
@@ -1746,171 +1757,16 @@ public class DmlLineage {
         return key.toString();
     }
 
-    String canonicalColumnName(String table, String rawColumn) {
-        if (context == null || state.tempTables.contains(table)) {
-            return normalizeIdentifier(rawColumn);
-        }
-        try {
-            Table metadata = context.getCatalog().findTableByDisplayName(table).getTable();
-            String resolved = MetadataCatalog.resolveColumnName(metadata, rawColumn,
-                    currentDialect());
-            if (resolved == null) {
-                throw new ColumnNotFoundException(normalizeIdentifier(rawColumn),
-                        java.util.Collections.singletonList(table));
-            }
-            return resolved;
-        } catch (MetadataNotFoundException e) {
-            return normalizeIdentifier(rawColumn);
-        }
-    }
 
-    private String insertColumnName(Table metadata, String tableName, SQLExpr column) {
-        String raw = column.toString();
-        if (metadata == null) {
-            return canonicalColumnName(raw);
-        }
-        String resolved = MetadataCatalog.resolveColumnName(metadata, raw, currentDialect());
-        if (resolved == null) {
-            throw new ColumnNotFoundException(normalizeIdentifier(raw),
-                    java.util.Collections.singletonList(tableName));
-        }
-        return resolved;
-    }
 
-    String renderInsertColumn(Table metadata, String tableName, SQLExpr column) {
-        String raw = column.toString();
-        DbType dialect = currentDialect();
-        if ((dialect == DbType.hive || dialect == DbType.antspark)
-                && column instanceof SQLTextLiteralExpr) {
-            if (!Boolean.TRUE.equals(column.getAttribute(
-                    ANSI_IDENTIFIER_ATTRIBUTE))) {
-                // An INSERT target list requires identifiers; a quoted string is
-                // not one.
-                throw new ColumnNotFoundException(raw,
-                        java.util.Collections.singletonList(tableName));
-            }
-            String name = ((SQLTextLiteralExpr) column).getText();
-            if (metadata == null) {
-                return renderHiveIdentifier(foldCase(name));
-            }
-            String quoted = quoteIdentifierValue(name);
-            String resolved = MetadataCatalog.resolveColumnName(metadata, quoted,
-                    dialect);
-            if (resolved == null) {
-                throw new ColumnNotFoundException(normalizeIdentifier(name),
-                        java.util.Collections.singletonList(tableName));
-            }
-            return renderHiveIdentifier(resolved);
-        }
-        if ((dialect == DbType.hive || dialect == DbType.antspark)
-                && metadata == null) {
-            // Without a catalog, Hive/Spark column identity is case-insensitive,
-            // but literal quotes remain part of the name.
-            return renderHiveIdentifier(hiveColumnIdentity(raw));
-        }
-        String resolved = insertColumnName(metadata, tableName, column);
-        if (MetadataCatalog.isQuotedIdentifier(raw)) {
-            if (dialect == DbType.hive || dialect == DbType.antspark) {
-                return renderHiveIdentifier(resolved);
-            }
-            return quoteIdentifierValue(resolved);
-        }
-        return renderIdentifier(resolved);
-    }
 
     DbType currentDialect() {
         return context != null ? context.getCatalog().getDialect() : dbType;
     }
 
-    void addColumnMapping(SourceTable source, String columnName) {
-        String sourceName = detachedMetadata() && !source.temporary
-                ? lineageTableName(source) : source.displayName;
-        if (source.wildcardContribution && source.temporary) {
-            // Reading one named column from a derived table that also carries unknown
-            // rows must not cut the table-level lineage.
-            String target = state.stackTargetTable.peek();
-            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                    lineageTableName(source), target, state.currentOrdinal,
-                    source.temporary, state.tempTables.contains(target));
-            wildcard.setPositionalWildcard(true);
-            wildcard.setWildcardWidthKnown(true);
-            wildcard.setWildcardWidth(1);
-            instructions.add(wildcard);
-            recordWildcardSpan(target, state.currentOrdinal, state.currentOrdinal + 1,
-                    lineageTableName(source), source.temporary);
-            state.targetWildcardContribution.put(target, Boolean.TRUE);
-        }
-        if (!source.outputColumns.isEmpty()) {
-            String key = identifierKey(columnName);
-            if (key == null) {
-                return;
-            }
-            String canonical = null;
-            for (int i = 0; i < source.outputKeys.size(); i++) {
-                if (source.outputKeys.get(i) != null
-                    && source.outputKeys.get(i).equals(key)) {
-                    canonical = source.outputColumns.get(i);
-                    break;
-                }
-            }
-            if (canonical == null) {
-                addColumnMapping(sourceName, normalizeIdentifier(columnName),
-                        source.temporary, null);
-            } else {
-                addResolvedColumnMapping(sourceName, canonical,
-                        source.temporary);
-            }
-            return;
-        }
-        if (source.metadataTable == null) {
-            DbType dialect = currentDialect();
-            if (dialect == DbType.hive || dialect == DbType.antspark) {
-                addResolvedColumnMapping(sourceName,
-                        hiveColumnIdentity(columnName), source.temporary);
-            } else {
-                addColumnMapping(sourceName, canonicalColumnName(columnName),
-                        source.temporary, null);
-            }
-            return;
-        }
-        addColumnMapping(sourceName, columnName, source.temporary,
-                source.metadataTable);
-    }
 
-    void addColumnMapping(String sourceTable, String columnName,
-            boolean sourceTemporary, Table sourceMetadata) {
-        if (sourceMetadata != null) {
-            String resolved = MetadataCatalog.resolveColumnName(sourceMetadata, columnName,
-                    currentDialect());
-            columnName = resolved != null ? resolved : normalizeIdentifier(columnName);
-        } else {
-            columnName = normalizeIdentifier(columnName);
-        }
-
-        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
-            // The projection's position cannot be derived from the declaration, so a
-            // positional edge would be a guess.
-            return;
-        }
-        String targetTable = state.stackTargetTable.peek();
-        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                sourceTable + "." + renderIdentifier(columnName),
-                targetTable + "." + state.stackTargetColumn.peek(), state.currentOrdinal,
-                sourceTemporary, state.tempTables.contains(targetTable)));
-    }
 
     /** Write an edge for a name that is already the catalog/derived spelling. */
-    private void addResolvedColumnMapping(String sourceTable, String columnName,
-            boolean sourceTemporary) {
-        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
-            return;
-        }
-        String targetTable = state.stackTargetTable.peek();
-        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                sourceTable + "." + renderIdentifier(columnName),
-                targetTable + "." + state.stackTargetColumn.peek(), state.currentOrdinal,
-                sourceTemporary, state.tempTables.contains(targetTable)));
-    }
 
     static String quoteIdentifierValue(String name) {
         return Identifiers.quoteDouble(name);
@@ -2001,110 +1857,7 @@ public class DmlLineage {
     /* ------------------------------------------------------------------ */
 
     void collectTablesFromExpression(SQLExpr expr) {
-        if (expr == null) {
-            return;
-        }
-        if (expr instanceof SQLInSubQueryExpr) {
-            collectTablesFromSelect(((SQLInSubQueryExpr) expr).getSubQuery());
-        } else if (expr instanceof SQLExistsExpr) {
-            collectTablesFromSelect(((SQLExistsExpr) expr).getSubQuery());
-        } else if (expr instanceof SQLQueryExpr) {
-            collectTablesFromSelect(((SQLQueryExpr) expr).getSubQuery());
-        } else if (expr instanceof SQLBinaryOpExpr) {
-            collectTablesFromExpression(((SQLBinaryOpExpr) expr).getLeft());
-            collectTablesFromExpression(((SQLBinaryOpExpr) expr).getRight());
-        } else if (expr instanceof SQLNotExpr) {
-            collectTablesFromExpression(((SQLNotExpr) expr).getExpr());
-        } else if (expr instanceof SQLUnaryExpr) {
-            collectTablesFromExpression(((SQLUnaryExpr) expr).getExpr());
-        } else if (expr instanceof SQLBetweenExpr) {
-            collectTablesFromExpression(((SQLBetweenExpr) expr).getTestExpr());
-            collectTablesFromExpression(((SQLBetweenExpr) expr).getBeginExpr());
-            collectTablesFromExpression(((SQLBetweenExpr) expr).getEndExpr());
-        } else if (expr instanceof SQLInListExpr) {
-            collectTablesFromExpression(((SQLInListExpr) expr).getExpr());
-        }
-    }
-
-    private void collectTablesFromSelect(SQLSelect select) {
-        if (select == null) {
-            return;
-        }
-        SQLWithSubqueryClause with = select.getWithSubQuery();
-        if (with != null) {
-            Set<String> local = new HashSet<>();
-            state.collectCteScopes.push(local);
-            try {
-                boolean recursive = Boolean.TRUE.equals(with.getRecursive());
-                if (recursive) {
-                    for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
-                        if (entry.getAlias() != null) {
-                            local.add(identifierKey(entry.getAlias()));
-                        }
-                    }
-                }
-                for (SQLWithSubqueryClause.Entry entry : with.getEntries()) {
-                    collectTablesFromSelect(entry.getSubQuery());
-                    if (!recursive && entry.getAlias() != null) {
-                        local.add(identifierKey(entry.getAlias()));
-                    }
-                }
-                collectTablesFromQuery(select.getQuery());
-            } finally {
-                state.collectCteScopes.pop();
-            }
-            return;
-        }
-        collectTablesFromQuery(select.getQuery());
-    }
-
-    private boolean collectCteNameVisible(String key) {
-        for (Set<String> frame : state.collectCteScopes) {
-            if (frame.contains(key)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void collectTablesFromQuery(SQLSelectQuery query) {
-        if (query instanceof SQLSelectQueryBlock) {
-            SQLSelectQueryBlock block = (SQLSelectQueryBlock) query;
-            collectSourceTablesOnly(block.getFrom());
-            collectTablesFromExpression(block.getWhere());
-        } else if (query instanceof SQLUnionQuery) {
-            collectTablesFromQuery(((SQLUnionQuery) query).getLeft());
-            collectTablesFromQuery(((SQLUnionQuery) query).getRight());
-        }
-    }
-
-    private void collectSourceTablesOnly(SQLTableSource tableSource) {
-        if (tableSource == null) {
-            return;
-        }
-        if (tableSource instanceof SQLJoinTableSource) {
-            SQLJoinTableSource join = (SQLJoinTableSource) tableSource;
-            collectSourceTablesOnly(join.getLeft());
-            collectSourceTablesOnly(join.getRight());
-        } else if (tableSource instanceof SQLSubqueryTableSource) {
-            collectTablesFromSelect(((SQLSubqueryTableSource) tableSource).getSelect());
-        } else if (tableSource instanceof SQLUnionQueryTableSource) {
-            collectTablesFromQuery(((SQLUnionQueryTableSource) tableSource).getUnion());
-        } else if (tableSource instanceof SQLExprTableSource) {
-            SQLExprTableSource exprTable = (SQLExprTableSource) tableSource;
-            SQLSelect inline = queryExpressionSelect(exprTable.getExpr());
-            if (inline != null) {
-                collectTablesFromSelect(inline);
-                return;
-            }
-            String name = extractTableName(exprTable);
-            if (name != null && isSingleSegmentName(name)
-                    && (collectCteNameVisible(identifierKey(name))
-                            || findCteTarget(identifierKey(name)) != null)) {
-                return;
-            }
-            resolveSource(exprTable);
-        }
+        tableCollector.collectTablesFromExpression(expr);
     }
 
     /* ------------------------------------------------------------------ */

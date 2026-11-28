@@ -1600,83 +1600,11 @@ public class DmlLineage {
     }
 
     SourceNode joinBinding(SQLExpr owner) {
-        if (owner == null || state.stackJoinBindings.isEmpty()) {
-            return null;
-        }
-        String key = identifierKey(lastSegment(owner.toString()));
-        return key == null ? null : state.stackJoinBindings.peek().get(key);
+        return expression.joinBinding(owner);
     }
-
-    private boolean isJoinAlias(SQLExpr owner) {
-        return joinBinding(owner) != null;
-    }
-
-
-
-
-
-    /**
-     * Drop sources that the learned metadata proves cannot own the column. Known catalog
-     * sources and unknown sources are kept.
-     */
-
-    /**
-     * The sources whose column set is unknown, so that they may own any column.
-     */
-
-
-
-
 
     SourceTable findByOwner(SQLExpr owner) {
-        if (owner == null) {
-            return null;
-        }
-        String rawOwner = owner.toString();
-        String ownerKey = qualifiedKey(rawOwner);
-        for (SourceTable source : visibleSources()) {
-            if (source.alias != null && qualifiedKey(source.alias).equals(ownerKey)) {
-                return source;
-            }
-        }
-        for (SourceTable source : visibleSources()) {
-            if (source.temporary) {
-                if (source.rawName != null
-                        && qualifiedKey(source.rawName).equals(ownerKey)) {
-                    return source;
-                }
-                continue;
-            }
-            String rawIdentifier = source.rawName != null
-                    ? source.rawName : source.writtenName;
-            if (qualifiedKey(source.displayName).equals(ownerKey)
-                    || (rawIdentifier != null
-                            && qualifiedKey(rawIdentifier).equals(ownerKey))) {
-                return source;
-            }
-        }
-        String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
-        for (SourceTable source : visibleSources()) {
-            if (source.temporary) {
-                continue;
-            }
-            String[] displayParts = MetadataCatalog
-                    .splitQualifiedNamePreservingQuotes(source.displayName);
-            if (ownerParts.length > 0 && ownerParts.length <= displayParts.length) {
-                boolean matched = true;
-                for (int i = 0; i < ownerParts.length; i++) {
-                    if (!identifierKey(ownerParts[i]).equals(
-                            identifierKey(displayParts[displayParts.length - ownerParts.length + i]))) {
-                        matched = false;
-                        break;
-                    }
-                }
-                if (matched) {
-                    return source;
-                }
-            }
-        }
-        return null;
+        return expression.findByOwner(owner);
     }
 
     String qualifiedKey(String rawName) {

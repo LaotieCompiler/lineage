@@ -983,4 +983,62 @@ CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         }
         throw new ColumnNotFoundException(columnName, host.displayNames(sources));
     }
+    SourceNode joinBinding(SQLExpr owner) {
+        if (owner == null || host.state().stackJoinBindings.isEmpty()) {
+            return null;
+        }
+        String key = host.identifierKey(DmlLineage.lastSegment(owner.toString()));
+        return key == null ? null : host.state().stackJoinBindings.peek().get(key);
+    }
+
+    SourceTable findByOwner(SQLExpr owner) {
+        if (owner == null) {
+            return null;
+        }
+        String rawOwner = owner.toString();
+        String ownerKey = host.qualifiedKey(rawOwner);
+        for (SourceTable source : host.visibleSources()) {
+            if (source.alias != null && host.qualifiedKey(source.alias).equals(ownerKey)) {
+                return source;
+            }
+        }
+        for (SourceTable source : host.visibleSources()) {
+            if (source.temporary) {
+                if (source.rawName != null
+                        && host.qualifiedKey(source.rawName).equals(ownerKey)) {
+                    return source;
+                }
+                continue;
+            }
+            String rawIdentifier = source.rawName != null
+                    ? source.rawName : source.writtenName;
+            if (host.qualifiedKey(source.displayName).equals(ownerKey)
+                    || (rawIdentifier != null
+                            && host.qualifiedKey(rawIdentifier).equals(ownerKey))) {
+                return source;
+            }
+        }
+        String[] ownerParts = MetadataCatalog.splitQualifiedNamePreservingQuotes(rawOwner);
+        for (SourceTable source : host.visibleSources()) {
+            if (source.temporary) {
+                continue;
+            }
+            String[] displayParts = MetadataCatalog
+                    .splitQualifiedNamePreservingQuotes(source.displayName);
+            if (ownerParts.length > 0 && ownerParts.length <= displayParts.length) {
+                boolean matched = true;
+                for (int i = 0; i < ownerParts.length; i++) {
+                    if (!host.identifierKey(ownerParts[i]).equals(
+                            host.identifierKey(displayParts[displayParts.length - ownerParts.length + i]))) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if (matched) {
+                    return source;
+                }
+            }
+        }
+        return null;
+    }
 }

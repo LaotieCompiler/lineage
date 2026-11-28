@@ -120,6 +120,7 @@ public class DmlLineage {
     private List<Instruction> instructions;
     private final AnalysisContext state = new AnalysisContext();
     final TargetShapeAnalyzer targetShape = new TargetShapeAnalyzer(this);
+    final StarProjectionAnalyzer starProjection = new StarProjectionAnalyzer(this);
 
     List<Instruction> instructions() {
         return instructions;
@@ -1932,135 +1933,44 @@ public class DmlLineage {
         return sources;
     }
 
-    void emitBindingColumns(List<StarColumn> columns) {
-        if (columns.isEmpty()) {
-            return;
-        }
-        String targetTable = state.stackTargetTable.peek();
-        String targetColumn = state.stackTargetColumn.peek();
-        for (StarColumn column : columns) {
-            if (!column.source.wildcardContribution) {
-                continue;
-            }
-            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                    lineageTableName(column.source), targetTable, state.currentOrdinal,
-                    column.source.temporary, state.tempTables.contains(targetTable));
-            wildcard.setPositionalWildcard(true);
-            // The contribution only covers the named column's own position.
-            wildcard.setWildcardWidthKnown(true);
-            wildcard.setWildcardWidth(1);
-            instructions.add(wildcard);
-            state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
-        }
-        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
-            // The position is unknown: the table-level contribution above is enough.
-            return;
-        }
-        for (StarColumn column : columns) {
-            DbType dialect = currentDialect();
-            String sourceColumn;
-            if (column.source.temporary) {
-                sourceColumn = renderSourceColumn(column);
-            } else if (column.source.metadataTable == null
-                    && (dialect == DbType.hive || dialect == DbType.antspark)) {
-                sourceColumn = renderIdentifier(
-                        hivePlannedColumn(column.column));
-            } else if (column.quoted) {
-                sourceColumn = renderSourceColumn(column);
-            } else {
-                sourceColumn = renderIdentifier(
-                        column.source.metadataTable == null
-                                ? uncatalogedColumnSpelling(column.column)
-                                : canonicalColumnName(column.column));
-            }
-            instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                    lineageTableName(column.source) + "." + sourceColumn,
-                    targetTable + "." + targetColumn, state.currentOrdinal,
-                    column.source.temporary, state.tempTables.contains(targetTable)));
-        }
+    String lineageTableName(SourceTable source) {
+        return starProjection.lineageTableName(source);
     }
 
-    private static String renderSourceColumn(StarColumn column) {
-        if (column.quoted) {
-            return quoteIdentifierValue(column.column);
-        }
-        return renderIdentifier(column.column);
+    void emitBindingColumns(List<StarColumn> columns) {
+        starProjection.emitBindingColumns(columns);
     }
 
     void recordBindingStar(String target, SourceNode binding, int startPosition) {
-        List<String> declared = currentTargetColumnAliases(target);
-        List<String> declaredKeys = currentDeclaredKeys(target);
-        int position = startPosition;
-        for (StarOutput output : binding.plan) {
-            if (output.sources.isEmpty()) {
-                continue;
-            }
-            String lockedName = lockedOutputName(target, position);
-            String lockedKey = lockedOutputKey(target, position);
-            String name;
-            String key;
-            if (lockedName != null) {
-                name = lockedName;
-                key = lockedKey != null ? lockedKey : identifierKey(name);
-            } else {
-                boolean declaredName = declared != null && position < declared.size();
-                boolean stableName = output.nameKnown && output.stable;
-                name = declaredName ? declared.get(position)
-                        : stableName ? output.sources.get(0).column
-                        : "col" + (position + 1);
-                key = declaredName && declaredKeys != null
-                        && position < declaredKeys.size() ? declaredKeys.get(position)
-                        : stableName ? output.sources.get(0).key : identifierKey(name);
-                if (isExistingOutput(state.targetOutputs.get(target), name, position)) {
-                    int suffix = position + 1;
-                    do {
-                        name = "col" + suffix++;
-                        key = identifierKey(name);
-                    } while (isExistingOutput(state.targetOutputs.get(target), name, position));
-                }
-                markOutputNameKnown(target, position, declaredName || stableName);
-            }
-            setTargetOutput(target, position++, name, key);
-        }
+        starProjection.recordBindingStar(target, binding, startPosition);
     }
 
     void mapBindingStar(String targetTable, SourceNode binding, int startPosition) {
-        List<String> declared = currentTargetColumnAliases(targetTable);
-        List<String> registered = state.targetOutputs.get(targetTable);
-        boolean uncertain = state.uncertainOrdinal >= 0 && state.uncertainOrdinal == startPosition;
-        boolean targetTemporary = state.tempTables.contains(targetTable);
-        int position = startPosition;
-        for (StarOutput output : binding.plan) {
-            if (output.sources.isEmpty()) {
-                continue;
-            }
-            String lockedName = lockedOutputName(targetTable, position);
-            String targetName = lockedName != null ? lockedName
-                    : registered != null && position < registered.size()
-                            && registered.get(position) != null
-                                    ? registered.get(position)
-                            : declared != null && position < declared.size()
-                                    ? declared.get(position)
-                            : output.sources.get(0).column;
-            if (!uncertain) {
-                for (StarColumn column : output.sources) {
-                    // Columns whose names or positions could not be determined would be
-                    // guesses; keep the uncertain source as a wildcard injection.
-                    if (!column.nameKnown || !output.stable) {
-                        instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                                column.source.displayName, targetTable, position,
-                                column.source.temporary, targetTemporary));
-                        continue;
-                    }
-                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                            column.source.displayName + "." + renderSourceColumn(column),
-                            targetTable + "." + renderIdentifier(targetName), position,
-                            column.source.temporary, targetTemporary));
-                }
-            }
-            position++;
-        }
+        starProjection.mapBindingStar(targetTable, binding, startPosition);
     }
+
+    int emitDetachedStar(String targetTable, List<SourceTable> sources,
+            int startPosition) {
+        return starProjection.emitDetachedStar(targetTable, sources, startPosition);
+    }
+
+    int emitDetachedPlan(String targetTable, List<StarOutput> template,
+            List<SourceTable> sources, SourceNode node, int startPosition) {
+        return starProjection.emitDetachedPlan(targetTable, template, sources, node,
+                startPosition);
+    }
+
+    void mapSourceStar(SourceTable source, String targetTable, int startPosition) {
+        starProjection.mapSourceStar(source, targetTable, startPosition);
+    }
+
+    void visitAllColumn() {
+        starProjection.visitAllColumn();
+    }
+
+
+
+
 
     /**
      * Projection in metadata-free mode: known sources are mapped column by column, unknown
@@ -2071,337 +1981,8 @@ public class DmlLineage {
      * USING merges and UNION names still apply), while unknown sources stay table-level
      * wildcards. Placeholder names are never registered.
      */
-    private boolean hasColumnMappingTo(String targetReference) {
-        for (Instruction instruction : instructions) {
-            if ((instruction.getOperation() == OperationType.COLUMN_MAPPING
-                    || instruction.getOperation() == OperationType.EXPR_MAPPING)
-                    && targetReference.equals(instruction.getTo())) {
-                return true;
-            }
-        }
-        return false;
-    }
 
-    int emitDetachedStar(String targetTable, List<SourceTable> sources,
-            int startPosition) {
-        SourceNode node = state.stackSourceNode.isEmpty() ? null : state.stackSourceNode.peek();
-        return emitDetachedPlan(targetTable, currentStarPlan(sources), sources, node,
-                startPosition);
-    }
 
-    int emitDetachedPlan(String targetTable, List<StarOutput> template,
-            List<SourceTable> sources, SourceNode node, int startPosition) {
-        List<String> declared = currentTargetColumnAliases(targetTable);
-        boolean targetTemporary = state.tempTables.contains(targetTable);
-
-        boolean uncertainPosition = state.uncertainOrdinal >= 0
-                && state.uncertainOrdinal == startPosition;
-        boolean determinate = !sources.isEmpty() && !uncertainPosition;
-        for (SourceTable source : sources) {
-            if (!sourceNamesKnown(source)) {
-                determinate = false;
-                break;
-            }
-        }
-        if (!determinate) {
-            state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
-            // Contract: positions cannot be derived from column names. Propagate the
-            // unknown sources recorded at each visible position instead of guessing.
-            if (sources.size() == 1 && sources.get(0).temporary
-                    && !wildcardSpansOf(sources.get(0).displayName).isEmpty()) {
-                SourceTable source = sources.get(0);
-                List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
-                int sourceWidth = uncertainPosition ? -1
-                        : sourceWidthKnown(source)
-                                ? Math.max(sourceKnownWidth(source), maxSpanEnd(spans))
-                                : state.currentStarBudget > 0 ? state.currentStarBudget : -1;
-                for (WildcardSpan span : spans) {
-                    if (uncertainPosition
-                            || sourceWidth <= 0 && span.end == Integer.MAX_VALUE) {
-                        // No width is known yet: keep the span open so an outer
-                        // projection can bound it instead of shrinking it to one column.
-                        Instruction wildcard = new Instruction(
-                                OperationType.COLUMNS_INJECT, span.source, targetTable,
-                                startPosition + span.start, span.temporary, targetTemporary);
-                        wildcard.setPositionalWildcard(true);
-                        instructions.add(wildcard);
-                        recordWildcardSpan(targetTable, startPosition + span.start,
-                                Integer.MAX_VALUE, span.source, span.temporary);
-                        continue;
-                    }
-                    int width = sourceWidth > 0 ? sourceWidth : maxSpanEnd(spans);
-                    int end = span.end == Integer.MAX_VALUE
-                            ? Math.max(width, span.start + 1)
-                            : Math.min(span.end, Math.max(width, span.start + 1));
-                    for (int position = span.start; position < end; position++) {
-                        Instruction wildcard = new Instruction(
-                                OperationType.COLUMNS_INJECT, span.source, targetTable,
-                                startPosition + position, span.temporary, targetTemporary);
-                        wildcard.setPositionalWildcard(true);
-                        wildcard.setWildcardWidthKnown(true);
-                        wildcard.setWildcardWidth(1);
-                        instructions.add(wildcard);
-                        recordWildcardSpan(targetTable, startPosition + position,
-                                startPosition + position + 1, span.source, span.temporary);
-                    }
-                }
-                int totalWidth = Math.max(sourceWidth > 0 ? sourceWidth
-                        : maxSpanEnd(spans), 1);
-                List<String> sourceNames = sourceColumnNames(source);
-                List<String> declaredTarget = currentTargetColumnAliases(targetTable);
-                for (int relative = 0; !uncertainPosition
-                        && relative < totalWidth; relative++) {
-                    if (relative >= sourceNames.size()) {
-                        continue;
-                    }
-                    String name = sourceNames.get(relative);
-                    if (name == null) {
-                        continue;
-                    }
-                    String sourceReference = source.displayName + "."
-                            + renderIdentifier(name);
-                    boolean covered = coveredBySpan(spans, relative);
-                    if (covered) {
-                        if (!hasColumnMappingTo(sourceReference)) {
-                            continue;
-                        }
-                    } else if (!sourceOutputNameKnown(source, relative)) {
-                        continue;
-                    }
-                    String outputName = declaredTarget != null
-                            && startPosition + relative < declaredTarget.size()
-                                    ? declaredTarget.get(startPosition + relative) : name;
-                    String locked = lockedOutputName(targetTable,
-                            startPosition + relative);
-                    String lockedKey = lockedOutputKey(targetTable,
-                            startPosition + relative);
-                    if (locked != null) {
-                        outputName = locked;
-                    }
-                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                            sourceReference,
-                            targetTable + "." + renderIdentifier(outputName),
-                            startPosition + relative, source.temporary,
-                            targetTemporary));
-                    List<String> declaredKeys = currentDeclaredKeys(targetTable);
-                    String declaredKey = declaredKeys != null
-                            && startPosition + relative < declaredKeys.size()
-                                    ? declaredKeys.get(startPosition + relative)
-                                    : null;
-                    String sourceKey = relative < source.outputKeys.size()
-                            ? source.outputKeys.get(relative) : null;
-                    setTargetOutput(targetTable, startPosition + relative,
-                            outputName, lockedKey != null ? lockedKey
-                                    : declaredKey != null ? declaredKey
-                                            : sourceKey != null ? sourceKey
-                                                    : identifierKey(outputName));
-                }
-                return totalWidth;
-            }
-            boolean planAmbiguous = node != null && node.widthKnown
-                    && hasAmbiguousOutput(node.plan, node.width);
-            boolean pendingShape = false;
-            for (SourceTable source : sources) {
-                if (source.temporary && !sourceNamesKnown(source)
-                        && sourceWidthKnown(source)
-                        && wildcardSpansOf(source.displayName).isEmpty()) {
-                    // A forward CTE has a known width but its body has not run yet,
-                    // so its wildcard provenance is still unknown; keep a table-level
-                    // claim instead of emitting nothing.
-                    pendingShape = true;
-                    break;
-                }
-            }
-            if (!planAmbiguous && !pendingShape && !uncertainPosition && node != null
-                    && node.widthKnown && !node.plan.isEmpty()) {
-                int position = startPosition;
-                int limit = startPosition + node.width;
-                Map<SourceTable, Integer> seen = new java.util.IdentityHashMap<>();
-                for (StarOutput output : node.plan) {
-                    if (position >= limit || output.sources.isEmpty()) {
-                        continue;
-                    }
-                    for (StarColumn column : output.sources) {
-                        SourceTable source = column.source;
-                        int relative = seen.containsKey(source)
-                                ? seen.get(source) : 0;
-                        seen.put(source, relative + 1);
-                        for (WildcardRef ref : wildcardSourcesAt(source, column,
-                                relative)) {
-                            Instruction wildcard = new Instruction(
-                                    OperationType.COLUMNS_INJECT, ref.name, targetTable,
-                                    position, ref.temporary, targetTemporary);
-                            wildcard.setPositionalWildcard(true);
-                            wildcard.setWildcardWidthKnown(true);
-                            wildcard.setWildcardWidth(1);
-                            instructions.add(wildcard);
-                            recordWildcardSpan(targetTable, position, position + 1,
-                                    ref.name, ref.temporary);
-                        }
-                    }
-                    position++;
-                }
-                return Math.max(node.width, 1);
-            }
-            boolean pendingBounded = pendingShape && node != null && node.widthKnown;
-            boolean ambiguousBounded = (planAmbiguous || pendingBounded)
-                    && !uncertainPosition && node != null && node.widthKnown;
-            boolean allKnown = !planAmbiguous && !pendingShape && !uncertainPosition
-                    && !sources.isEmpty() && allWidthKnown(sources);
-            boolean budgetBounded = !allKnown && !ambiguousBounded
-                    && !uncertainPosition && state.currentStarBudget > 0;
-            int position = startPosition;
-            for (int index = 0; index < sources.size(); index++) {
-                SourceTable source = sources.get(index);
-                int sourceStart = allKnown ? position : startPosition;
-                List<WildcardSpan> sourceSpans = source.temporary
-                        ? wildcardSpansOf(source.displayName)
-                        : java.util.Collections.<WildcardSpan>emptyList();
-                if (allKnown && !sourceSpans.isEmpty()) {
-                    // A derived source already knows where its own wildcards sit;
-                    // re-emit those positions instead of covering its constant slots.
-                    int width = sourceKnownWidth(source);
-                    for (WildcardSpan span : sourceSpans) {
-                        int start = sourceStart + span.start;
-                        int end = Math.min(sourceStart + width,
-                                span.end == Integer.MAX_VALUE ? start + 1
-                                        : sourceStart + span.end);
-                        for (int target = start; target < end; target++) {
-                            Instruction perPosition = new Instruction(
-                                    OperationType.COLUMNS_INJECT, span.source,
-                                    targetTable, target, span.temporary, targetTemporary);
-                            perPosition.setPositionalWildcard(true);
-                            perPosition.setWildcardWidthKnown(true);
-                            perPosition.setWildcardWidth(1);
-                            instructions.add(perPosition);
-                            recordWildcardSpan(targetTable, target, target + 1,
-                                    span.source, span.temporary);
-                        }
-                    }
-                    position += width;
-                    continue;
-                }
-                Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                        lineageTableName(source), targetTable, sourceStart,
-                        source.temporary, targetTemporary);
-                wildcard.setPositionalWildcard(true);
-                int sourceWidth = -1;
-                if (ambiguousBounded) {
-                    // The projection's total width is fixed; each source keeps a
-                    // table-level claim on that whole range, and nothing beyond it.
-                    sourceWidth = Math.max(node.width, 1);
-                } else if (allKnown) {
-                    sourceWidth = sourceKnownWidth(source);
-                } else if (budgetBounded) {
-                    // The UNION width pins the whole star; every source keeps a
-                    // table-level claim on that range.
-                    sourceWidth = state.currentStarBudget;
-                }
-                if (sourceWidth > 0) {
-                    wildcard.setWildcardWidthKnown(true);
-                    wildcard.setWildcardWidth(sourceWidth);
-                    for (int offset = 0; offset < sourceWidth; offset++) {
-                        recordWildcardSpan(targetTable, sourceStart + offset,
-                                sourceStart + offset + 1, lineageTableName(source),
-                                source.temporary);
-                    }
-                    position += sourceWidth;
-                } else {
-                    recordWildcardSpan(targetTable, sourceStart, Integer.MAX_VALUE,
-                            lineageTableName(source), source.temporary);
-                }
-                instructions.add(wildcard);
-            }
-            int advance;
-            if (ambiguousBounded) {
-                // The projection's total width is still fixed; only the per-position
-                // ownership is unknown, so later projections keep their place.
-                advance = node.width;
-            } else if (budgetBounded) {
-                advance = state.currentStarBudget;
-            } else if (uncertainPosition) {
-                advance = knownWidthSum(sources);
-            } else {
-                advance = position - startPosition;
-            }
-            return Math.max(advance,
-                    ambiguousBounded || budgetBounded ? 1 : sources.size());
-        }
-
-        Set<String> used = new HashSet<>();
-        int position = startPosition;
-        for (StarOutput output : template) {
-            if (output.sources.isEmpty()) {
-                continue;
-            }
-            String lockedName = lockedOutputName(targetTable, position);
-            String name = lockedName != null ? lockedName
-                    : declared != null && position < declared.size()
-                            ? declared.get(position)
-                    : output.nameKnown ? output.sources.get(0).column : null;
-            boolean exact = name != null && output.nameKnown;
-            if (exact) {
-                for (StarColumn column : output.sources) {
-                    if (!column.nameKnown) {
-                        exact = false;
-                        break;
-                    }
-                }
-            }
-            if (exact && !used.add(name)) {
-                exact = false;
-            }
-            if (exact && isExistingOutput(state.targetOutputs.get(targetTable), name, position)) {
-                exact = false;
-            }
-            if (exact) {
-                for (StarColumn column : output.sources) {
-                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                            column.source.displayName + "."
-                                    + renderSourceColumn(column),
-                            targetTable + "." + renderIdentifier(name), position,
-                            column.source.temporary, targetTemporary));
-                }
-                String outputKey;
-                if (lockedName != null) {
-                    outputKey = lockedOutputKey(targetTable, position);
-                } else if (declared != null && position < declared.size()) {
-                    List<String> declaredKeys = currentDeclaredKeys(targetTable);
-                    outputKey = declaredKeys != null && position < declaredKeys.size()
-                            ? declaredKeys.get(position) : identifierKey(name);
-                } else {
-                    outputKey = output.sources.get(0).key;
-                }
-                setTargetOutput(targetTable, position, name,
-                        outputKey == null ? identifierKey(name) : outputKey);
-                markOutputNameKnown(targetTable, position, true);
-            } else {
-                for (SourceTable source : starOutputSources(output)) {
-                    instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                            lineageTableName(source), targetTable, position,
-                            source.temporary, targetTemporary));
-                }
-            }
-            position++;
-        }
-        for (SourceTable source : sources) {
-            if (!source.wildcardContribution) {
-                continue;
-            }
-            // The source also carries rows from an unknown table: keep a table-level
-            // edge next to the precise column mappings.
-            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                    lineageTableName(source), targetTable, startPosition,
-                    source.temporary, targetTemporary);
-            wildcard.setPositionalWildcard(true);
-            // The union's names (and hence positions) are known even though another
-            // branch contributes unknown rows.
-            wildcard.setWildcardWidthKnown(true);
-            instructions.add(wildcard);
-            state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
-        }
-        return position - startPosition;
-    }
 
     /**
      * The physical table identity of a source: an alias is only a SQL binding, not a
@@ -2433,119 +2014,9 @@ public class DmlLineage {
         return name.toLowerCase(Locale.ROOT);
     }
 
-    String lineageTableName(SourceTable source) {
-        if (source.temporary || source.metadataTable != null) {
-            return source.displayName;
-        }
-        if (source.rawName != null) {
-            return sessionPhysicalReference(source.rawName);
-        }
-        return source.writtenName == null ? source.displayName : source.writtenName;
-    }
 
-    private boolean uniqueOutputNames(SourceTable source, String targetTable, int position) {
-        List<String> names = sourceColumnNames(source);
-        Set<String> seen = new HashSet<>();
-        List<String> existing = state.targetOutputs.get(targetTable);
-        for (String name : names) {
-            if (!seen.add(name)) {
-                return false;
-            }
-            if (existing != null && isExistingOutput(existing, name, position + seen.size() - 1)) {
-                return false;
-            }
-        }
-        return true;
-    }
 
-    void mapSourceStar(SourceTable source, String targetTable, int startPosition) {
-        List<String> declared = currentTargetColumnAliases(targetTable);
-        boolean uncertain = state.uncertainOrdinal >= 0 && state.uncertainOrdinal == startPosition;
-        boolean targetTemporary = state.tempTables.contains(targetTable);
-        int position = startPosition;
-        for (StarOutput output : planFromSource(source)) {
-            if (output.sources.isEmpty()) {
-                continue;
-            }
-            String lockedName = lockedOutputName(targetTable, position);
-            String targetName = lockedName != null ? lockedName
-                    : declared != null && position < declared.size()
-                            ? declared.get(position) : output.sources.get(0).column;
-            if (!uncertain) {
-                for (StarColumn column : output.sources) {
-                    instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                            column.source.displayName + "." + renderIdentifier(column.column),
-                            targetTable + "." + renderIdentifier(targetName), position,
-                            column.source.temporary, targetTemporary));
-                }
-            }
-            position++;
-        }
-    }
 
-    void visitAllColumn() {
-        if (!state.inTargetExpression) {
-            return;
-        }
-        List<SourceTable> sources = currentSources();
-        if (sources.isEmpty()) {
-            return;
-        }
-        String targetTable = state.stackTargetTable.peek();
-        if (detachedMetadata()) {
-            emitDetachedStar(targetTable, sources, state.currentOrdinal);
-            return;
-        }
-        boolean targetTemporary = state.tempTables.contains(targetTable);
-        Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
-                ? null : state.stackUsing.peek();
-        if (context == null && !state.stackSourceNode.isEmpty()
-                && !state.stackSourceNode.peek().plan.isEmpty()
-                && (using != null && !using.isEmpty() || state.currentStarBudget > 0)) {
-            mapBindingStar(targetTable, state.stackSourceNode.peek(), state.currentOrdinal);
-            return;
-        }
-        boolean planComplete = context == null && allSourceNamesKnown(sources)
-                && !state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty();
-        if (useVisiblePlan(sources, using) || planComplete) {
-            List<String> declared = currentTargetColumnAliases(targetTable);
-            boolean uncertain = state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal;
-            int position = state.currentOrdinal;
-            for (StarOutput output : currentStarPlan(sources)) {
-                if (output.sources.isEmpty()) {
-                    continue;
-                }
-                String lockedName = lockedOutputName(targetTable, position);
-                String targetName = lockedName != null ? lockedName
-                        : declared != null && position < declared.size()
-                                ? declared.get(position) : output.sources.get(0).column;
-                if (!uncertain) {
-                    for (StarColumn column : output.sources) {
-                        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                                column.source.displayName + "."
-                                        + renderIdentifier(column.column),
-                                targetTable + "." + renderIdentifier(targetName), position,
-                                column.source.temporary, targetTemporary));
-                    }
-                }
-                position++;
-            }
-            return;
-        }
-        if (context == null) {
-            instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                    sources.get(0).displayName, targetTable, state.currentOrdinal,
-                    sources.get(0).temporary, targetTemporary));
-            return;
-        }
-        int position = state.currentOrdinal;
-        for (SourceTable source : sources) {
-            instructions.add(new Instruction(OperationType.COLUMNS_INJECT,
-                    source.displayName, targetTable, position, source.temporary,
-                    targetTemporary));
-            position += columnCount(source);
-        }
-    }
 
     List<SourceTable> resolveUnqualified(String rawColumn) {
         List<SourceTable> sources = currentSources();
@@ -2793,7 +2264,7 @@ public class DmlLineage {
         return joinBinding(owner) != null;
     }
 
-    private boolean allWidthKnown(List<SourceTable> sources) {
+    boolean allWidthKnown(List<SourceTable> sources) {
         for (SourceTable source : sources) {
             if (!sourceWidthKnown(source)) {
                 return false;
@@ -2887,7 +2358,7 @@ public class DmlLineage {
         return all;
     }
 
-    private boolean allSourceNamesKnown(List<SourceTable> sources) {
+    boolean allSourceNamesKnown(List<SourceTable> sources) {
         for (SourceTable source : sources) {
             if (!sourceNamesKnown(source)) {
                 return false;
@@ -3146,11 +2617,11 @@ public class DmlLineage {
                 sourceTemporary, state.tempTables.contains(targetTable)));
     }
 
-    private static String quoteIdentifierValue(String name) {
+    static String quoteIdentifierValue(String name) {
         return Identifiers.quoteDouble(name);
     }
 
-    private static String renderIdentifier(String name) {
+    static String renderIdentifier(String name) {
         return Identifiers.render(name);
     }
 

@@ -48,6 +48,11 @@ final class ExpressionAnalyzer {
             visitExpr(binary.getRight());
         } else if (expr instanceof SQLMethodInvokeExpr) {
             for (SQLExpr operand : methodOperands((SQLMethodInvokeExpr) expr)) {
+                if (operand instanceof SQLAllColumnExpr) {
+                    // COUNT(*) and COUNT(DISTINCT *) count rows, not every column;
+                    // a star inside a call is not a projection wildcard.
+                    continue;
+                }
                 visitExpr(operand);
             }
         } else if (expr instanceof SQLCastExpr) {

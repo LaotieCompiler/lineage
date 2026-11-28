@@ -113,6 +113,43 @@ target/sqlglot-venv/bin/python scripts/differential-sqlglot.py
 GitHub Actions（`.github/workflows/ci.yml`）会在每次 push 与 pull request 上运行
 `mvn clean test` 与 Docker JDBC 集成测试。
 
+## ODPS 血缘报告
+
+`scripts/odps-lineage/run.sh` 扫描一个 ODPS/Hive SQL 项目及其 DDL，输出表级与字段级
+血缘。可选的 Node 渲染器把 CSV 结果转成一份自包含的 HTML 报告。
+
+```bash
+./scripts/odps-lineage/run.sh --input /path/to/warehouse/scripts --output output
+```
+
+输入目录应包含 `ddl/` 以及一个或多个 SQL 子目录（`dwd/`、`dws/`、`ads/` 等）。
+扫描器会自动发现它们，也可以用 `--ddl` / `--sql` 显式指定。完整参数见
+[scripts/odps-lineage/README.md](scripts/odps-lineage/README.md)。
+
+输出写入 `output/`：CSV 是血缘数据，`output/lineage-report.html` 是可视化报告。
+报告分两步生成：
+
+1. 扫描器写出 `statements.csv`、`table_dependencies.csv`、`column_lineage.csv`、
+   `table_lineage.csv` 和 `schema_repairs.csv`；
+2. `scripts/lineage-report/render.js` 把这些行内嵌为一个 JSON 对象写入模板，
+   生成单个 HTML 文件。
+
+HTML 不依赖服务器或 CDN。页面加载后，浏览器端 JavaScript 按 ODS → DWD → DWS →
+ADS/BI 分层，并用相邻节点的重心排序减少连线交叉，最后以 SVG 绘制。悬停会高亮该表
+的直接依赖，点击可查看上下游表和写入字段，滚轮缩放、拖拽平移。字段级表展示端到端
+闭包（目标字段 ← 最终物理源字段），图展示直接表依赖，因此中间的 DWD/DWS 表仍然可见。
+由失败语句写入的目标表以红色虚线边框标出。
+
+Node 只在生成 HTML 时需要。扫描本身不依赖 Node；`--no-render` 可以完全跳过渲染，
+之后再用以下命令补生成报告：
+
+```bash
+node scripts/lineage-report/render.js output
+```
+
+渲染器只是 CSV 结果的一种视图，不是第二套血缘引擎。输入与交互说明见
+[scripts/lineage-report/README.md](scripts/lineage-report/README.md)。
+
 ## 功能
 
 ### 支持的数据库

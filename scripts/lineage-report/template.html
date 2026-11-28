@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ODPS 数据血缘分析报告</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f9;
+    --surface: #ffffff;
+    --surface-2: #fcfcfc;
+    --ink: #191919;
+    --ink-2: #666666;
+    --grid: #e7e7e7;
+    --axis: #c2c2c2;
+    --border: rgba(11, 11, 11, 0.10);
+    --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 8px 24px rgba(11, 11, 11, 0.04);
+    --layer-0: #84b9f3;
+    --layer-1: #338ced;
+    --layer-2: #2370cd;
+    --layer-3: #0f4a96;
+    --layer-0-ink: #0b0b0b;
+    --layer-1-ink: #ffffff;
+    --layer-2-ink: #ffffff;
+    --layer-3-ink: #ffffff;
+    --accent: #257de0;
+    --hot: #1757ac;
+    --edge: #aab4c0;
+    --edge-hot: #257de0;
+    --good: #0aac23;
+    --good-ink: #006c10;
+    --warning: #fbb315;
+    --serious: #f18a59;
+    --critical: #dc3c3d;
+    --chip: #f0f3f7;
+    --chip-ink: #334155;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0b0b0b;
+      --surface: #191919;
+      --surface-2: #1f1f1f;
+      --ink: #efefef;
+      --ink-2: #9c9c9c;
+      --grid: #303030;
+      --axis: #474747;
+      --border: rgba(255, 255, 255, 0.10);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+      --layer-0: #1757ac;
+      --layer-1: #257de0;
+      --layer-2: #6aabf1;
+      --layer-3: #9dc8f7;
+      --layer-0-ink: #ffffff;
+      --layer-1-ink: #ffffff;
+      --layer-2-ink: #0b0b0b;
+      --layer-3-ink: #0b0b0b;
+      --accent: #338ced;
+      --hot: #84b9f3;
+      --edge: #5b6573;
+      --edge-hot: #338ced;
+      --good: #0aac23;
+      --good-ink: #53c556;
+      --warning: #fbb315;
+      --serious: #f18a59;
+      --critical: #dc3c3d;
+      --chip: #242b33;
+      --chip-ink: #cbd5e1;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0b0b0b;
+    --surface: #191919;
+    --surface-2: #1f1f1f;
+    --ink: #efefef;
+    --ink-2: #9c9c9c;
+    --grid: #303030;
+    --axis: #474747;
+    --border: rgba(255, 255, 255, 0.10);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --layer-0: #1757ac;
+    --layer-1: #257de0;
+    --layer-2: #6aabf1;
+    --layer-3: #9dc8f7;
+    --layer-0-ink: #ffffff;
+    --layer-1-ink: #ffffff;
+    --layer-2-ink: #0b0b0b;
+    --layer-3-ink: #0b0b0b;
+    --accent: #338ced;
+    --hot: #84b9f3;
+    --edge: #5b6573;
+    --edge-hot: #338ced;
+    --good: #0aac23;
+    --good-ink: #53c556;
+    --warning: #fbb315;
+    --serious: #f18a59;
+    --critical: #dc3c3d;
+    --chip: #242b33;
+    --chip-ink: #cbd5e1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1440px; margin: 0 auto; padding: 28px 28px 64px; }
+  .hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+  .eyebrow { margin: 0 0 6px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); }
+  h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); letter-spacing: -0.02em; line-height: 1.15; }
+  .sub { margin: 8px 0 0; color: var(--ink-2); font-size: 13px; max-width: 820px; }
+  .sub code { background: var(--chip); color: var(--chip-ink); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .theme-btn { flex: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink); border-radius: 9px; padding: 8px 12px; cursor: pointer; font: inherit; font-size: 13px; box-shadow: var(--shadow); }
+  .theme-btn:hover { background: var(--surface-2); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .stat .v { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
+  .stat .l { margin-top: 4px; color: var(--ink-2); font-size: 12px; }
+  .stat .v.good { color: var(--good-ink); }
+  .stat .v.bad { color: var(--critical); }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 18px 18px 16px; margin-bottom: 20px; }
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  h2 { margin: 0 0 4px; font-size: 17px; letter-spacing: -0.01em; }
+  .hint { color: var(--ink-2); font-size: 12px; }
+  .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 0 12px; }
+  .toolbar label { color: var(--ink-2); font-size: 12px; }
+  input[type="search"], select {
+    font: inherit; font-size: 13px; color: var(--ink); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; min-width: 180px;
+  }
+  input[type="search"]:focus, select:focus, button:focus-visible, .node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn { font: inherit; font-size: 12px; color: var(--ink); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+  .btn:hover { background: var(--chip); }
+  .btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; color: var(--ink-2); font-size: 12px; }
+  .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .layer-0 { background: var(--layer-0); } .layer-1 { background: var(--layer-1); }
+  .layer-2 { background: var(--layer-2); } .layer-3 { background: var(--layer-3); }
+  .graph-shell { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; margin-top: 8px; }
+  .graph-wrap { position: relative; height: 640px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); cursor: grab; }
+  .graph-wrap.dragging { cursor: grabbing; }
+  #graph { width: 100%; height: 100%; display: block; touch-action: none; }
+  .node { cursor: pointer; }
+  .node .box { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+  .node .accent { stroke: none; }
+  .node .name { fill: var(--ink); font-size: 12px; font-weight: 600; }
+  .node .meta { fill: var(--ink-2); font-size: 9.5px; }
+  .node:hover .box, .node:focus-visible .box { stroke: var(--accent); stroke-width: 1.5; }
+  .node.failed .box { stroke: var(--critical); stroke-dasharray: 5 3; }
+  .node.failed .meta { fill: var(--critical); }
+  .warn { margin: 6px 0 10px; padding: 7px 9px; border-left: 3px solid var(--critical); background: rgba(220, 60, 61, .08); color: var(--ink); font-size: 12px; border-radius: 0 6px 6px 0; }
+  .node.hot .box { stroke: var(--accent); stroke-width: 1.5; }
+  .node.dim, .edge.dim { opacity: .08; }
+  .node.filtered, .edge.filtered { opacity: .06; }
+  .edge { opacity: .58; }
+  .edge path.visible { fill: none; stroke: var(--edge); stroke-width: 1.1; }
+  .edge path.hit { fill: none; stroke: transparent; stroke-width: 10; }
+  .edge.hot { opacity: 1; }
+  .edge.hot path.visible { stroke: var(--edge-hot); stroke-width: 2.2; }
+  .detail { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--surface-2); overflow: auto; max-height: 640px; }
+  .detail h3 { margin: 0 0 2px; font-size: 14px; word-break: break-all; }
+  .detail .kind { color: var(--ink-2); font-size: 12px; margin-bottom: 12px; }
+  .detail h4 { margin: 14px 0 6px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+  .detail ul { margin: 0; padding-left: 16px; }
+  .detail li { margin: 2px 0; font-size: 12px; word-break: break-all; }
+  .detail .empty { color: var(--ink-2); font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { display: inline-block; padding: 1px 6px; border-radius: 5px; background: var(--chip); color: var(--chip-ink); font-size: 11px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+  .chip.more { background: transparent; color: var(--ink-2); }
+  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .status .ico { font-size: 12px; }
+  .status.ok { color: var(--good-ink); }
+  .status.fail { color: var(--critical); }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; }
+  .badge.wild { background: rgba(251, 179, 21, .18); color: var(--ink); }
+  .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+  .two-col .panel { margin-bottom: 20px; }
+  .bars { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; }
+  .bar-row { display: grid; grid-template-columns: minmax(120px, 180px) 1fr 34px; align-items: center; gap: 10px; }
+  .bar-row .lbl { font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-track { height: 14px; background: var(--grid); border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+  .bar-row .num { font-size: 12px; color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+  .table-wrap { max-height: 640px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; margin-top: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); padding: 9px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  tbody tr:hover { background: var(--surface-2); }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
+  .arrow { color: var(--ink-2); text-align: center; }
+  .err { color: var(--critical); font-size: 11.5px; }
+  .muted { color: var(--ink-2); }
+  .notes ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 12.5px; }
+  .notes li { margin: 4px 0; }
+  .notes strong { color: var(--ink); }
+  .empty-state { color: var(--ink-2); padding: 18px 0; font-size: 13px; }
+  .tooltip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 7px 9px; font-size: 12px; max-width: 320px; display: none; }
+  .tooltip .t { font-weight: 650; word-break: break-all; }
+  .tooltip .m { color: var(--ink-2); font-size: 11px; margin-top: 2px; }
+  @media (max-width: 980px) {
+    .graph-shell { grid-template-columns: 1fr; }
+    .detail { max-height: 320px; }
+  }
+  @media (max-width: 640px) {
+    .page { padding: 18px 14px 48px; }
+    .bar-row { grid-template-columns: minmax(90px, 130px) 1fr 30px; }
+  }
+</style>
+</head>
+<body>
+<div class="page viz-root">
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Data Lineage · ODPS / MaxCompute</p>
+      <h1>yidoutang 数据血缘分析</h1>
+      <p class="sub" id="subtitle">正在加载分析结果…</p>
+    </div>
+    <button class="theme-btn" id="themeToggle" type="button" aria-label="切换明暗主题">◐ 主题</button>
+  </header>
+
+  <section class="stats" id="stats" aria-label="概览指标"></section>
+
+  <section class="panel" aria-labelledby="graphTitle">
+    <div class="section-head">
+      <div>
+        <h2 id="graphTitle">表级血缘</h2>
+        <div class="hint">直接表依赖（穿过临时表后停在第一个物理表），按 ODS → DWD → DWS → ADS/BI 分层。悬停高亮，点击节点查看上下游；滚轮缩放、拖拽平移。</div>
+      </div>
+      <div class="legend" aria-label="图层图例">
+        <span class="key"><i class="swatch layer-0"></i>源数据 ODS/DIM</span>
+        <span class="key"><i class="swatch layer-1"></i>明细 DWD</span>
+        <span class="key"><i class="swatch layer-2"></i>汇总 DWS</span>
+        <span class="key"><i class="swatch layer-3"></i>应用 ADS/BI</span>
+        <span class="key"><i class="swatch" style="background:transparent;border:1.5px dashed var(--critical)"></i>生产语句失败</span>
+      </div>
+    </div>
+    <div class="toolbar" role="search">
+      <input type="search" id="graphSearch" placeholder="搜索表名…" aria-label="搜索表名">
+      <button class="btn" id="fitBtn" type="button">适应窗口</button>
+      <button class="btn" id="zoomIn" type="button" aria-label="放大">＋</button>
+      <button class="btn" id="zoomOut" type="button" aria-label="缩小">－</button>
+      <span class="hint" id="graphCount"></span>
+    </div>
+    <div class="graph-shell">
+      <div class="graph-wrap" id="graphWrap">
+        <svg id="graph" role="img" aria-label="表级血缘依赖图"></svg>
+      </div>
+      <aside class="detail" id="detail" aria-live="polite">
+        <h3>选择一个表</h3>
+        <div class="kind">点击图中节点查看该表的上下游与字段。</div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="two-col">
+    <div class="panel" aria-labelledby="faninTitle">
+      <h2 id="faninTitle">上游依赖最多（fan-in）</h2>
+      <div class="hint">直接读取的源表数量，Top 10。</div>
+      <div class="bars" id="fanin"></div>
+    </div>
+    <div class="panel" aria-labelledby="fanoutTitle">
+      <h2 id="fanoutTitle">下游影响最广（fan-out）</h2>
+      <div class="hint">被多少张表直接读取，Top 10。</div>
+      <div class="bars" id="fanout"></div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="columnTitle">
+    <div class="section-head">
+      <div>
+        <h2 id="columnTitle">字段级血缘</h2>
+        <div class="hint">目标字段到最终物理源字段的传递闭包（端到端）。</div>
+      </div>
+      <div class="hint" id="colCount"></div>
+    </div>
+    <div class="toolbar">
+      <input type="search" id="colSearch" placeholder="搜索表名或字段名…" aria-label="搜索字段血缘">
+      <select id="colTarget" aria-label="按目标表筛选"><option value="">全部目标表</option></select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>目标表</th><th>目标字段</th><th></th><th>源表</th><th>源字段</th><th>说明</th></tr></thead>
+        <tbody id="colBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="stmtTitle">
+    <div class="section-head">
+      <div>
+        <h2 id="stmtTitle">语句执行情况</h2>
+        <div class="hint">每条 INSERT/WITH 语句的解析结果与读写表。</div>
+      </div>
+      <div class="hint" id="stmtCount"></div>
+    </div>
+    <div class="toolbar" role="group" aria-label="状态筛选">
+      <button class="btn" data-status="" aria-pressed="true" type="button">全部</button>
+      <button class="btn" data-status="OK" aria-pressed="false" type="button">成功</button>
+      <button class="btn" data-status="FAIL" aria-pressed="false" type="button">失败</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>状态</th><th>文件</th><th>#</th><th>任务名</th><th>目标表</th><th>源表</th><th>说明</th></tr></thead>
+        <tbody id="stmtBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="repairPanel" aria-labelledby="repairTitle">
+    <div class="section-head">
+      <div>
+        <h2 id="repairTitle">Schema 修补</h2>
+        <div class="hint">SQL 引用但 DDL 快照中缺失的字段；仅为本次分析补齐到元数据目录，不改动源 DDL。</div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>语句</th><th>表</th><th>补齐字段</th></tr></thead>
+        <tbody id="repairBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel notes" aria-labelledby="notesTitle">
+    <h2 id="notesTitle">方法与限制</h2>
+    <ul>
+      <li><strong>DDL：</strong>5 个 <code>.osql</code> 文件、221 张表载入元数据目录；ODPS 的 <code>LIFECYCLE</code> 在载入前剥离，使用 Hive 方言解析。</li>
+      <li><strong>SQL 预处理：</strong><code>${bizdate}</code> 等调度变量替换为固定日期；ODPS 脚本变量 <code>@var := SELECT …</code> 内联为派生表。</li>
+      <li><strong>元数据修补：</strong>对 <code>ColumnNotFoundException</code> 中列出的物理表补齐被引用字段，共 4 个字段，保证依赖可解析。</li>
+      <li><strong>COUNT(*)：</strong>本次分析前修正了解析器把 <code>COUNT(*)</code> 当作 <code>SELECT *</code> 的问题；否则聚合查询会虚构出全表字段边。</li>
+      <li><strong>未解析语句：</strong>剩余失败集中在 ODPS 专有构造——<code>LATERAL VIEW</code> 输出列、<code>TRANS_COLS</code> 表函数、<code>VALUES</code> 表构造器，以及嵌套作用域中重复别名；这些语句不产生字段边。</li>
+      <li><strong>口径：</strong>表级边为直接依赖（沿临时表追溯到第一个物理表），保留 DWD/DWS 中间层；字段级边为端到端闭包，只保留最终物理源字段。</li>
+    </ul>
+  </section>
+</div>
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+<script>
+const DATA = /*__LINEAGE_DATA__*/null;
+
+const LAYER_NAMES = ['源数据 ODS/DIM', '明细 DWD', '汇总 DWS', '应用 ADS/BI'];
+const LAYER_SHORT = ['ODS', 'DWD', 'DWS', 'ADS/BI'];
+
+function layerOf(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.startsWith('ods') || n.startsWith('dim') || n.startsWith('mig')) return 0;
+  if (n.startsWith('dwd')) return 1;
+  if (n.startsWith('dws')) return 2;
+  if (n.startsWith('ads') || n.startsWith('bi')) return 3;
+  return 1;
+}
+function fmt(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function svgEl(tag, attrs) {
+  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+/* ---------------- summary ---------------- */
+(function summary() {
+  const files = new Set(DATA.statements.map(s => s.file));
+  const ok = DATA.statements.filter(s => s.status === 'OK').length;
+  const fail = DATA.statements.length - ok;
+  const nodes = new Set();
+  DATA.tableDependencies.forEach(e => { nodes.add(e.target_table); nodes.add(e.source_table); });
+  DATA.statements.forEach(s => {
+    (s.target_tables || '').split(';').filter(Boolean).forEach(t => nodes.add(t));
+    (s.source_tables || '').split(';').filter(Boolean).forEach(t => nodes.add(t));
+    if (s.declared_target) nodes.add(s.declared_target);
+  });
+  const cards = [
+    [files.size, 'SQL 文件', ''],
+    [DATA.statements.length, '语句', ''],
+    [ok, '解析成功', 'good'],
+    [fail, '解析失败', 'bad'],
+    [nodes.size, '涉及表', ''],
+    [DATA.tableDependencies.length, '直接表依赖', ''],
+    [DATA.columnLineage.length, '字段级血缘边', ''],
+    [DATA.repairs.length, 'Schema 修补字段', '']
+  ];
+  const host = document.getElementById('stats');
+  cards.forEach(([v, l, cls]) => {
+    const box = el('div', 'stat');
+    box.appendChild(el('div', 'v ' + cls, fmt(v)));
+    box.appendChild(el('div', 'l', l));
+    host.appendChild(box);
+  });
+  const sub = document.getElementById('subtitle');
+  sub.textContent = '基于 ' + files.size + ' 个 SQL 脚本、5 个 DDL 文件（221 张表）生成 · 方言 Hive/ODPS · 生成于 ' +
+    new Date(DATA.generatedAt).toLocaleString('zh-CN');
+})();
+
+/* ---------------- graph ---------------- */
+const graph = (function buildGraph() {
+  const edges = DATA.tableDependencies
+    .map(e => ({ source: e.source_table, target: e.target_table, columns: Number(e.column_edges) || 0 }))
+    .filter(e => e.source && e.target && e.source !== e.target);
+
+  const nodeIds = new Set();
+  edges.forEach(e => { nodeIds.add(e.source); nodeIds.add(e.target); });
+  const failedTargets = new Set();
+  DATA.statements.forEach(s => {
+    (s.target_tables || '').split(';').filter(Boolean).forEach(t => nodeIds.add(t));
+    (s.source_tables || '').split(';').filter(Boolean).forEach(t => nodeIds.add(t));
+    if (s.status === 'FAIL' && s.declared_target) { nodeIds.add(s.declared_target); failedTargets.add(s.declared_target); }
+  });
+
+  const nodes = [...nodeIds].sort().map(id => ({
+    id, layer: layerOf(id), in: new Set(), out: new Set(), edges: []
+  }));
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  edges.forEach(e => {
+    const s = byId.get(e.source), t = byId.get(e.target);
+    if (!s || !t) return;
+    s.out.add(e.target); t.in.add(e.source);
+    s.edges.push(e); t.edges.push(e);
+  });
+  nodes.forEach(n => { n.inCount = n.in.size; n.outCount = n.out.size; });
+  return { nodes, edges, byId, failedTargets };
+})();
+
+(function renderGraph() {
+  const failedTargets = graph.failedTargets;
+  const NODE_W = 196, NODE_H = 34, V_GAP = 10, COL_GAP = 12, LAYER_GAP = 48, TOP = 40, MAX_ROWS = 18;
+  const byLayer = [0, 1, 2, 3].map(l => graph.nodes.filter(n => n.layer === l).sort((a, b) => a.id.localeCompare(b.id)));
+  // Barycenter sweeps: order each layer by the average position of its neighbours
+  // so long edges cross less.
+  function bary(list, ref, dir) {
+    const idx = new Map(ref.map((n, i) => [n.id, i]));
+    return list.map(n => {
+      const nb = dir === 'up' ? [...n.in] : [...n.out];
+      const vals = nb.map(id => idx.get(id)).filter(v => v !== undefined);
+      return { n, b: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 1e9 };
+    }).sort((a, b) => a.b - b.b || a.n.id.localeCompare(b.n.id)).map(x => x.n);
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    for (let l = 1; l < 4; l++) byLayer[l] = bary(byLayer[l], byLayer[l - 1], 'up');
+    for (let l = 2; l >= 0; l--) byLayer[l] = bary(byLayer[l], byLayer[l + 1], 'down');
+  }
+  let x = 32;
+  let maxY = TOP;
+  const pos = new Map();
+  byLayer.forEach((list, layer) => {
+    const cols = Math.max(1, Math.ceil(list.length / MAX_ROWS));
+    list.forEach((n, i) => {
+      const c = Math.floor(i / MAX_ROWS);
+      const r = i % MAX_ROWS;
+      const px = x + c * (NODE_W + COL_GAP);
+      const py = TOP + r * (NODE_H + V_GAP);
+      pos.set(n.id, { x: px, y: py });
+      maxY = Math.max(maxY, py + NODE_H);
+    });
+    x += cols * (NODE_W + COL_GAP) + LAYER_GAP;
+  });
+  const width = Math.max(720, x - LAYER_GAP + 32);
+  const height = Math.max(420, maxY + 40);
+
+  const svg = document.getElementById('graph');
+  svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+  const defs = svgEl('defs');
+  const marker = svgEl('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse' });
+  marker.appendChild(svgEl('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--edge)' }));
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
+  const viewport = svgEl('g', { id: 'viewport' });
+  svg.appendChild(viewport);
+  const edgeLayer = svgEl('g', { id: 'edgeLayer' });
+  const nodeLayer = svgEl('g', { id: 'nodeLayer' });
+  viewport.appendChild(edgeLayer);
+  viewport.appendChild(nodeLayer);
+
+  const edgeEls = new Map();
+  graph.edges.forEach((e, idx) => {
+    const s = pos.get(e.source), t = pos.get(e.target);
+    if (!s || !t) return;
+    const x1 = s.x + NODE_W, y1 = s.y + NODE_H / 2;
+    const x2 = t.x, y2 = t.y + NODE_H / 2;
+    const dx = Math.max(56, Math.abs(x2 - x1) * 0.45);
+    const d = 'M' + x1 + ',' + y1 + ' C' + (x1 + dx) + ',' + y1 + ' ' + (x2 - dx) + ',' + y2 + ' ' + x2 + ',' + y2;
+    const g = svgEl('g', { class: 'edge', 'data-idx': idx });
+    const hit = svgEl('path', { class: 'hit', d });
+    const visible = svgEl('path', { class: 'visible', d, 'marker-end': 'url(#arrow)' });
+    g.appendChild(hit); g.appendChild(visible);
+    g.appendChild(svgEl('title')).textContent = e.source + ' → ' + e.target + ' · ' + e.columns + ' 个字段';
+    edgeLayer.appendChild(g);
+    edgeEls.set(idx, g);
+  });
+
+  const nodeEls = new Map();
+  graph.nodes.forEach(n => {
+    const p = pos.get(n.id);
+    if (!p) return;
+    const failed = failedTargets.has(n.id);
+    const g = svgEl('g', { class: 'node layer-' + n.layer + (failed ? ' failed' : ''), tabindex: '0', role: 'button', 'data-id': n.id, 'aria-label': n.id + '，上游 ' + n.inCount + '，下游 ' + n.outCount + (failed ? '，生产语句解析失败' : '') });
+    g.setAttribute('transform', 'translate(' + p.x + ',' + p.y + ')');
+    const box = svgEl('rect', { class: 'box', x: 0, y: 0, width: NODE_W, height: NODE_H, rx: 7 });
+    const accent = svgEl('rect', { class: 'accent layer-' + n.layer, x: 0, y: 0, width: 4, height: NODE_H, rx: 2 });
+    const name = svgEl('text', { class: 'name', x: 12, y: 15 });
+    name.textContent = n.id.length > 26 ? n.id.slice(0, 25) + '…' : n.id;
+    const meta = svgEl('text', { class: 'meta', x: 12, y: 28 });
+    meta.textContent = (failed ? '⚠ 生产语句未解析 · ' : '') + LAYER_SHORT[n.layer] + ' · 入 ' + n.inCount + ' · 出 ' + n.outCount;
+    g.appendChild(box); g.appendChild(accent); g.appendChild(name); g.appendChild(meta);
+    g.appendChild(svgEl('title')).textContent = n.id + '\n' + LAYER_NAMES[n.layer] + '\n上游 ' + n.inCount + ' 张 · 下游 ' + n.outCount + ' 张' + (failed ? '\n⚠ 写入该表的语句未能完成血缘解析' : '');
+    nodeLayer.appendChild(g);
+    nodeEls.set(n.id, g);
+    g.addEventListener('mouseenter', () => setHover(n.id));
+    g.addEventListener('mouseleave', () => setHover(null));
+    g.addEventListener('focus', () => setHover(n.id));
+    g.addEventListener('blur', () => setHover(null));
+    g.addEventListener('click', ev => { ev.stopPropagation(); showDetail(n.id); });
+    g.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); showDetail(n.id); } });
+  });
+
+  function setHover(id) {
+    const nodeElsArr = [...nodeEls.entries()];
+    if (!id) {
+      nodeElsArr.forEach(([, g]) => g.classList.remove('hot', 'dim'));
+      edgeEls.forEach(g => g.classList.remove('hot', 'dim'));
+      return;
+    }
+    const connected = new Set([id]);
+    const edgesOn = new Set();
+    const n = graph.byId.get(id);
+    if (n) n.edges.forEach(e => {
+      connected.add(e.source); connected.add(e.target);
+      graph.edges.forEach((x, i) => { if (x === e) edgesOn.add(i); });
+    });
+    nodeElsArr.forEach(([nid, g]) => {
+      g.classList.toggle('hot', connected.has(nid));
+      g.classList.toggle('dim', !connected.has(nid));
+    });
+    edgeEls.forEach((g, i) => {
+      g.classList.toggle('hot', edgesOn.has(i));
+      g.classList.toggle('dim', !edgesOn.has(i));
+    });
+  }
+
+  const detail = document.getElementById('detail');
+  function chips(host, items, limit) {
+    host.innerHTML = '';
+    if (!items.length) { host.appendChild(el('div', 'empty', '无')); return; }
+    items.slice(0, limit || 24).forEach(t => host.appendChild(el('span', 'chip', t)));
+    if (items.length > (limit || 24)) host.appendChild(el('span', 'chip more', '+' + (items.length - (limit || 24))));
+  }
+  function showDetail(id) {
+    const n = graph.byId.get(id);
+    if (!n) return;
+    const upstream = [...n.in].sort();
+    const downstream = [...n.out].sort();
+    const cols = DATA.columnLineage.filter(r => r.target_table === id);
+    detail.innerHTML = '';
+    detail.appendChild(el('h3', '', id));
+    detail.appendChild(el('div', 'kind', LAYER_NAMES[n.layer] + ' · 上游 ' + upstream.length + ' · 下游 ' + downstream.length));
+    if (failedTargets.has(id)) {
+      const warn = el('div', 'warn', '⚠ 写入该表的语句未能完成血缘解析，上游可能不完整。');
+      detail.appendChild(warn);
+    }
+    const h1 = el('h4', '', '上游表'); detail.appendChild(h1);
+    const c1 = el('div', 'chips'); detail.appendChild(c1); chips(c1, upstream);
+    const h2 = el('h4', '', '下游表'); detail.appendChild(h2);
+    const c2 = el('div', 'chips'); detail.appendChild(c2); chips(c2, downstream);
+    const h3 = el('h4', '', '写入字段（' + cols.length + '）'); detail.appendChild(h3);
+    const ul = el('ul');
+    cols.slice(0, 30).forEach(r => {
+      ul.appendChild(el('li', '', r.target_column + ' ← ' + r.source_table + '.' + r.source_column));
+    });
+    if (!cols.length) ul.appendChild(el('li', 'empty', '无字段级边'));
+    if (cols.length > 30) ul.appendChild(el('li', 'empty', '… 其余 ' + (cols.length - 30) + ' 条'));
+    detail.appendChild(ul);
+  }
+  showDetail([...graph.byId.keys()].sort()[0] || '');
+
+  /* zoom & pan: drive the SVG viewBox in graph user units */
+  const wrap = document.getElementById('graphWrap');
+  const vb = { x: 0, y: 0, w: width, h: height };
+  function apply() {
+    svg.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h);
+  }
+  function fit() {
+    vb.x = 0; vb.y = 0; vb.w = width; vb.h = height;
+    apply();
+  }
+  function clientToUser(cx, cy) {
+    const r = svg.getBoundingClientRect();
+    const k = Math.min(r.width / vb.w, r.height / vb.h);
+    const ox = (r.width - vb.w * k) / 2;
+    const oy = (r.height - vb.h * k) / 2;
+    return { x: vb.x + (cx - r.left - ox) / k, y: vb.y + (cy - r.top - oy) / k, k: k };
+  }
+  function zoomAt(cx, cy, factor) {
+    const u = clientToUser(cx, cy);
+    const nw = Math.max(width / 12, Math.min(width * 1.6, vb.w / factor));
+    const ratio = nw / vb.w;
+    vb.x = u.x - (u.x - vb.x) * ratio;
+    vb.y = u.y - (u.y - vb.y) * ratio;
+    vb.w = nw;
+    vb.h = vb.h * ratio;
+    apply();
+  }
+  wrap.addEventListener('wheel', ev => { ev.preventDefault(); zoomAt(ev.clientX, ev.clientY, ev.deltaY < 0 ? 1.12 : 0.89); }, { passive: false });
+  let drag = null;
+  wrap.addEventListener('pointerdown', ev => {
+    if (ev.target.closest('.node')) return;
+    drag = { x: ev.clientX, y: ev.clientY, vx: vb.x, vy: vb.y };
+    wrap.classList.add('dragging');
+    wrap.setPointerCapture(ev.pointerId);
+  });
+  wrap.addEventListener('pointermove', ev => {
+    if (!drag) return;
+    const u = clientToUser(ev.clientX, ev.clientY);
+    const dx = (ev.clientX - drag.x) / u.k;
+    const dy = (ev.clientY - drag.y) / u.k;
+    vb.x = drag.vx - dx;
+    vb.y = drag.vy - dy;
+    apply();
+  });
+  wrap.addEventListener('pointerup', () => { drag = null; wrap.classList.remove('dragging'); });
+  wrap.addEventListener('pointercancel', () => { drag = null; wrap.classList.remove('dragging'); });
+  document.getElementById('fitBtn').addEventListener('click', fit);
+  document.getElementById('zoomIn').addEventListener('click', () => { const r = wrap.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.2); });
+  document.getElementById('zoomOut').addEventListener('click', () => { const r = wrap.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 0.83); });
+  requestAnimationFrame(fit);
+
+  const search = document.getElementById('graphSearch');
+  const count = document.getElementById('graphCount');
+  count.textContent = graph.nodes.length + ' 张表 · ' + graph.edges.length + ' 条边';
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    let shown = 0;
+    nodeEls.forEach((g, id) => {
+      const hit = !q || id.toLowerCase().includes(q);
+      g.classList.toggle('filtered', !hit);
+      if (hit) shown++;
+    });
+    edgeEls.forEach((g, i) => {
+      const e = graph.edges[i];
+      const hit = !q || e.source.toLowerCase().includes(q) || e.target.toLowerCase().includes(q);
+      g.classList.toggle('filtered', !hit);
+    });
+    count.textContent = (q ? shown + ' / ' : '') + graph.nodes.length + ' 张表 · ' + graph.edges.length + ' 条边';
+  });
+})();
+
+/* ---------------- fan-in / fan-out bars ---------------- */
+(function bars() {
+  function top(map, n) { return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n); }
+  const fanin = new Map(), fanout = new Map();
+  DATA.tableDependencies.forEach(e => {
+    fanin.set(e.target_table, (fanin.get(e.target_table) || 0) + 1);
+    fanout.set(e.source_table, (fanout.get(e.source_table) || 0) + 1);
+  });
+  function render(hostId, items) {
+    const host = document.getElementById(hostId);
+    if (!items.length) { host.appendChild(el('div', 'empty-state', '暂无数据')); return; }
+    const max = items[0][1] || 1;
+    items.forEach(([name, v]) => {
+      const row = el('div', 'bar-row');
+      const lbl = el('div', 'lbl', name); lbl.title = name;
+      const track = el('div', 'bar-track');
+      const fill = el('div', 'bar-fill');
+      fill.style.width = Math.max(3, (v / max) * 100) + '%';
+      track.appendChild(fill);
+      const num = el('div', 'num', String(v));
+      row.appendChild(lbl); row.appendChild(track); row.appendChild(num);
+      host.appendChild(row);
+    });
+  }
+  render('fanin', top(fanin, 10));
+  render('fanout', top(fanout, 10));
+})();
+
+/* ---------------- column lineage table ---------------- */
+(function columns() {
+  const rows = DATA.columnLineage.slice().sort((a, b) =>
+    a.target_table.localeCompare(b.target_table) ||
+    a.target_column.localeCompare(b.target_column) ||
+    a.source_table.localeCompare(b.source_table) ||
+    a.source_column.localeCompare(b.source_column));
+  const body = document.getElementById('colBody');
+  const count = document.getElementById('colCount');
+  const search = document.getElementById('colSearch');
+  const targetSel = document.getElementById('colTarget');
+  const targets = [...new Set(rows.map(r => r.target_table))].sort();
+  targets.forEach(t => {
+    const o = document.createElement('option'); o.value = t; o.textContent = t; targetSel.appendChild(o);
+  });
+  function render() {
+    const q = search.value.trim().toLowerCase();
+    const t = targetSel.value;
+    const filtered = rows.filter(r => {
+      if (t && r.target_table !== t) return false;
+      if (!q) return true;
+      return (r.target_table + ' ' + r.target_column + ' ' + r.source_table + ' ' + r.source_column).toLowerCase().includes(q);
+    });
+    body.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    filtered.forEach(r => {
+      const tr = document.createElement('tr');
+      const td1 = el('td'); td1.appendChild(el('span', 'chip', r.target_table));
+      const td2 = el('td', 'mono', r.target_column);
+      const td3 = el('td', 'arrow', '←');
+      const td4 = el('td'); td4.appendChild(el('span', 'chip', r.source_table));
+      const td5 = el('td', 'mono', r.source_column);
+      const td6 = el('td');
+      if (r.source_is_wildcard) td6.appendChild(el('span', 'badge wild', '表级 · 未知列'));
+      tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4); tr.appendChild(td5); tr.appendChild(td6);
+      frag.appendChild(tr);
+    });
+    body.appendChild(frag);
+    count.textContent = filtered.length + ' / ' + rows.length + ' 条字段血缘';
+    if (!filtered.length) {
+      const tr = document.createElement('tr');
+      const td = el('td', 'empty-state', '没有匹配的字段血缘');
+      td.colSpan = 6; tr.appendChild(td); body.appendChild(tr);
+    }
+  }
+  search.addEventListener('input', render);
+  targetSel.addEventListener('change', render);
+  render();
+})();
+
+/* ---------------- statements ---------------- */
+(function statements() {
+  const body = document.getElementById('stmtBody');
+  const count = document.getElementById('stmtCount');
+  let status = '';
+  const buttons = [...document.querySelectorAll('[data-status]')];
+  function chips(td, list, limit) {
+    if (!list.length) { td.appendChild(el('span', 'muted', '—')); return; }
+    list.slice(0, limit).forEach(t => td.appendChild(el('span', 'chip', t)));
+    if (list.length > limit) td.appendChild(el('span', 'chip more', '+' + (list.length - limit)));
+  }
+  function render() {
+    const filtered = DATA.statements.filter(s => !status || s.status === status);
+    body.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    filtered.forEach(s => {
+      const tr = document.createElement('tr');
+      const td0 = el('td');
+      const st = el('span', 'status ' + (s.status === 'OK' ? 'ok' : 'fail'));
+      st.appendChild(el('span', 'ico', s.status === 'OK' ? '✓' : '✕'));
+      st.appendChild(el('span', '', s.status === 'OK' ? '成功' : '失败'));
+      td0.appendChild(st);
+      const td1 = el('td', 'mono', s.file);
+      if (s.sql_preview) td1.title = s.sql_preview;
+      const td2 = el('td', '', String(s.statement || ''));
+      const td3 = el('td', '', s.name || '—');
+      const td4 = el('td'); const tl = (s.target_tables || '').split(';').filter(Boolean); if (!tl.length && s.status === 'FAIL' && s.declared_target) tl.push(s.declared_target + '（失败）'); chips(td4, tl, 3);
+      const td5 = el('td'); chips(td5, (s.source_tables || '').split(';').filter(Boolean), 3);
+      const td6 = el('td');
+      if (s.status === 'OK') { td6.className = 'muted'; td6.textContent = s.instructions ? s.instructions + ' 条指令' : '—'; }
+      else { td6.className = 'err'; td6.textContent = (s.error_class ? s.error_class.replace('Exception', '') + '：' : '') + (s.error_message || ''); td6.title = s.error_message || ''; }
+      tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4); tr.appendChild(td5); tr.appendChild(td6);
+      frag.appendChild(tr);
+    });
+    body.appendChild(frag);
+    count.textContent = filtered.length + ' / ' + DATA.statements.length + ' 条语句';
+    if (!filtered.length) {
+      const tr = document.createElement('tr');
+      const td = el('td', 'empty-state', '没有匹配的语句'); td.colSpan = 7; tr.appendChild(td); body.appendChild(tr);
+    }
+  }
+  buttons.forEach(b => b.addEventListener('click', () => {
+    status = b.dataset.status;
+    buttons.forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    render();
+  }));
+  render();
+})();
+
+/* ---------------- repairs ---------------- */
+(function repairs() {
+  const body = document.getElementById('repairBody');
+  const panel = document.getElementById('repairPanel');
+  if (!DATA.repairs.length) { panel.remove(); return; }
+  DATA.repairs.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.appendChild(el('td', 'mono', r.statement || ''));
+    tr.appendChild(el('td', '', r.table || ''));
+    tr.appendChild(el('td', 'mono', r.added_column || ''));
+    body.appendChild(tr);
+  });
+})();
+
+/* ---------------- theme ---------------- */
+(function theme() {
+  const btn = document.getElementById('themeToggle');
+  const stored = localStorage.getItem('lineage-theme');
+  if (stored) document.documentElement.dataset.theme = stored;
+  btn.addEventListener('click', () => {
+    const current = document.documentElement.dataset.theme;
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const next = current ? (current === 'dark' ? 'light' : 'dark') : (prefersDark ? 'light' : 'dark');
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('lineage-theme', next);
+  });
+})();
+</script>
+</body>
+</html>

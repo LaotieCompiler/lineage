@@ -114,6 +114,49 @@ upgrade is a separate change that must pass the full regression suite.
 GitHub Actions (`.github/workflows/ci.yml`) runs `mvn clean test` and the Docker-backed
 JDBC suite on every push and pull request.
 
+## ODPS lineage report
+
+`scripts/odps-lineage/run.sh` scans a project of ODPS/Hive SQL scripts against its DDL
+and writes table- and column-level lineage. An optional Node renderer turns those CSV
+artifacts into a self-contained HTML report.
+
+```bash
+./scripts/odps-lineage/run.sh --input /path/to/warehouse/scripts --output output
+```
+
+The input directory is expected to contain `ddl/` plus one or more SQL directories
+(`dwd/`, `dws/`, `ads/`, ...). The scanner auto-discovers them, or they can be passed
+explicitly with `--ddl` / `--sql`. See
+[scripts/odps-lineage/README.md](scripts/odps-lineage/README.md) for every option.
+
+Outputs land in `output/`: the CSV files are the lineage data, and
+`output/lineage-report.html` is the visualization. The report is generated in two steps:
+
+1. the scanner writes `statements.csv`, `table_dependencies.csv`,
+   `column_lineage.csv`, `table_lineage.csv`, and `schema_repairs.csv`;
+2. `scripts/lineage-report/render.js` embeds those rows as one JSON object into a
+   template and writes a single HTML file.
+
+The HTML has no server or CDN dependency. On load, browser-side JavaScript assigns
+tables to ODS -> DWD -> DWS -> ADS/BI layers, orders each layer by the barycenter of its
+neighbours to reduce edge crossings, and draws the graph as SVG. Hover highlights a
+table's direct dependencies, click opens its upstream/downstream tables and written
+columns, and wheel/drag zooms and pans. The field-level table is the end-to-end closure
+(target column <- physical source column), while the graph shows direct table
+dependencies, so intermediate DWD/DWS tables remain visible. A table written by a failed
+statement is drawn with a dashed red border.
+
+Node is only needed to generate the HTML. The scan works without it, and `--no-render`
+skips the render step entirely; a report can be produced later with:
+
+```bash
+node scripts/lineage-report/render.js output
+```
+
+The renderer is a view over the CSV artifacts, not a second lineage engine. See
+[scripts/lineage-report/README.md](scripts/lineage-report/README.md) for its inputs and
+interactions.
+
 ## Feature
 
 ### Supported DB

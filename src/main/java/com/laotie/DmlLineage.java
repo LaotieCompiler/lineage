@@ -124,6 +124,7 @@ public class DmlLineage {
     final QueryDispatcher queryDispatcher = new QueryDispatcher(this);
     final TableCollector tableCollector = new TableCollector(this);
     final ColumnMappingAnalyzer columnMapping = new ColumnMappingAnalyzer(this);
+    final SourceShapeAnalyzer sourceShape = new SourceShapeAnalyzer(this);
 
     List<Instruction> instructions() {
         return instructions;
@@ -1552,10 +1553,50 @@ public class DmlLineage {
 
     boolean useVisiblePlan(List<SourceTable> sources,
             Map<String, List<SourceTable>> using) {
-        if (using == null || using.isEmpty()) {
-            return false;
-        }
-        return context != null || allSourceNamesKnown(sources);
+        return sourceShape.useVisiblePlan(sources, using);
+    }
+
+    boolean allWidthKnown(List<SourceTable> sources) {
+        return sourceShape.allWidthKnown(sources);
+    }
+
+    boolean sourceWidthKnown(SourceTable source) {
+        return sourceShape.sourceWidthKnown(source);
+    }
+
+    int derivedWidth(String target, List<String> outputs, boolean widthKnown) {
+        return sourceShape.derivedWidth(target, outputs, widthKnown);
+    }
+
+    int sourceKnownWidth(SourceTable source) {
+        return sourceShape.sourceKnownWidth(source);
+    }
+
+    List<SourceTable> refineWithLearned(List<SourceTable> candidates,
+            String rawColumn) {
+        return sourceShape.refineWithLearned(candidates, rawColumn);
+    }
+
+    List<SourceTable> unknownColumnSources(List<SourceTable> sources,
+            List<SourceTable> excluded) {
+        return sourceShape.unknownColumnSources(sources, excluded);
+    }
+
+    static List<SourceTable> allSources(List<SourceTable> first,
+            List<SourceTable> second) {
+        return SourceShapeAnalyzer.allSources(first, second);
+    }
+
+    boolean allSourceNamesKnown(List<SourceTable> sources) {
+        return sourceShape.allSourceNamesKnown(sources);
+    }
+
+    static List<SourceTable> starOutputSources(StarOutput output) {
+        return SourceShapeAnalyzer.starOutputSources(output);
+    }
+
+    static List<String> displayNames(List<SourceTable> sources) {
+        return SourceShapeAnalyzer.displayNames(sources);
     }
 
     SourceNode joinBinding(SQLExpr owner) {
@@ -1570,126 +1611,22 @@ public class DmlLineage {
         return joinBinding(owner) != null;
     }
 
-    boolean allWidthKnown(List<SourceTable> sources) {
-        for (SourceTable source : sources) {
-            if (!sourceWidthKnown(source)) {
-                return false;
-            }
-        }
-        return true;
-    }
 
-    boolean sourceWidthKnown(SourceTable source) {
-        if (source.metadataTable != null || source.outputWidthKnown) {
-            return true;
-        }
-        return source.temporary
-                && Boolean.TRUE.equals(state.targetWidthKnown.get(source.displayName));
-    }
 
-    int derivedWidth(String target, List<String> outputs, boolean widthKnown) {
-        int width = outputs.size();
-        if (widthKnown) {
-            Integer known = state.targetMinWidth.get(target);
-            if (known != null && known > 0) {
-                width = Math.max(width, known);
-            }
-        }
-        return width;
-    }
 
-    int sourceKnownWidth(SourceTable source) {
-        if (source.metadataTable != null) {
-            return Math.max(source.metadataTable.getFields().size(), 1);
-        }
-        int width = source.outputColumns.size();
-        if (source.temporary
-                && Boolean.TRUE.equals(state.targetWidthKnown.get(source.displayName))) {
-            Integer known = state.targetMinWidth.get(source.displayName);
-            if (known != null && known > 0) {
-                width = Math.max(width, known);
-            }
-        }
-        if (width > 0) {
-            return width;
-        }
-        return Math.max(sourceColumnNames(source).size(), 1);
-    }
 
     /**
      * Drop sources that the learned metadata proves cannot own the column. Known catalog
      * sources and unknown sources are kept.
      */
-    List<SourceTable> refineWithLearned(List<SourceTable> candidates,
-            String rawColumn) {
-        if (learnedMetadata == null) {
-            return candidates;
-        }
-        List<SourceTable> refined = new ArrayList<>();
-        for (SourceTable source : candidates) {
-            if (source.metadataTable != null || source.temporary || !source.learnable
-                    || source.rawName == null) {
-                refined.add(source);
-                continue;
-            }
-            String key = learnedTableKey(source.rawName);
-            if (learnedMetadata.hasNormalizedColumn(key, identifierKey(rawColumn))
-                    || !learnedMetadata.knowsNormalizedTable(key)) {
-                refined.add(source);
-            }
-        }
-        return refined;
-    }
 
     /**
      * The sources whose column set is unknown, so that they may own any column.
      */
-    List<SourceTable> unknownColumnSources(List<SourceTable> sources,
-            List<SourceTable> excluded) {
-        List<SourceTable> unknown = new ArrayList<>();
-        for (SourceTable source : sources) {
-            if (excluded.contains(source) || sourceNamesKnown(source)) {
-                continue;
-            }
-            unknown.add(source);
-        }
-        return unknown;
-    }
 
-    static List<SourceTable> allSources(List<SourceTable> first,
-            List<SourceTable> second) {
-        List<SourceTable> all = new ArrayList<>();
-        all.addAll(first);
-        all.addAll(second);
-        return all;
-    }
 
-    boolean allSourceNamesKnown(List<SourceTable> sources) {
-        for (SourceTable source : sources) {
-            if (!sourceNamesKnown(source)) {
-                return false;
-            }
-        }
-        return true;
-    }
 
-    static List<SourceTable> starOutputSources(StarOutput output) {
-        List<SourceTable> sources = new ArrayList<>();
-        for (StarColumn column : output.sources) {
-            if (!sources.contains(column.source)) {
-                sources.add(column.source);
-            }
-        }
-        return sources;
-    }
 
-    static List<String> displayNames(List<SourceTable> sources) {
-        List<String> names = new ArrayList<>();
-        for (SourceTable source : sources) {
-            names.add(source.displayName);
-        }
-        return names;
-    }
 
     SourceTable findByOwner(SQLExpr owner) {
         if (owner == null) {

@@ -1,14 +1,266 @@
-# 数据血缘
+# lineage 数据血缘
 
-一个列级别的数据血缘分析器。
+列级别的 SQL 数据血缘分析器。
+
+`lineage` 使用 [Alibaba Druid](https://github.com/alibaba/druid) 解析 SQL，基于元数据目录
+解析表和字段，为脚本、日志和 DDL 变更生成表级与字段级血缘。项目是一个面向 Java 8 的
+库，内置命令行扫描器，并生成自包含的 HTML 报告。
 
 [English](README.md)
 
-## AST 解析器
+## 特性
 
-SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法树(AST)。
+- 字段级血缘，带关系类型：字段拷贝、表达式、函数、聚合、类型转换、`CASE`、标量子查询、
+  通配符和常量。
+- 整段脚本分析：`USE` / `SET`、临时表、CTE，以及 DDL 创建/替换/修改/删除的关系，对同一
+  次扫描中的后续语句可见。
+- 元数据来自 DDL 分析或序列化后的 catalog 文件，无需连接真实数据库。
+- 支持 `STRICT` 与 `OPTIONAL` 两种元数据模式，以及跨语句的元数据学习。
+- 方言由 Druid 提供：Oracle、SQL Server、PostgreSQL、MySQL/MariaDB、DB2、
+  H2/HSQLDB/Derby、SQLite、Hive 和 Spark。
+- 命令行扫描器可以把一个 DDL + SQL 目录转换为 CSV 产物和交互式 HTML 报告。
 
-对 AST 进行后序遍历:先处理内层查询和派生表,再处理消费它们的查询的 SELECT 列表,从而收集表和列级别的数据血缘信息。
+## 快速开始
+
+```java
+MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+catalog.loadDdl(createTableStatements);
+
+LineageScanner scanner = LineageScanner.withMetadata(
+        MetadataContext.of(catalog), LineageOptions.defaults());
+ScanResult scan = scanner.scan(sqlScript);
+
+for (LineageResult statement : scan.getResults()) {
+    if (statement.getError() != null) {
+        // 单条语句失败在这里报告，脚本其余部分继续分析。
+        continue;
+    }
+    for (Instruction edge : statement.getInstructions()) {
+        // edge.getFrom() -> edge.getTo()
+    }
+}
+
+LineageGraph graph = scan.getGraph();
+```
+
+不提供元数据目录时，使用 `OPTIONAL` 模式。无法解析的通配符会保留为表级边，而不是编造
+字段名：
+
+```java
+ScanResult scan = LineageScanner.withoutMetadata(
+        LineageOptions.of(MetadataMode.OPTIONAL, true)).scan(sqlScript);
+```
+
+## 元数据
+
+### 元数据来源
+
+元数据通过分析 DDL 或读取序列化后的 catalog 文件获得。catalog 可以导出为自描述的 DDL
+文本文件，文件头记录方言、版本和校验和；之后可以直接加载，无需重新分析源脚本：
+
+```java
+MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
+catalog.loadDdl(createTableStatements);
+
+catalog.saveDdl(Paths.get("metadata.sql"));
+
+MetadataCatalog reloaded = MetadataCatalog.fromDdlFile(Paths.get("metadata.sql"));
+```
+
+### 元数据模式
+
+`LineageOptions` 控制元数据缺失时的行为：
+
+| 模式 | 行为 |
+| --- | --- |
+| `STRICT`（默认） | 元数据为准：catalog 中不存在的表抛 `MetadataNotFoundException`，无法匹配的列抛 `ColumnNotFoundException`，歧义列抛 `AmbiguousColumnException` |
+| `OPTIONAL` | catalog 中不存在的表仍参与分析：通配符保持通配符形态（`a.* -> t.*`），不编造列名，并在血缘图中保留表级边；歧义列仍抛 `AmbiguousColumnException` |
+
+### 元数据学习
+
+开启推断后，`select A.c1, B.c2 from A,B` 会记录 `c1` 属于 `A`、`c2` 属于 `B`；之后
+`select c1 from A,B` 可解析为 `A.c1` 而不报错。一次扫描分两趟：第一趟从整段日志中发现
+元数据，第二趟在完整信息下做列级血缘，因此同一日志中后出现的语句也能帮助前面的语句完成
+解析。学习结果只在当前 scanner 实例内生效，且不会用于展开通配符。
+
+### 强制引用标识符
+
+`LineageOptions.of` 的第三个参数为 `true` 时，所有表、列、表别名和 CTE 名都必须使用
+标识符引号；未加引号的标识符会抛出 `UnquotedIdentifierException`：
+
+```java
+LineageScanner.withoutMetadata(
+        LineageOptions.of(MetadataMode.OPTIONAL, false, true))
+        .scan(sqlScript);
+```
+
+强制引用模式还会校验表别名与 CTE 名，并覆盖 PostgreSQL 的 `RETURNING` / `ON CONFLICT`、
+MySQL 的 `ON DUPLICATE KEY UPDATE` 以及 SQL Server 的日期部分。
+
+### 无元数据契约
+
+当表的列集合未知时，投影的列位置同样未知。此时分析器只保留表级边，绝不猜测列：
+
+- `select * from missing` 产出 `missing.* -> t.*`，而不是编造 `missing.col1`；
+- 派生表或 `UNION` 内部的未知通配会以表级边向上传播；
+- 跟随在该通配之后的显式投影没有可确定的位置，因此不生成列级边；
+- 一旦所有参与来源的列都已知（catalog、DDL 或学习所得），投影会恢复逐列映射，包括
+  `JOIN ... USING` 合并列与 `UNION` 输出名。
+
+表函数只通过其调用本身识别，渲染出的调用文本永远不会被当作关系名；因此它不会参与
+catalog 或 CTE 作用域解析，也不会贡献静态宽度。
+
+## DDL 支持
+
+- `CREATE TABLE ... AS SELECT` 与 `CREATE VIEW ... AS SELECT` 会把血缘写入新建关系；
+  声明列列表（`CREATE TABLE x (a, b) AS ...`）会作为目标列名。
+- DDL 创建、替换、修改或删除的关系，对同一脚本中后续语句可见（严格模式同样生效）。
+- `ALTER TABLE ... ADD COLUMN` / `DROP COLUMN` 会更新该表的会话视图。
+- `DELETE` 与 `TRUNCATE` 不写入列，因此不产生列级边；严格模式下目标表缺失仍会使该语句
+  失败。
+- `CREATE INDEX`、`EXPLAIN`、`GRANT` 不做分析：该语句记录为失败，扫描继续处理下一条。
+
+## 命令行扫描器
+
+[`scripts/lineage-scan/run.sh`](scripts/lineage-scan/run.sh) 扫描一个包含 DDL 和 SQL 的
+项目目录，输出表级与字段级血缘，同时生成静态 HTML 报告和该页面读取的数据文件。
+
+```bash
+./scripts/lineage-scan/run.sh --input /path/to/project --output output
+```
+
+默认行为：
+
+- 使用 `<input>/ddl` 作为 DDL 目录；
+- 扫描 `<input>` 下其余包含 `.sql` 的子目录，按 `dwd,dws,ads,bi,ods,dim,other` 排序；
+- 输出到 `./output`（相对当前执行目录）；
+- 同时生成 `lineage-data.js` 与 `lineage-report.html`，用浏览器打开 HTML 即可。
+
+推荐的输入目录结构：
+
+```
+project/
+├── ddl/      # 表结构，*.sql
+├── dwd/      # 明细层 SQL
+├── dws/      # 汇总层 SQL
+├── ads/      # 应用层 SQL
+└── bi/       # BI 层 SQL
+```
+
+SQL 目录按依赖顺序扫描：先出现语句里观察到的字段会用于后续语句的解析。
+
+也可以显式指定目录：
+
+```bash
+./scripts/lineage-scan/run.sh \
+  --ddl /data/project/ddl \
+  --sql /data/project/dwd \
+  --sql /data/project/dws \
+  --sql /data/project/ads \
+  --output output
+```
+
+旧的位置参数写法 `<dialect> <ddl-dir> <sql-dir>... <out-dir>` 仍兼容。
+
+### 参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `-i, --input <dir>` | 项目根目录，自动发现 DDL 和 SQL 子目录 |
+| `-d, --ddl <dir>` | DDL 目录；缺省为 `<input>/ddl` |
+| `-s, --sql <dir>` | SQL 目录，可重复 |
+| `-o, --output <dir>` | 输出目录，默认 `./output` |
+| `--dialect <name>` | Druid 方言，默认 `hive`；可选 `spark`、`mysql`、`postgresql` 等 |
+| `--ext <list>` | 逗号分隔的扩展名，默认 `sql`，例如 `sql,ddl` |
+| `--order <list>` | 自动发现 SQL 子目录的优先级，默认 `dwd,dws,ads,bi,ods,dim,other` |
+| `--recursive` | 递归扫描子目录 |
+| `--strict` | `STRICT` 元数据模式（默认 `OPTIONAL`，允许缺失表） |
+| `--no-infer` | 关闭跨语句字段推断 |
+| `--no-repair` | 关闭 DDL 缺失字段的 Schema 对齐 |
+| `--no-preprocess` | 关闭 `${var}` 替换和 `@var :=` 内联 |
+| `-h, --help` | 显示帮助 |
+
+相对路径（`--input`、`--ddl`、`--sql`、`--output`）都相对于执行命令时的当前目录，
+不是脚本所在目录。
+
+### 输出
+
+| 文件 | 内容 |
+| --- | --- |
+| `statements.csv` | 每条语句的状态、错误、读写表、`declared_target`、SQL 预览 |
+| `column_edges.csv` | 解析器产生的指令（含临时表），带 `relation` / `function` / `operator` / `expression` |
+| `column_lineage.csv` | 端到端字段血缘：目标字段 ← 最终物理源字段，带压缩后的 `relation`、完整 `relation_path`、目标写入表达式和 `truncated` |
+| `table_dependencies.csv` | 直接表依赖：穿过临时表后停在第一个物理表 |
+| `table_lineage.csv` | 端到端字段边的表级聚合 |
+| `schema_repairs.csv` | 为对齐 SQL 引用而补齐的字段 |
+| `missing_tables.csv` | 被引用但未编目的表 |
+| `run-info.txt` | 本次运行的输入路径、方言、开关和统计 |
+| `lineage-data.js` | HTML 报告读取的数据文件 |
+| `lineage-report.html` | 交互式可视化报告，从同目录读取 `lineage-data.js` |
+
+### 字段关系类型
+
+`relation` 说明源字段如何进入目标字段：
+
+| 值 | 含义 |
+| --- | --- |
+| `COLUMN_COPY` | 直接字段拷贝，或 `SELECT *` 展开 |
+| `EXPRESSION` | 参与算术/比较/布尔表达式，`operator` 给出最近的运算符 |
+| `FUNCTION` | 作为标量函数的参数，`function` 给出最近的函数名 |
+| `AGGREGATE` | 作为聚合函数的参数，例如 `SUM`、`COUNT` |
+| `CAST` | 显式类型转换 |
+| `CASE` | 位于 `CASE WHEN` 分支 |
+| `SUBQUERY` | 来自标量子查询 |
+| `WILDCARD` | 表级/位置通配符注入 |
+| `CONSTANT` | 没有源字段的字面量表达式 |
+
+`column_lineage.csv` 的 `relation` 是压缩后的端到端关系链：去掉纯拷贝和重复的通配符
+跳，只保留真正改变值的关系；每一跳形如 `FUNCTION(UPPER)` 或 `EXPRESSION(+)`。完整链路
+保留在 `relation_path`。同一源字段存在多条推导路径时（例如 UNION 两个分支一个拷贝、
+一个计算，或 `UPPER` 与 `LOWER` 两个分支），不同路径用 `;` 分隔，关系不会互相覆盖。
+函数名或运算符中的分隔符会做百分号转义（如 `FUNCTION(f%3Bg)`）。路径超过 1024 跳时
+保留目标侧的跳并置 `truncated=true`，报告显示“路径截断”，避免把不完整的计算链误读为
+纯拷贝。
+
+分析器记录离该列最近的一层关系：例如 `SUM(UPPER(a))` 中 `a` 的关系是 `FUNCTION`，
+函数名为 `UPPER`，完整表达式仍保留在 `expression` 中。
+
+### HTML 报告
+
+`lineage-report.html` 只读取同目录的 `lineage-data.js`，不发起网络请求，也不需要服务器、
+CDN 或 Node.js。`lineage-data.js` 把 `statements`、`tableLineage`、`tableDependencies`、
+`columnLineage` 和 `repairs` 五组数据挂到 `window.LINEAGE_DATA`，可以据此定制自己的页面。
+
+报告的行为：
+
+- 按表名前缀分层：`ods/dim/mig` → ODS/DIM，`dwd` → DWD，`dws` → DWS，
+  `ads/bi` → ADS/BI；
+- 每层内按上下游邻居的平均位置做 3 轮 barycenter 排序，减少交叉；
+- 边从源表右侧连到目标表左侧，使用三次贝塞尔曲线；
+- 悬停/聚焦高亮相关节点和边，点击节点在右侧面板展示上下游与写入字段；
+- 滚轮以指针为中心缩放，拖拽平移，“适应窗口”恢复全景；
+- 默认跟随系统明暗主题，右上角可手动切换并记忆。
+
+数据口径：
+
+- 表级图使用 `table_dependencies.csv`：从目标字段沿临时表追溯到第一个物理表，保留
+  DWD/DWS 中间层；
+- 字段表使用 `column_lineage.csv`：继续追溯到最终物理源字段，是端到端闭包；
+- 失败语句的目标表从 `statements.csv` 的 `declared_target` 读取，用红色虚线标识，
+  避免把“上游缺失”误读成“没有上游”。
+
+### SQL 预处理
+
+- `${name}` 等调度占位符替换为固定日期 `20210101`，使带模板变量的脚本可以解析；
+- 脚本变量 `@name := SELECT …;` 递归内联为派生表 `(SELECT …)`。
+
+用 `--no-preprocess` 可关闭以上步骤。
+
+### Schema 对齐
+
+DDL 快照可能落后于 SQL。扫描器会迭代处理 `ColumnNotFoundException`：如果错误信息中
+列出的表在目录中存在，就把被引用字段补进**本次分析用的可变目录副本**。原始 DDL 不会
+被修改，`schema_repairs.csv` 记录每次补齐。用 `--no-repair` 可关闭。
 
 ## 代码结构
 
@@ -35,37 +287,25 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 （`parse`）、会话/元数据解析（`metadata`）、严格引用校验（`validation`），以及共享分析
 状态与模型类型（`analysis`）。
 
-## SQL执行顺序
+## 构建与测试
 
-| 子句           | 功能                                                                                      |
-| -------------- | ----------------------------------------------------------------------------------------- |
-| FROM / JOIN    | 当你编写任何查询时,SQL首先确定用于数据检索的表以及它们之间的连接方式。                    |
-| WHERE          | 它充当过滤器;它根据用户指定的条件过滤记录。                                               |
-| GROUP BY       | 过滤后的数据根据指定的条件进行分组。                                                      |
-| HAVING         | 它类似于WHERE子句,但是在对数据进行分组之后应用。                                          |
-| SELECT         | 该子句选择要包含在最终结果中的列。                                                        |
-| DISTINCT       | 从结果中删除重复行。应用此子句后,您只剩下不同的记录。                                     |
-| ORDER BY       | 它根据指定的条件(递增/递减/A->Z/Z->A)对结果进行排序。                                     |
-| LIMIT / OFFSET | 它确定要返回的记录数以及从何处开始。                                                      |
-
-## 测试
-
-运行完整单元测试：
+项目目标为 Java 8。运行完整测试：
 
 ```bash
 mvn test
 ```
 
-当前为 925 个测试；可选的 TPC-H 语料在未下载查询时会跳过。
+JUnit 4 与 JUnit 5 测试由 Maven Surefire 一起运行。Druid 固定为 1.2.23，因为其解析结果
+属于受测试约束的契约。
 
 ### 黄金语料
 
-`src/test/resources/golden` 存放 41 个数据驱动的回归用例。每个 JSON 用例声明方言、分析
-选项、可选的 catalog DDL、SQL 脚本以及每条语句的期望 instructions 或错误；
+`src/test/resources/golden` 存放数据驱动的回归用例。每个 JSON 用例声明方言、分析选项、
+可选的 catalog DDL、SQL 脚本以及每条语句的期望 instructions 或错误。
 `GoldenLineageTest` 会运行全部用例，并对每个用例做确定性的 token 变异，验证畸形 SQL
 不会逃逸出扫描器。
 
-在有意的行为变更之后，重新生成期望并**审查 JSON diff** 后再提交：
+在有意的行为变更之后，重新生成期望并审查 JSON diff：
 
 ```bash
 mvn test -Dtest=GoldenLineageTest -Dgolden.update=true
@@ -73,8 +313,8 @@ mvn test -Dtest=GoldenLineageTest -Dgolden.update=true
 
 ### 外部 TPC-H 语料
 
-`TpchCorpusTest` 会用 `src/test/resources/tpch/schema.sql` 分析 22 条 TPC-H 查询，断言每条
-都产生血缘且结果确定。查询本身因 TPC 许可证不提交入库，先下载：
+`TpchCorpusTest` 会用 `src/test/resources/tpch/schema.sql` 分析 22 条 TPC-H 查询，断言
+每条都产生血缘且结果确定。查询本身因 TPC 许可证不提交入库，先下载：
 
 ```bash
 ./scripts/fetch-tpch-corpus.sh
@@ -97,239 +337,23 @@ target/sqlglot-venv/bin/python scripts/differential-sqlglot.py
 
 该检查不进入 Maven 构建或 CI。加 `--fail-on-diff` 可在出现确认差异时返回非零退出码。
 
-### 构建
-
-项目目标为 Java 8；JUnit 4 与 JUnit 5 测试由 Maven Surefire 一起运行。Druid 固定为
-1.2.23，因为其解析结果属于受测试约束的契约；升级 Druid 是独立的变更，必须通过全量回归
-测试。
+### 持续集成
 
 GitHub Actions（`.github/workflows/ci.yml`）会在每次 push 与 pull request 上运行
 `mvn clean test`。
 
-## ODPS 血缘报告
+## 已知限制
 
-`scripts/odps-lineage/run.sh` 扫描一个 ODPS/Hive SQL 项目及其 DDL，输出表级与字段级
-血缘。可选的 Node 渲染器把 CSV 结果转成一份自包含的 HTML 报告。
-
-```bash
-./scripts/odps-lineage/run.sh --input /path/to/warehouse/scripts --output output
-```
-
-输入目录应包含 `ddl/` 以及一个或多个 SQL 子目录（`dwd/`、`dws/`、`ads/` 等）。
-扫描器会自动发现它们，也可以用 `--ddl` / `--sql` 显式指定。完整参数见
-[scripts/odps-lineage/README.md](scripts/odps-lineage/README.md)。
-
-输出写入 `output/`：CSV 是血缘数据，`output/lineage-report.html` 是可视化报告。
-报告分两步生成：
-
-1. 扫描器写出 `statements.csv`、`table_dependencies.csv`、`column_lineage.csv`、
-   `table_lineage.csv` 和 `schema_repairs.csv`；
-2. `scripts/lineage-report/render.js` 把这些行内嵌为一个 JSON 对象写入模板，
-   生成单个 HTML 文件。
-
-HTML 不依赖服务器或 CDN。页面加载后，浏览器端 JavaScript 按 ODS → DWD → DWS →
-ADS/BI 分层，并用相邻节点的重心排序减少连线交叉，最后以 SVG 绘制。悬停会高亮该表
-的直接依赖，点击可查看上下游表和写入字段，滚轮缩放、拖拽平移。字段级表展示端到端
-闭包（目标字段 ← 最终物理源字段），图展示直接表依赖，因此中间的 DWD/DWS 表仍然可见。
-由失败语句写入的目标表以红色虚线边框标出。
-
-字段级边还带有更细的**关系类型**，用来区分字段拷贝、表达式计算、函数计算、聚合等：
-
-- `column_edges.csv` 记录每一条直接边：`relation`（`COLUMN_COPY` / `EXPRESSION` /
-  `FUNCTION` / `AGGREGATE` / `CAST` / `CASE` / `SUBQUERY` / `WILDCARD` / `CONSTANT`）、
-  `function`（最近的函数名）、`operator`（最近的运算符）和原始 `expression`；
-- `column_lineage.csv` 的端到端行给出压缩后的 `relation`（例如
-  `FUNCTION(UPPER)>AGGREGATE(SUM)`）、完整 `relation_path`，以及沿途的函数、运算符和
-  表达式；同一源字段有多条推导路径时用 `;` 分隔，计算分支不会被拷贝分支掩盖；
-- HTML 报告的“说明”列用中文标签展示关系链，悬停可查看完整路径与表达式。
-
-同一列在表达式中可能同时属于多层计算；分析器记录离该列最近的一层（例如
-`SUM(UPPER(a))` 中 `a` 的关系是 `FUNCTION`，函数名为 `UPPER`），完整表达式仍保留在
-`expression` 中。
-
-Node 只在生成 HTML 时需要。扫描本身不依赖 Node；`--no-render` 可以完全跳过渲染，
-之后再用以下命令补生成报告：
-
-```bash
-node scripts/lineage-report/render.js output
-```
-
-渲染器只是 CSV 结果的一种视图，不是第二套血缘引擎。输入与交互说明见
-[scripts/lineage-report/README.md](scripts/lineage-report/README.md)。
-
-## 功能
-
-### 支持的数据库
-
-    Oracle
-    MS SQL Server and Sybase
-    Postgres
-    MySQL and MariaDB
-    DB2
-    H2 and HSQLDB and Derby
-    SQLite
-    Hive
-    Spark（Hive 兼容语句）
-
-### 已支持的 SQL 语法
-
-1. `insert into A (c1, c2) from select c1, c2`
-2. `select 1,2`  //ignore constants
-3. `select 1 as c1 from A`  //ignore constants
-4. `select now() as c1 from A`
-5. `select c1+c2 from A`
-6. `select max(c1) from A`
-7. `select a1,a2 from (select b1, b2 from (select c1,c2 from C))`
-8. `SELECT TB.id as bid, TC.id as cid, id as aid FROM TA Left Join (select id, ba1 b1, ba2 b2 from TBA )TB ON TA.id = TB.id`
-9. `select * from A` //依赖元数据
-
-### DDL
-
-- `CREATE TABLE ... AS SELECT` 与 `CREATE VIEW ... AS SELECT` 会把血缘写入新建关系；
-  声明列列表（`CREATE TABLE x (a, b) AS ...`）会作为目标列名。
-- DDL 创建、替换、修改或删除的关系，对同一脚本中后续语句可见（严格模式同样生效）。
-- `ALTER TABLE ... ADD COLUMN` / `DROP COLUMN` 会更新该表的会话视图。
-- `DELETE` 与 `TRUNCATE` 不写入列，因此不产生列级边；严格模式下目标表缺失仍会使该语句失败。
-- `CREATE INDEX`、`EXPLAIN`、`GRANT` 仍不支持：该语句记录为失败，扫描继续处理下一条。
-
-### 元数据
-
-1. 一些列的定义是模糊的，比如 `*` 和来自多个源表的同名列。因此，我们需要元数据来确定表结构。
-2. 在解析过程中，分析器会为中间表生成元数据，保存信息以供后续检查。
-3. 使用元数据执行原始指令，获取每个列的明确列名。
-
-#### 元数据来源
-
-元数据来自 DDL 分析或序列化后的元数据文件，无需连接真实数据库。
-
-```java
-// 通过分析 DDL 构建 catalog
-MetadataCatalog catalog = new MetadataCatalog(DbType.hive);
-catalog.loadDdl(createTableStatements);
-
-// 导出为自描述的 DDL 文件（文件头包含方言、版本、校验和）
-catalog.saveDdl(Paths.get("metadata.sql"));
-// 直接加载，无需重新分析源脚本
-MetadataCatalog reloaded = MetadataCatalog.fromDdlFile(Paths.get("metadata.sql"));
-```
-
-#### 元数据分析模式
-
-`LineageOptions` 控制元数据缺失时的行为：
-
-| 模式 | 行为 |
-| --- | --- |
-| `STRICT`（默认） | 元数据为准：catalog 中不存在的表抛 `MetadataNotFoundException`，无法匹配的列抛 `ColumnNotFoundException`，歧义列抛 `AmbiguousColumnException` |
-| `OPTIONAL` | catalog 中不存在的表仍参与分析：通配符保持通配符形态（`a.* -> t.*`），不编造列名，并在血缘图中保留表级边；歧义列仍抛 `AmbiguousColumnException` |
-
-```java
-// 严格模式（默认）
-new LineageScanner(context).scan(sqlLog);
-
-// 允许脱离元数据，通配符按通配符输出
-LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, false))
-        .scan(sqlLog);
-
-// 允许脱离元数据，并从历史语句中学习列归属
-LineageScanner.withoutMetadata(LineageOptions.of(MetadataMode.OPTIONAL, true))
-        .scan(sqlLog);
-```
-#### 强制引用标识符
-
-`LineageOptions.of` 的第三个参数为 `true` 时，所有表、列、表别名和 CTE 名都必须使用标识符
-引号；未加引号的标识符会抛出 `UnquotedIdentifierException`：
-
-```java
-LineageScanner.withoutMetadata(
-        LineageOptions.of(MetadataMode.OPTIONAL, false, true))
-        .scan(sqlLog);
-```
-强制引用模式还会校验表别名与 CTE 名，并覆盖 PostgreSQL 的 `RETURNING`/`ON CONFLICT`、
-MySQL 的 `ON DUPLICATE KEY UPDATE` 以及 SQL Server 的日期部分。
-
-永久限制（不在修复计划内）：Druid 的 AST 不保留 Derby JDBC 转义语法
-（`{fn TIMESTAMPADD(...)}`），也不携带源码位置。
-
-严格模式因此以"渲染后的调用签名"记录转义来源。未修改的 AST 或其克隆可以正确处理，但
-如果手工编辑 AST，把转义调用的参数替换为等价普通调用的参数，签名相同，二者无法区分，
-可能继承单位关键字豁免。在不改变契约的前提下这两个要求无法同时满足：拒绝这类编辑也会
-拒绝本应通过的未修改克隆。严格语法审核批次在该对抗性场景失败 22 轮后关闭；普通 SQL
-不受影响。
-
-
-
-开启推断后，`select A.c1, B.c2 from A,B` 会记录 `c1` 属于 `A`、`c2` 属于 `B`；之后
-`select c1 from A,B` 可解析为 `A.c1` 而不报错。一次扫描分两趟：第一趟只遍历整段日志
-发现元数据，第二趟在完整信息下做列级血缘，因此同一日志中后出现的语句也能帮助前面的语句
-完成解析。学习结果只在当前 scanner 实例内生效，且不会用于展开通配符。
-
-#### 无元数据契约
-
-当表的列集合未知时，投影的列**位置**同样未知。此时分析器只保留表级边，绝不猜测列：
-
-- `select * from missing` 产出 `missing.* -> t.*`，而不是编造 `missing.col1`；
-- 派生表或 `UNION` 内部的未知通配会以表级边向上传播；
-- 跟随在该通配之后的显式投影没有可确定的位置，因此不生成列级边；
-- 一旦所有参与来源的列都已知（catalog、DDL 或学习所得），投影会恢复逐列映射，包括
-  `JOIN ... USING` 合并列与 `UNION` 输出名。
-
-该契约是有意收敛的。相关 `LATERAL` 子查询、前向引用的递归 CTE、派生表重复输出名，以及
-未知宽度通配与显式投影混合的 `UNION`，按尽力而为分析：当位置无法唯一确定时保留表级边，
-不编造列名。上述已列出的组合有回归测试覆盖，但不对同一特性的无限嵌套承诺逐列解析。
-
-#### 表函数身份
-
-表函数只通过其调用本身识别；渲染出的调用文本永远不会被当作关系名。因此它不会参与
-catalog 或 CTE 作用域解析，也不会贡献静态宽度或输出名。以下两个曾经违反该规则的边界
-情况现在都有回归测试覆盖：
-
-- catalog 中存在字面名为 `"generate_series(1, 3)"` 的表时，不会再劫持
-  `SELECT generate_series.generate_series FROM generate_series(1, 3)` 的解析；
-- 未使用的同名 CTE 不会再把自己的宽度强加到表函数的 `UNION` 上。
-
-该区域的其他表函数学习与 owner 解析场景也均有回归测试覆盖。
-
-#### 审核状态
-
-Hive/Spark 支持批次在 31 轮 Codex 审核失败后关闭。关闭前已修复所有已报告的问题，最后一次
-修复是 Spark ANSI 设置的 locale 无关匹配。该批次不再继续对抗性审核轮次。
-
-
-#### 已知限制：嵌套派生表/UNION 输出名
-
-跨库解析已有回归测试覆盖，但派生表的 `*` 展开涉及“带引号分支 + 未入 catalog 分支”的
-`UNION` 时按尽力而为处理。审核批次在 22 轮失败后关闭，最后一个用例要求从明确未加入
-catalog 的表 `ext.missing` 中得到列名 `p`；在无元数据契约下该列无法推导。分支输出名未知
-时，分析器保留表级边而不猜测。
-
-### 血缘地图
-
-1. 通过直接关系构建血缘地图
-2. 为每个目标字段导出全局血缘
-
-## 实现状态
-
-原 TODO 清单已全部完成：
-
-- `select * from A,B`、`select c1,c2 from A,B`、`select A.c1,B.c2 from A,B` 由
-  `ColumnResolutionTest` 覆盖，包括歧义报错与元数据推导。
-- 派生表输出裸列名：`select * from (select A.c1, B.c2 from A,B) as T` 映射为
-  `T.c1` / `T.c2`。
-- `where ... in (select ...)` 会收集源表，但不产生输出映射。
-- 通过 `USE` 或 `search_path` 选择的默认数据库/schema 由 `CrossDatabaseSchemaTest`
-  覆盖。
-- `UPDATE` 语句（包括 join 与标量子查询）由 `AdvancedDmlTest` 覆盖。
-- 元数据来自 DDL 分析或序列化后的元数据文件（`toDdl`/`saveDdl`/`fromDdlFile`），与推导
-  元数据合并后供第二轮分析使用；全局血缘从 `ScanResult` 导出。
-
-### 支持的数据库
-
-Hive 与 Spark 已有 catalog 与通配符回归测试覆盖。Spark 语句仅在 Spark 解析器拒绝时才回退到
-Hive 解析器，因此 `INSERT OVERWRITE TABLE` 等 Hive 兼容 DML 可以正常分析。
-
-目前仍然开放的事项是有界契约的边界情况，记录在"已知限制"一节；它们是有意保留的说明，
-不再作为 TODO 跟踪。
+- 相关 `LATERAL` 子查询、前向引用的递归 CTE、派生表重复输出名，以及未知宽度通配与显式
+  投影混合的 `UNION`，按尽力而为分析：当位置无法唯一确定时保留表级边，不编造列名。
+- 派生表的 `*` 展开同时涉及已编目与未编目分支的 `UNION` 时，同样按尽力而为处理。
+- 解析器尚未建模的构造（例如 `LATERAL VIEW` 输出列、表函数、`VALUES` 表构造器）会使
+  语句记录为失败且不产生字段边；报告会把这类语句写入的目标表标成红色虚线。
+- Druid 的 AST 不保留 Derby JDBC 转义语法（`{fn TIMESTAMPADD(...)}`），也不携带源码
+  位置。严格模式以渲染后的调用签名记录转义来源；手工编辑 AST 后若产生等价调用签名，
+  可能继承单位关键字豁免。
+- 临时表与学习到的列只在单个 `LineageScanner` 实例内生效。
 
 ## 许可证
 
-本项目根据Apache-2.0许可证获得许可 - 有关详细信息,请参阅[LICENSE](LICENSE)文件。
+本项目根据 Apache-2.0 许可证获得许可 - 有关详细信息，请参阅 [LICENSE](LICENSE) 文件。

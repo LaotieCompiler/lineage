@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ODPS 数据血缘分析报告</title>
+<title>数据血缘分析报告</title>
 <style>
   :root {
     color-scheme: light;
@@ -223,8 +223,8 @@
 <div class="page viz-root">
   <header class="hero">
     <div>
-      <p class="eyebrow">Data Lineage · ODPS / MaxCompute</p>
-      <h1>yidoutang 数据血缘分析</h1>
+      <p class="eyebrow">Data Lineage</p>
+      <h1>数据血缘分析报告</h1>
       <p class="sub" id="subtitle">正在加载分析结果…</p>
     </div>
     <button class="theme-btn" id="themeToggle" type="button" aria-label="切换明暗主题">◐ 主题</button>
@@ -336,18 +336,22 @@
   <section class="panel notes" aria-labelledby="notesTitle">
     <h2 id="notesTitle">方法与限制</h2>
     <ul>
-      <li><strong>DDL：</strong>5 个 <code>.osql</code> 文件、221 张表载入元数据目录；ODPS 的 <code>LIFECYCLE</code> 在载入前剥离，使用 Hive 方言解析。</li>
-      <li><strong>SQL 预处理：</strong><code>${bizdate}</code> 等调度变量替换为固定日期；ODPS 脚本变量 <code>@var := SELECT …</code> 内联为派生表。</li>
-      <li><strong>元数据修补：</strong>对 <code>ColumnNotFoundException</code> 中列出的物理表补齐被引用字段，共 4 个字段，保证依赖可解析。</li>
-      <li><strong>COUNT(*)：</strong>本次分析前修正了解析器把 <code>COUNT(*)</code> 当作 <code>SELECT *</code> 的问题；否则聚合查询会虚构出全表字段边。</li>
-      <li><strong>未解析语句：</strong>剩余失败集中在 ODPS 专有构造——<code>LATERAL VIEW</code> 输出列、<code>TRANS_COLS</code> 表函数、<code>VALUES</code> 表构造器，以及嵌套作用域中重复别名；这些语句不产生字段边。</li>
+      <li><strong>DDL：</strong>DDL 文件载入元数据目录，作为字段解析的依据。</li>
+      <li><strong>SQL 预处理：</strong>调度占位符替换为固定日期；脚本变量 <code>@var := SELECT …</code> 内联为派生表。可用 <code>--no-preprocess</code> 关闭。</li>
+      <li><strong>元数据修补：</strong>对 <code>ColumnNotFoundException</code> 中列出的物理表补齐被引用字段，补齐记录见 <code>schema_repairs.csv</code>；只修改本次分析使用的目录副本。</li>
+      <li><strong>未解析语句：</strong>解析器尚未建模的构造（如 <code>LATERAL VIEW</code> 输出列、表函数、<code>VALUES</code> 表构造器）会记录失败，不产生字段边。</li>
       <li><strong>口径：</strong>表级边为直接依赖（沿临时表追溯到第一个物理表），保留 DWD/DWS 中间层；字段级边为端到端闭包，只保留最终物理源字段。</li>
     </ul>
   </section>
 </div>
 <div class="tooltip" id="tooltip" role="tooltip"></div>
+<script src="lineage-data.js"></script>
 <script>
-const DATA = /*__LINEAGE_DATA__*/null;
+const DATA = window.LINEAGE_DATA;
+if (!DATA) {
+  document.body.textContent = '缺少 lineage-data.js：请把本文件与扫描生成的 lineage-data.js 放在同一目录。';
+  throw new Error('lineage-data.js is missing');
+}
 
 const LAYER_NAMES = ['源数据 ODS/DIM', '明细 DWD', '汇总 DWS', '应用 ADS/BI'];
 const LAYER_SHORT = ['ODS', 'DWD', 'DWS', 'ADS/BI'];
@@ -437,8 +441,8 @@ function svgEl(tag, attrs) {
     host.appendChild(box);
   });
   const sub = document.getElementById('subtitle');
-  sub.textContent = '基于 ' + files.size + ' 个 SQL 脚本、5 个 DDL 文件（221 张表）生成 · 方言 Hive/ODPS · 生成于 ' +
-    new Date(DATA.generatedAt).toLocaleString('zh-CN');
+  sub.textContent = '基于 ' + files.size + ' 个 SQL 脚本、' + DATA.statements.length +
+    ' 条语句生成 · 生成于 ' + new Date(DATA.generatedAt).toLocaleString('zh-CN');
 })();
 
 /* ---------------- graph ---------------- */

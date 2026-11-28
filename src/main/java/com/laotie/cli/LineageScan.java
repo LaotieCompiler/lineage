@@ -1,3 +1,5 @@
+package com.laotie.cli;
+
 import com.alibaba.druid.DbType;
 import com.laotie.LineageOptions;
 import com.laotie.LineageScanner;
@@ -18,13 +20,19 @@ import com.laotie.parse.ScriptSplitter;
 import org.jgrapht.Graph;
 import org.jgrapht.graph.DefaultEdge;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
 
-public class OdpsLineage {
+/**
+ * Command-line scanner: analyzes a tree of DDL and SQL files against a metadata catalog and
+ * writes table- and column-level lineage artifacts as CSV.
+ */
+public class LineageScan {
     static DbType D;
     static final Pattern VAR_DEF = Pattern.compile("(?s)^\\s*@([A-Za-z_][A-Za-z0-9_]*)\\s*:=\\s*(.*)$");
     static final Pattern COL_MISSING = Pattern.compile("column '([^']+)' not found in tables: (.*)");
@@ -66,7 +74,6 @@ public class OdpsLineage {
         for (Path p : ddlPaths) {
             ddlFiles++;
             String ddl = new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
-            if (D == DbType.hive) ddl = ddl.replaceAll("(?i)LIFECYCLE\\s+\\d+", "");
             try {
                 baseCatalog.loadDdl(ddl);
             } catch (RuntimeException e) {
@@ -173,6 +180,8 @@ public class OdpsLineage {
         writeMissingTables(outDir.resolve("missing_tables.csv"), stmts, repaired);
         writeRunInfo(outDir.resolve("run-info.txt"), o, stmts.size(), failed,
                 added.size(), catalogTables, inlinedVars);
+        writeLineageData(outDir.resolve("lineage-data.js"), outDir);
+        writeReport(outDir.resolve("lineage-report.html"));
 
         System.out.println("\n=== failed statements ===");
         for (Stmt s : stmts) {
@@ -186,6 +195,7 @@ public class OdpsLineage {
         else for (String d : ddlErrors) System.out.println("DDL error: " + d);
         System.out.println("Graph: " + graph.getReverseGraph().vertexSet().size() + " vertices, "
                 + graph.getReverseGraph().edgeSet().size() + " edges");
+        System.out.println("Report: " + outDir.resolve("lineage-report.html").toAbsolutePath());
         System.out.println("\nArtifacts written to " + outDir.toAbsolutePath());
     }
 
@@ -195,7 +205,7 @@ public class OdpsLineage {
         Path ddlDir;
         List<Path> sqlDirs = new ArrayList<>();
         Path outDir = Paths.get("output");
-        List<String> extensions = new ArrayList<>(Collections.singletonList("osql"));
+        List<String> extensions = new ArrayList<>(Collections.singletonList("sql"));
         List<String> order = new ArrayList<>(Arrays.asList(
                 "dwd", "dws", "ads", "bi", "ods", "dim", "other"));
         boolean recursive = false;
@@ -461,6 +471,161 @@ public class OdpsLineage {
         return sorted;
     }
 
+    /**
+     * Write the data consumed by the static HTML report. The page loads this file with a
+     * plain script tag, so the report works from {@code file://} without a server.
+     */
+    static void writeLineageData(Path file, Path outDir) throws IOException {
+        String[] names = {"statements", "tableLineage", "tableDependencies",
+                "columnLineage", "repairs"};
+        Path[] sources = {outDir.resolve("statements.csv"),
+                outDir.resolve("table_lineage.csv"),
+                outDir.resolve("table_dependencies.csv"),
+                outDir.resolve("column_lineage.csv"),
+                outDir.resolve("schema_repairs.csv")};
+        try (java.io.Writer w = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
+            w.write("window.LINEAGE_DATA = {");
+            w.write("\"generatedAt\":");
+            w.write(json(java.time.OffsetDateTime.now().toString()));
+            w.write(",\"sourceDir\":");
+            w.write(json(outDir.toAbsolutePath().normalize().toString()));
+            for (int i = 0; i < names.length; i++) {
+                w.write(",");
+                w.write(json(names[i]));
+                w.write(":[");
+                List<Map<String, String>> rows = readCsv(sources[i]);
+                for (int r = 0; r < rows.size(); r++) {
+                    if (r > 0) w.write(",");
+                    w.write("{");
+                    int c = 0;
+                    for (Map.Entry<String, String> e : rows.get(r).entrySet()) {
+                        if (c++ > 0) w.write(",");
+                        w.write(json(e.getKey()));
+                        w.write(":");
+                        w.write(jsonValue(e.getKey(), e.getValue()));
+                    }
+                    w.write("}");
+                }
+                w.write("]");
+            }
+            w.write("};\n");
+        }
+    }
+
+    static String jsonValue(String key, String value) {
+        if ("statement".equals(key) || "instructions".equals(key)
+                || "target_columns".equals(key) || "column_edges".equals(key)) {
+            try {
+                return String.valueOf(Integer.parseInt(value));
+            } catch (NumberFormatException e) {
+                return "0";
+            }
+        }
+        if ("source_is_wildcard".equals(key) || "truncated".equals(key)) {
+            return String.valueOf("true".equalsIgnoreCase(value));
+        }
+        return json(value);
+    }
+
+    static String json(String value) {
+        if (value == null) return "null";
+        StringBuilder out = new StringBuilder(value.length() + 2);
+        out.append('"');
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            switch (ch) {
+                case '"': out.append("\\\""); break;
+                case '\\': out.append("\\\\"); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                case '\b': out.append("\\b"); break;
+                case '\f': out.append("\\f"); break;
+                default:
+                    if (ch < 0x20 || ch == 0x2028 || ch == 0x2029) {
+                        out.append(String.format("\\u%04x", (int) ch));
+                    } else {
+                        out.append(ch);
+                    }
+            }
+        }
+        out.append('"');
+        return out.toString();
+    }
+
+    static List<Map<String, String>> readCsv(Path file) throws IOException {
+        List<Map<String, String>> rows = new ArrayList<>();
+        if (!Files.isRegularFile(file)) {
+            return rows;
+        }
+        String text = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        List<List<String>> parsed = new ArrayList<>();
+        List<String> row = new ArrayList<>();
+        StringBuilder field = new StringBuilder();
+        boolean quoted = false;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (quoted) {
+                if (ch == '"') {
+                    if (i + 1 < text.length() && text.charAt(i + 1) == '"') {
+                        field.append('"');
+                        i++;
+                    } else {
+                        quoted = false;
+                    }
+                } else {
+                    field.append(ch);
+                }
+            } else if (ch == '"') {
+                quoted = true;
+            } else if (ch == ',') {
+                row.add(field.toString());
+                field.setLength(0);
+            } else if (ch == '\n') {
+                row.add(field.toString());
+                field.setLength(0);
+                parsed.add(row);
+                row = new ArrayList<>();
+            } else if (ch != '\r') {
+                field.append(ch);
+            }
+        }
+        if (field.length() > 0 || !row.isEmpty()) {
+            row.add(field.toString());
+            parsed.add(row);
+        }
+        if (parsed.isEmpty()) {
+            return rows;
+        }
+        List<String> header = parsed.get(0);
+        for (int r = 1; r < parsed.size(); r++) {
+            List<String> values = parsed.get(r);
+            boolean blank = true;
+            for (String value : values) {
+                if (!value.trim().isEmpty()) {
+                    blank = false;
+                    break;
+                }
+            }
+            if (blank) continue;
+            Map<String, String> map = new LinkedHashMap<>();
+            for (int c = 0; c < header.size(); c++) {
+                map.put(header.get(c).trim(), c < values.size() ? values.get(c).trim() : "");
+            }
+            rows.add(map);
+        }
+        return rows;
+    }
+
+    static void writeReport(Path file) throws IOException {
+        try (InputStream in = LineageScan.class.getResourceAsStream("lineage-report.html")) {
+            if (in == null) {
+                throw new IOException("report template is missing from the classpath");
+            }
+            Files.copy(in, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
     static void writeRunInfo(Path p, Options o, int statements, long failed,
             int repairs, int tables, int inlined) throws Exception {
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(p, StandardCharsets.UTF_8))) {
@@ -515,7 +680,7 @@ public class OdpsLineage {
         out.println("  -s, --sql <dir>       SQL directory, repeatable");
         out.println("  -o, --output <dir>    output directory (default: ./output)");
         out.println("      --dialect <name>  Druid dialect (default: hive)");
-        out.println("      --ext <list>      comma-separated extensions (default: osql)");
+        out.println("      --ext <list>      comma-separated extensions (default: sql)");
         out.println("      --order <list>    auto-discovery order (default: dwd,dws,ads,bi,ods,dim,other)");
         out.println("      --recursive       scan subdirectories recursively");
         out.println("      --strict          STRICT metadata mode (default: OPTIONAL)");
@@ -526,7 +691,7 @@ public class OdpsLineage {
         out.println();
         out.println("Examples:");
         out.println("  run.sh --input /data/warehouse/scripts --output output");
-        out.println("  run.sh --ddl /data/ddl --sql /data/dwd --sql /data/dws --output output --no-render");
+        out.println("  run.sh --ddl /data/ddl --sql /data/dwd --sql /data/dws --output output");
     }
 
     static ScanOutcome scanAll(MetadataCatalog catalog, List<SqlFile> files, Options o) {
@@ -1043,7 +1208,7 @@ public class OdpsLineage {
                     if (c.isTemporary() || c.equals(target)) continue;
                     leaves.add(c);
                 }
-                leaves.sort(Comparator.comparing(OdpsLineage::colKey));
+                leaves.sort(Comparator.comparing(LineageScan::colKey));
                 for (Column c : leaves) {
                     List<List<RelationHop>> path = paths.get(c);
                     Capped relationText = joinPaths(path, true);
@@ -1242,7 +1407,7 @@ public class OdpsLineage {
     }
 
     /**
-     * Split a column list on commas outside quotes. Hive/ODPS quoted identifiers use
+     * Split a column list on commas outside quotes. Hive quoted identifiers use
      * backticks, so a plain {@code split(",")} would break a column named {@code a,b}.
      */
     static List<String> splitIdentifiers(String list) {

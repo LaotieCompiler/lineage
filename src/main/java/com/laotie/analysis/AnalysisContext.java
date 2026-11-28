@@ -10,10 +10,10 @@ import java.util.Stack;
 
 import com.alibaba.druid.sql.ast.statement.SQLTableSource;
 
-import com.laotie.DmlLineage.SourceNode;
-import com.laotie.DmlLineage.SourceTable;
-import com.laotie.DmlLineage.StarOutput;
-import com.laotie.DmlLineage.WildcardSpan;
+import com.laotie.analysis.model.SourceNode;
+import com.laotie.analysis.model.SourceTable;
+import com.laotie.analysis.model.StarOutput;
+import com.laotie.analysis.model.WildcardSpan;
 
 /**
  * Mutable state shared by the analysis passes for one statement.

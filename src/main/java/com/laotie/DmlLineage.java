@@ -80,6 +80,15 @@ import com.laotie.exception.ColumnNotFoundException;
 import com.laotie.exception.MetadataNotFoundException;
 import com.laotie.exception.UnquotedIdentifierException;
 import com.laotie.analysis.AnalysisContext;
+import com.laotie.analysis.model.CorrelatedOwner;
+import com.laotie.analysis.model.OutputName;
+import com.laotie.analysis.model.ScalarSubquery;
+import com.laotie.analysis.model.SourceNode;
+import com.laotie.analysis.model.SourceTable;
+import com.laotie.analysis.model.StarColumn;
+import com.laotie.analysis.model.StarOutput;
+import com.laotie.analysis.model.WildcardRef;
+import com.laotie.analysis.model.WildcardSpan;
 import com.laotie.dialect.DialectRules;
 import com.laotie.identifier.Identifier;
 import com.laotie.identifier.IdentifierCase;
@@ -3890,24 +3899,7 @@ public class DmlLineage {
      * The output of an analyzed scalar subquery: the temporary that holds it and the
      * names of its columns.
      */
-    private static final class ScalarSubquery {
-        private final String temp;
-        private final List<String> columns;
-        /**
-         * The exact references the inner analysis wrote, so the outer projection
-         * names the same vertices.
-         */
-        private final List<String> references;
-
-        private ScalarSubquery(String temp, List<String> columns,
-                List<String> references) {
-            this.temp = temp;
-            this.columns = columns;
-            this.references = references;
-        }
-    }
-
-    /**
+/**
      * Analyze a scalar subquery as a one-column derived table so its own lineage is
      * kept instead of being folded into the enclosing expression.
      */
@@ -5471,52 +5463,7 @@ public class DmlLineage {
         return refs;
     }
 
-    private static final class WildcardRef {
-        private final String name;
-        private final boolean temporary;
-
-        private WildcardRef(String name, boolean temporary) {
-            this.name = name;
-            this.temporary = temporary;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (!(other instanceof WildcardRef)) {
-                return false;
-            }
-            WildcardRef ref = (WildcardRef) other;
-            return temporary == ref.temporary
-                    && (name == null ? ref.name == null : name.equals(ref.name));
-        }
-
-        @Override
-        public int hashCode() {
-            return (name == null ? 0 : name.hashCode()) * 31 + (temporary ? 1 : 0);
-        }
-    }
-
-    public static final class WildcardSpan {
-        private final int start;
-        private final int end;
-        private final String source;
-        private final boolean temporary;
-
-        private WildcardSpan(int start, int end, String source, boolean temporary) {
-            this.start = start;
-            this.end = end;
-            this.source = source;
-            this.temporary = temporary;
-        }
-
-        @Override
-        public String toString() {
-            return "[" + start + "," + end + ")="
-                    + (temporary ? "temp:" : "") + source;
-        }
-    }
-
-    private boolean hasWildcardContribution(String target) {
+private boolean hasWildcardContribution(String target) {
         return target != null && Boolean.TRUE.equals(state.targetWildcardContribution.get(target));
     }
 
@@ -6924,17 +6871,7 @@ public class DmlLineage {
                 displayNames(currentSources()));
     }
 
-    private static final class CorrelatedOwner {
-        private final SourceTable source;
-        private final SourceNode binding;
-
-        private CorrelatedOwner(SourceTable source, SourceNode binding) {
-            this.source = source;
-            this.binding = binding;
-        }
-    }
-
-    private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
+private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         if (owner == null) {
             return null;
         }
@@ -9744,212 +9681,6 @@ public class DmlLineage {
         String value = name.trim();
         int idx = value.lastIndexOf('.');
         return idx >= 0 ? value.substring(idx + 1) : value;
-    }
-
-    public static final class SourceTable {
-        private final String displayName;
-        private final String writtenName;
-        private final String rawName;
-        private final String alias;
-        private final Table metadataTable;
-        private final boolean temporary;
-        private final boolean outputWidthKnown;
-        private final boolean outputNamesKnown;
-        private final List<String> outputColumns;
-        private final List<String> outputKeys;
-        private final List<Boolean> outputNameKnown;
-        private final List<SourceTable> outputUnknownGroups;
-        private final int minOutputColumns;
-        private final boolean wildcardOnly;
-        private final boolean wildcardContribution;
-        private final boolean learnable;
-        private final String implicitName;
-
-        private SourceTable(String displayName, String writtenName, String rawName, String alias,
-                Table metadataTable, boolean temporary, boolean outputWidthKnown,
-                boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
-                List<Boolean> outputNameKnown, int minOutputColumns,
-                List<SourceTable> outputUnknownGroups) {
-            this(displayName, writtenName, rawName, alias, metadataTable, temporary,
-                    outputWidthKnown, outputNamesKnown, outputColumns, outputKeys,
-                    outputNameKnown, minOutputColumns, outputUnknownGroups, false, false);
-        }
-
-        private SourceTable(String displayName, String writtenName, String rawName, String alias,
-                Table metadataTable, boolean temporary, boolean outputWidthKnown,
-                boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
-                List<Boolean> outputNameKnown, int minOutputColumns,
-                List<SourceTable> outputUnknownGroups, boolean wildcardOnly,
-                boolean wildcardContribution) {
-            this(displayName, writtenName, rawName, alias, metadataTable, temporary,
-                    outputWidthKnown, outputNamesKnown, outputColumns, outputKeys,
-                    outputNameKnown, minOutputColumns, outputUnknownGroups, wildcardOnly,
-                    wildcardContribution, true, null);
-        }
-
-        private SourceTable(String displayName, String writtenName, String rawName, String alias,
-                Table metadataTable, boolean temporary, boolean outputWidthKnown,
-                boolean outputNamesKnown, List<String> outputColumns, List<String> outputKeys,
-                List<Boolean> outputNameKnown, int minOutputColumns,
-                List<SourceTable> outputUnknownGroups, boolean wildcardOnly,
-                boolean wildcardContribution, boolean learnable, String implicitName) {
-            this.displayName = displayName;
-            this.writtenName = writtenName;
-            this.rawName = rawName;
-            this.alias = alias;
-            this.metadataTable = metadataTable;
-            this.temporary = temporary;
-            this.outputWidthKnown = outputWidthKnown;
-            this.outputNamesKnown = outputNamesKnown;
-            this.outputColumns = outputColumns == null
-                    ? java.util.Collections.<String>emptyList() : outputColumns;
-            this.outputKeys = outputKeys == null
-                    ? java.util.Collections.<String>emptyList() : outputKeys;
-            this.outputNameKnown = outputNameKnown == null
-                    ? java.util.Collections.<Boolean>emptyList() : outputNameKnown;
-            this.minOutputColumns = minOutputColumns;
-            this.outputUnknownGroups = outputUnknownGroups == null
-                    ? java.util.Collections.<SourceTable>emptyList() : outputUnknownGroups;
-            this.wildcardOnly = wildcardOnly;
-            this.wildcardContribution = wildcardContribution;
-            this.learnable = learnable;
-            this.implicitName = implicitName;
-        }
-    }
-
-    private static final class OutputName {
-        private final String name;
-        private final String key;
-
-        private OutputName(String name, String key) {
-            this.name = name;
-            this.key = key;
-        }
-    }
-
-    public static final class StarOutput {
-        private final List<StarColumn> sources;
-        private final boolean nameKnown;
-        private final boolean stable;
-        private final StarOutput origin;
-        /**
-         * True when the position or source identity of this output was guessed, so the
-         * metadata-free contract must keep the projection at table level.
-         */
-        private final boolean ambiguous;
-
-        private StarOutput(List<StarColumn> sources) {
-            this(sources, false);
-        }
-
-        private StarOutput(List<StarColumn> sources, boolean nameKnown) {
-            this(sources, nameKnown, true);
-        }
-
-        private StarOutput(List<StarColumn> sources, boolean nameKnown, boolean stable) {
-            this(sources, nameKnown, stable, null);
-        }
-
-        private StarOutput(List<StarColumn> sources, boolean nameKnown, boolean stable,
-                StarOutput origin) {
-            this(sources, nameKnown, stable, origin, false);
-        }
-
-        private StarOutput(List<StarColumn> sources, boolean nameKnown, boolean stable,
-                StarOutput origin, boolean ambiguous) {
-            this.sources = sources;
-            this.nameKnown = nameKnown;
-            this.stable = stable;
-            this.origin = origin == null ? this : origin;
-            this.ambiguous = ambiguous;
-        }
-
-        private StarOutput withStable(boolean value) {
-            return new StarOutput(sources, nameKnown, value, origin, ambiguous);
-        }
-
-        private StarOutput withAmbiguous(boolean value) {
-            return new StarOutput(sources, nameKnown, stable, origin, value);
-        }
-    }
-
-    public static final class SourceNode {
-        private final List<SourceTable> sources;
-        private final List<StarOutput> plan;
-        private final boolean knownColumns;
-        private final boolean widthKnown;
-        private final int width;
-        private final int minWidth;
-        private final int usingCount;
-        private final int rightBoundary;
-        private final List<SourceTable> unknownLeftSources;
-        private final List<SourceTable> unknownRightSources;
-        private final Map<SourceTable, Integer> unknownSectionEnd;
-        private final SourceNode leftNode;
-        private final SourceNode rightNode;
-
-        private SourceNode(List<SourceTable> sources, List<StarOutput> plan,
-                boolean knownColumns, boolean widthKnown, int width, int minWidth,
-                int usingCount, int rightBoundary, List<SourceTable> unknownLeftSources,
-                List<SourceTable> unknownRightSources,
-                Map<SourceTable, Integer> unknownSectionEnd) {
-            this(sources, plan, knownColumns, widthKnown, width, minWidth, usingCount,
-                    rightBoundary, unknownLeftSources, unknownRightSources,
-                    unknownSectionEnd, null, null);
-        }
-
-        private SourceNode(List<SourceTable> sources, List<StarOutput> plan,
-                boolean knownColumns, boolean widthKnown, int width, int minWidth,
-                int usingCount, int rightBoundary, List<SourceTable> unknownLeftSources,
-                List<SourceTable> unknownRightSources,
-                Map<SourceTable, Integer> unknownSectionEnd, SourceNode leftNode,
-                SourceNode rightNode) {
-            this.sources = sources;
-            this.plan = plan;
-            this.knownColumns = knownColumns;
-            this.widthKnown = widthKnown;
-            this.width = width;
-            this.minWidth = minWidth;
-            this.usingCount = usingCount;
-            this.rightBoundary = rightBoundary;
-            this.unknownLeftSources = unknownLeftSources;
-            this.unknownRightSources = unknownRightSources;
-            this.unknownSectionEnd = unknownSectionEnd;
-            this.leftNode = leftNode;
-            this.rightNode = rightNode;
-        }
-    }
-
-    private static final class StarColumn {
-        private final SourceTable source;
-        private final String column;
-        private final String key;
-        private final boolean nameKnown;
-        private final boolean quoted;
-        /**
-         * Position of this column inside its own source's output, or -1 when the plan
-         * does not track it (for example a synthesized placeholder).
-         */
-        private final int index;
-
-        private StarColumn(SourceTable source, String column, String key) {
-            this(source, column, key, true, false);
-        }
-
-        private StarColumn(SourceTable source, String column, String key, boolean nameKnown,
-                boolean quoted) {
-            this(source, column, key, nameKnown, quoted, -1);
-        }
-
-        private StarColumn(SourceTable source, String column, String key, boolean nameKnown,
-                boolean quoted, int index) {
-            this.source = source;
-            this.column = column;
-            this.key = key;
-            this.nameKnown = nameKnown;
-            this.quoted = quoted;
-            this.index = index;
-        }
     }
 
 }

@@ -90,6 +90,20 @@ mvn test -Dtest=TpchCorpusTest
 
 未下载时该测试自动跳过，离线构建仍然通过。
 
+### 差分检查（可选）
+
+[SQLGlot](https://github.com/tobymao/sqlglot) 提供了另一套独立的列级血缘实现。它只作为
+第二意见而非绝对标准：脚本把黄金语料中的单语句 `SELECT` 用例与 SQLGlot 的结果对比，
+输出差异和不支持的构造，供人工复核。
+
+```bash
+python3 -m venv target/sqlglot-venv
+target/sqlglot-venv/bin/pip install -r scripts/sqlglot-requirements.txt
+target/sqlglot-venv/bin/python scripts/differential-sqlglot.py
+```
+
+该检查不进入 Maven 构建或 CI。加 `--fail-on-diff` 可在出现确认差异时返回非零退出码。
+
 ### 构建
 
 项目目标为 Java 8；JUnit 4 与 JUnit 5 测试由 Maven Surefire 一起运行。Druid 固定为

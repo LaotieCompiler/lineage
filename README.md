@@ -89,6 +89,22 @@ mvn test -Dtest=TpchCorpusTest
 
 Without the download the test is skipped, so offline builds stay green.
 
+### differential check (optional)
+
+[SQLGlot](https://github.com/tobymao/sqlglot) provides an independent implementation of
+column lineage. It is a second opinion, not an oracle: the script compares single-statement
+`SELECT` cases from the golden corpus with its lineage and reports differences and
+unsupported constructs for manual review.
+
+```bash
+python3 -m venv target/sqlglot-venv
+target/sqlglot-venv/bin/pip install -r scripts/sqlglot-requirements.txt
+target/sqlglot-venv/bin/python scripts/differential-sqlglot.py
+```
+
+The check is not part of the Maven build or CI. Pass `--fail-on-diff` to make confirmed
+differences exit non-zero.
+
 ### build
 
 The project targets Java 8. JUnit 4 and JUnit 5 tests run together through Maven Surefire.

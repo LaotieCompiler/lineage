@@ -673,7 +673,11 @@ final class DmlStatementAnalyzer {
         return columns;
     }
 
-    void processInsertInto(SQLExprTableSource tableSource,
+    /**
+     * Analyzes a write into {@code tableSource} and returns the temporary target the
+     * projection was written to, so callers can register the written columns.
+     */
+    String processInsertInto(SQLExprTableSource tableSource,
             List<SQLExpr> insertColumns, SQLSelect select,
             SQLWithSubqueryClause with, List<SQLAssignItem> partitions) {
         String rawName = host.extractTableName(tableSource);
@@ -709,6 +713,7 @@ final class DmlStatementAnalyzer {
                         : null;
 
         boolean scoped = with != null;
+        String insertTemp;
         if (scoped) {
             host.state().cteScopes.push(new HashMap<String, String>());
         }
@@ -717,7 +722,7 @@ final class DmlStatementAnalyzer {
                 host.processWithSubQuery(with);
             }
 
-            String insertTemp = host.getTempTableName();
+            insertTemp = host.getTempTableName();
             host.state().stackTargetTable.push(insertTemp);
             host.state().intermediateTargets.add(insertTemp);
 
@@ -757,6 +762,33 @@ final class DmlStatementAnalyzer {
                 host.state().cteScopes.pop();
             }
         }
+        return insertTemp;
+    }
+
+    void processCreateTableAs(SQLCreateTableStatement create) {
+        processCreateAs(create.getTableSource(), create.getSelect(),
+                create.getTableElementList());
+    }
+
+    void processCreateViewAs(SQLCreateViewStatement create) {
+        processCreateAs(create.getTableSource(), create.getSubQuery(),
+                create.getColumns());
+    }
+
+    private void processCreateAs(SQLExprTableSource tableSource, SQLSelect select,
+            List<SQLTableElement> elements) {
+        List<SQLExpr> declared = new ArrayList<>();
+        List<SQLColumnDefinition> definitions = new ArrayList<>();
+        for (SQLTableElement element : elements) {
+            if (element instanceof SQLColumnDefinition) {
+                SQLColumnDefinition definition = (SQLColumnDefinition) element;
+                declared.add(new SQLIdentifierExpr(definition.getColumnName()));
+                definitions.add(definition);
+            }
+        }
+        host.prepareCreatedTable(tableSource, definitions);
+        String temp = processInsertInto(tableSource, declared, select, null, null);
+        host.completeCreatedTable(tableSource, definitions, temp);
     }
 
     /**

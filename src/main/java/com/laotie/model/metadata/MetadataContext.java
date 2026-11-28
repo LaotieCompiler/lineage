@@ -63,6 +63,15 @@ public class MetadataContext {
                 metadataChecksum);
     }
 
+    /**
+     * Derive a context over a runtime catalog (for example a copy extended by DDL in
+     * the scanned script). Session labels and the reported metadata version are kept.
+     */
+    public MetadataContext withCatalog(MetadataCatalog runtimeCatalog) {
+        return new MetadataContext(runtimeCatalog, instance, database, schemas,
+                metadataVersion, metadataChecksum);
+    }
+
     public MetadataCatalog getCatalog() {
         return catalog;
     }

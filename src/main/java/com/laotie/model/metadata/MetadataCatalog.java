@@ -631,6 +631,55 @@ public class MetadataCatalog {
     }
 
     /**
+     * A mutable deep copy used for DDL seen while scanning a script. The returned
+     * catalog starts with the same content and version but may be changed.
+     */
+    public synchronized MetadataCatalog mutableCopy() {
+        MetadataCatalog copy = new MetadataCatalog(dialect);
+        copy.defaultInstance = defaultInstance;
+        copy.defaultDatabase = defaultDatabase;
+        copy.defaultSchema = defaultSchema;
+        for (Instance instance : instances.values()) {
+            for (Database database : instance.getDatabases()) {
+                for (Schema schema : database.getSchemas()) {
+                    for (Table table : schema.getTables()) {
+                        TableLocation location = copy.addScannedTable(instance.getName(),
+                                database.getName(), schema.getName(), table.getName(),
+                                new ArrayList<>(table.getFields()));
+                        location.getTable().setQuotedName(table.isQuotedName());
+                        location.getTable().setOrderedColumns(table.getOrderedColumns());
+                    }
+                }
+            }
+        }
+        copy.version = version;
+        copy.cachedChecksum = cachedChecksum;
+        return copy;
+    }
+
+    /**
+     * Remove a table from a mutable catalog. Returns whether it was present.
+     */
+    public synchronized boolean removeTable(String instance, String database,
+            String schema, String tableName) {
+        checkMutable();
+        Instance foundInstance = instances.get(instance);
+        Database foundDatabase = foundInstance == null ? null
+                : foundInstance.getDatabase(database);
+        Schema foundSchema = foundDatabase == null ? null
+                : foundDatabase.getSchema(schema);
+        if (foundSchema == null) {
+            return false;
+        }
+        boolean removed = foundSchema.getTableMap().remove(tableName) != null;
+        if (removed) {
+            version++;
+            cachedChecksum = null;
+        }
+        return removed;
+    }
+
+    /**
      * Capture an immutable snapshot of this catalog.
      */
     public synchronized MetadataCatalog snapshot() {

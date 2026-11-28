@@ -22,13 +22,22 @@ import com.alibaba.druid.sql.ast.expr.SQLTextLiteralExpr;
 import com.alibaba.druid.sql.ast.expr.SQLListExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.expr.SQLQueryExpr;
+import com.alibaba.druid.sql.ast.statement.SQLAlterTableAddColumn;
+import com.alibaba.druid.sql.ast.statement.SQLAlterTableDropColumnItem;
+import com.alibaba.druid.sql.ast.statement.SQLAlterTableItem;
+import com.alibaba.druid.sql.ast.statement.SQLAlterTableStatement;
 import com.alibaba.druid.sql.ast.statement.SQLAssignItem;
+import com.alibaba.druid.sql.ast.statement.SQLColumnDefinition;
 import com.alibaba.druid.sql.ast.statement.SQLCreateTableStatement;
+import com.alibaba.druid.sql.ast.statement.SQLCreateViewStatement;
 import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
+import com.alibaba.druid.sql.ast.statement.SQLDropTableStatement;
+import com.alibaba.druid.sql.ast.statement.SQLDropViewStatement;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
 import com.alibaba.druid.sql.ast.statement.SQLMergeStatement;
 import com.alibaba.druid.sql.ast.statement.SQLReplaceStatement;
+import com.alibaba.druid.sql.ast.statement.SQLTableElement;
 import com.alibaba.druid.sql.ast.statement.SQLTruncateStatement;
 import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
 import com.alibaba.druid.sql.ast.statement.SQLSelect;
@@ -63,6 +72,7 @@ import com.laotie.validation.StrictQuotedIdentifierValidator;
 import com.laotie.model.Instruction;
 import com.laotie.model.Instruction.OperationType;
 import com.laotie.model.LineageResult;
+import com.laotie.model.metadata.Column;
 import com.laotie.model.metadata.LearnedMetadata;
 import com.laotie.model.metadata.MetadataCatalog;
 import com.laotie.model.metadata.MetadataContext;
@@ -99,6 +109,8 @@ public class DmlLineage {
     private List<String> sessionRawSchemas = new ArrayList<>();
     private Map<String, Set<String>> pendingLearned = new HashMap<>();
     private MetadataContext context;
+    /** Tables created, replaced or altered by DDL in the current scan. */
+    private MetadataCatalog runtimeCatalog;
     private boolean ansiEnabled;
     private boolean ansiDoubleQuotedIdentifiers;
     private String statementSql;
@@ -343,13 +355,18 @@ public class DmlLineage {
         List<LineageResult> results = new ArrayList<>();
 
         MetadataContext previous = this.context;
+        MetadataCatalog previousRuntime = this.runtimeCatalog;
         this.context = base;
+        // Each script starts from the published catalog; DDL only affects the
+        // statements that follow it inside the same script.
+        this.runtimeCatalog = null;
         try {
             for (String sql : splitStatements(sqlStr, dialect)) {
                 results.add(parseOne(sql, dialect, base, session));
             }
         } finally {
             this.context = previous;
+            this.runtimeCatalog = previousRuntime;
         }
         return results;
     }
@@ -385,6 +402,10 @@ public class DmlLineage {
         }
 
         MetadataContext working = session.toContext(base);
+        if (working != null && runtimeCatalog != null) {
+            // DDL earlier in this script is visible to the statements that follow it.
+            working = working.withCatalog(runtimeCatalog);
+        }
         MetadataContext previous = this.context;
         this.context = working;
         state.tempTableNum = 0;
@@ -539,6 +560,14 @@ public class DmlLineage {
             processDelete((SQLDeleteStatement) statement);
         } else if (statement instanceof SQLCreateTableStatement) {
             processCreateTable((SQLCreateTableStatement) statement);
+        } else if (statement instanceof SQLCreateViewStatement) {
+            processCreateView((SQLCreateViewStatement) statement);
+        } else if (statement instanceof SQLDropTableStatement) {
+            processDrop(((SQLDropTableStatement) statement).getTableSources());
+        } else if (statement instanceof SQLDropViewStatement) {
+            processDrop(((SQLDropViewStatement) statement).getTableSources());
+        } else if (statement instanceof SQLAlterTableStatement) {
+            processAlter((SQLAlterTableStatement) statement);
         } else if (statement instanceof SQLReplaceStatement) {
             processReplace((SQLReplaceStatement) statement);
         } else if (statement instanceof SQLTruncateStatement) {
@@ -1428,14 +1457,250 @@ public class DmlLineage {
     }
 
     private void processCreateTable(SQLCreateTableStatement create) {
+        if (create.getSelect() != null) {
+            // CREATE TABLE ... AS SELECT writes the query result into the new table.
+            dml.processCreateTableAs(create);
+            return;
+        }
         SQLExprTableSource tableSource = create.getTableSource();
         if (tableSource != null) {
             String written = normalizeQualifiedName(extractTableName(tableSource));
             registerTable(written, written, written, null, false);
         }
-        if (create.getSelect() != null) {
-            processSelect(create.getSelect());
+        List<SQLColumnDefinition> definitions = new ArrayList<>();
+        for (SQLTableElement element : create.getTableElementList()) {
+            if (element instanceof SQLColumnDefinition) {
+                definitions.add((SQLColumnDefinition) element);
+            }
         }
+        for (SQLColumnDefinition partition : create.getPartitionColumns()) {
+            if (!containsColumn(definitions, partition.getColumnName())) {
+                definitions.add(partition);
+            }
+        }
+        registerCreatedTable(tableSource, definitions, null);
+    }
+
+    private void processCreateView(SQLCreateViewStatement create) {
+        if (create.getSubQuery() == null) {
+            // A view without a query body (for example a dialect-specific stub) only
+            // contributes its declared columns.
+            List<SQLColumnDefinition> definitions = new ArrayList<>();
+            for (SQLTableElement element : create.getColumns()) {
+                if (element instanceof SQLColumnDefinition) {
+                    definitions.add((SQLColumnDefinition) element);
+                }
+            }
+            registerCreatedTable(create.getTableSource(), definitions, null);
+            return;
+        }
+        dml.processCreateViewAs(create);
+    }
+
+    private void processDrop(List<SQLExprTableSource> sources) {
+        if (context == null || sources == null || sources.isEmpty()) {
+            return;
+        }
+        MetadataCatalog catalog = runtimeCatalog();
+        if (catalog == null) {
+            return;
+        }
+        MetadataContext previous = context;
+        context = context.withCatalog(catalog);
+        try {
+            for (SQLExprTableSource source : sources) {
+                if (source == null) {
+                    continue;
+                }
+                String raw = extractTableName(source);
+                if (raw == null) {
+                    continue;
+                }
+                TableLocation location = resolveMetadataTable(raw);
+                if (location != null) {
+                    catalog.removeTable(location.getInstance(), location.getDatabase(),
+                            location.getSchema(), location.getTable().getName());
+                }
+            }
+        } finally {
+            context = previous;
+        }
+    }
+
+    private void processAlter(SQLAlterTableStatement alter) {
+        if (context == null || alter.getTableSource() == null) {
+            return;
+        }
+        MetadataCatalog catalog = runtimeCatalog();
+        if (catalog == null) {
+            return;
+        }
+        MetadataContext previous = context;
+        context = context.withCatalog(catalog);
+        try {
+            String raw = extractTableName(alter.getTableSource());
+            if (raw == null) {
+                return;
+            }
+            TableLocation location = resolveMetadataTable(raw);
+            if (location == null) {
+                return;
+            }
+            Table table = location.getTable();
+            for (SQLAlterTableItem item : alter.getItems()) {
+                if (item instanceof SQLAlterTableAddColumn) {
+                    for (SQLColumnDefinition definition
+                            : ((SQLAlterTableAddColumn) item).getColumns()) {
+                        if (!table.hasColumn(definition.getColumnName())) {
+                            table.addColumn(columnFor(definition));
+                        }
+                    }
+                } else if (item instanceof SQLAlterTableDropColumnItem) {
+                    for (SQLName name
+                            : ((SQLAlterTableDropColumnItem) item).getColumns()) {
+                        Column column = table.getColumn(name.getSimpleName());
+                        if (column == null) {
+                            continue;
+                        }
+                        List<Column> remaining = new ArrayList<>(table.getFields());
+                        remaining.remove(column);
+                        table.setColumns(remaining);
+                    }
+                }
+            }
+        } finally {
+            context = previous;
+        }
+    }
+
+    /**
+     * Registers the target of a CREATE ... AS statement before its query is analyzed,
+     * so the write resolves against a table that already exists. Declared columns are
+     * known up front; produced columns fill in after analysis.
+     */
+    void prepareCreatedTable(SQLExprTableSource tableSource,
+            List<SQLColumnDefinition> definitions) {
+        if (context == null || tableSource == null) {
+            return;
+        }
+        MetadataCatalog catalog = runtimeCatalog();
+        if (catalog == null) {
+            return;
+        }
+        context = context.withCatalog(catalog);
+        String raw = extractTableName(tableSource);
+        if (raw == null) {
+            return;
+        }
+        List<Column> columns = new ArrayList<>();
+        for (SQLColumnDefinition definition : definitions) {
+            columns.add(columnFor(definition));
+        }
+        catalog.addTable(sessionPhysicalReference(raw), columns);
+    }
+
+    void completeCreatedTable(SQLExprTableSource tableSource,
+            List<SQLColumnDefinition> definitions, String temp) {
+        if (!definitions.isEmpty()) {
+            return;
+        }
+        // The projection names are known only after analysis; replace the
+        // placeholder registered by prepareCreatedTable.
+        registerCreatedTable(tableSource, definitions, temp);
+    }
+
+    /**
+     * Makes a table created by DDL in this script visible to the statements that
+     * follow it. Without a metadata context there is no catalog to extend.
+     */
+    void registerCreatedTable(SQLExprTableSource tableSource,
+            List<SQLColumnDefinition> definitions, String temp) {
+        if (context == null || tableSource == null) {
+            return;
+        }
+        MetadataCatalog catalog = runtimeCatalog();
+        if (catalog == null) {
+            return;
+        }
+        String raw = extractTableName(tableSource);
+        if (raw == null) {
+            return;
+        }
+        List<Column> columns = new ArrayList<>();
+        if (!definitions.isEmpty()) {
+            for (SQLColumnDefinition definition : definitions) {
+                columns.add(columnFor(definition));
+            }
+        } else {
+            columns.addAll(producedColumns(temp));
+        }
+        catalog.addTable(sessionPhysicalReference(raw), columns);
+    }
+
+    private MetadataCatalog runtimeCatalog() {
+        if (runtimeCatalog == null) {
+            MetadataCatalog base = context == null ? null : context.getCatalog();
+            if (base == null) {
+                return null;
+            }
+            runtimeCatalog = base.mutableCopy();
+        }
+        return runtimeCatalog;
+    }
+
+    private Column columnFor(SQLColumnDefinition definition) {
+        String raw = definition.getColumnName();
+        Column column = new Column(null, MetadataCatalog.normalizeIdentifier(raw));
+        column.setQuoted(MetadataCatalog.isQuotedIdentifier(raw));
+        if (definition.getDataType() != null) {
+            column.setDataType(definition.getDataType().toString());
+        }
+        return column;
+    }
+
+    /**
+     * Columns produced by an analyzed projection. Positions whose names are unknown
+     * or constant are not registered, so a later statement never invents a column.
+     */
+    private List<Column> producedColumns(String temp) {
+        List<Column> columns = new ArrayList<>();
+        if (temp == null) {
+            return columns;
+        }
+        List<String> outputs = state.targetOutputs.get(temp);
+        if (outputs == null) {
+            return columns;
+        }
+        List<Boolean> nameKnown = state.targetOutputNameKnown.get(temp);
+        Set<String> seen = new HashSet<>();
+        for (int i = 0; i < outputs.size(); i++) {
+            String name = outputs.get(i);
+            if (name == null || name.startsWith("\u0000")) {
+                continue;
+            }
+            if (nameKnown != null && i < nameKnown.size()
+                    && !Boolean.TRUE.equals(nameKnown.get(i))) {
+                continue;
+            }
+            String key = identifierKey(name);
+            if (key == null || !seen.add(key)) {
+                continue;
+            }
+            columns.add(new Column(null, MetadataCatalog.normalizeIdentifier(name)));
+        }
+        return columns;
+    }
+
+    private static boolean containsColumn(List<SQLColumnDefinition> definitions,
+            String name) {
+        String normalized = MetadataCatalog.normalizeIdentifier(name);
+        for (SQLColumnDefinition definition : definitions) {
+            if (normalized != null && normalized.equalsIgnoreCase(
+                    MetadataCatalog.normalizeIdentifier(definition.getColumnName()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /* ------------------------------------------------------------------ */

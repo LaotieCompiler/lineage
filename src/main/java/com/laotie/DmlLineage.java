@@ -1116,2039 +1116,153 @@ public class DmlLineage {
         return shape.staticSourceWidth(table, scope);
     }
 
-    private void processQueryBlock(SQLSelectQueryBlock queryBlock) {
-        state.currentStarBudget = -1;
-        state.currentExpandedSourceNodes = new HashMap<>();
-        SQLTableSource fromItem = queryBlock.getFrom();
-        if (fromItem == null) {
-            if (state.metadataPass) {
-                learnNoFromExplicitReferences(queryBlock, outerBlockLocals(true));
-            }
-            int position = 0;
-            int minWidth = 0;
-            boolean widthKnown = true;
-            boolean namesKnown = true;
-            boolean unknownStarSeen = false;
-            List<SourceTable> outerSources = currentSources();
-            for (SQLSelectItem item : queryBlock.getSelectList()) {
-                if ((context != null || detachedMetadata())
-                        && outerSources.isEmpty()) {
-                    validateUnboundQualified(item.getExpr());
-                }
-                SQLExpr itemExpr = item.getExpr();
-                if (!outerSources.isEmpty() && unknownStarSeen
-                        && itemExpr instanceof SQLPropertyExpr
-                        && isStarProperty(itemExpr)) {
-                    namesKnown = false;
-                    int minimum = recordUncertainOuterStar(
-                            (SQLPropertyExpr) itemExpr, position);
-                    position += minimum;
-                    minWidth += minimum;
-                    continue;
-                }
-                if (!outerSources.isEmpty() && itemExpr instanceof SQLPropertyExpr
-                        && isStarProperty(itemExpr)) {
-                    namesKnown = namesKnown && outerStarNamesKnown(
-                            (SQLPropertyExpr) itemExpr);
-                    int recorded = recordOuterStar((SQLPropertyExpr) itemExpr,
-                            position);
-                    boolean unknownWidth = recorded < 0;
-                    int width = Math.abs(recorded);
-                    position += width;
-                    minWidth += width;
-                    if (unknownWidth) {
-                        widthKnown = false;
-                        unknownStarSeen = true;
-                    }
-                    continue;
-                }
-                if (!outerSources.isEmpty() && unknownStarSeen) {
-                    // The projection's position follows an unknown-width star, so no
-                    // fixed column edge may be written for it.
-                    recordUncertainOuterMappings(item, position);
-                    int width = Math.max(minimumOutputColumns(item.getExpr()), 1);
-                    position += width;
-                    minWidth += 1;
-                    continue;
-                }
-                int width;
-                if (item.getExpr() instanceof SQLQueryExpr) {
-                    width = processScalarSubqueryProjection(item,
-                            (SQLQueryExpr) item.getExpr(), position);
-                } else {
-                    width = recordUnboundSelectItem(item, position);
-                    if (!outerSources.isEmpty()) {
-                        recordOuterExpressionMappings(item, position);
-                    } else if (containsScalarSubquery(item.getExpr())) {
-                        // A projection without FROM can still read a scalar
-                        // subquery, which carries its own lineage.
-                        recordUnboundScalarMappings(item, position);
-                    }
-                }
-                position += width;
-                minWidth += minimumOutputColumns(item.getExpr());
-            }
-            state.lastQueryBlockWidth = position;
-            state.lastQueryBlockWidthKnown = widthKnown;
-            state.lastQueryBlockNamesKnown = namesKnown;
-            state.lastQueryBlockMinWidth = minWidth;
-            return;
-        }
+    final SelectAnalyzer selector = new SelectAnalyzer(this);
 
-        Map<String, List<SourceTable>> using = new LinkedHashMap<>();
-        state.stackJoinBindings.push(new HashMap<String, SourceNode>());
-        state.stackHiddenSources.push(new HashSet<SourceTable>());
-        SourceNode node = buildSourceNode(fromItem, using);
-        List<SourceTable> sources = node.sources;
-        if (sources.isEmpty()) {
-            state.stackHiddenSources.pop();
-            state.stackJoinBindings.pop();
-            return;
-        }
-
-        collectTablesFromExpression(queryBlock.getWhere());
-
-        state.stackSources.push(sources);
-        state.lateralScopes.push(Boolean.FALSE);
-        state.stackUsing.push(using);
-        state.stackStarPlan.push(node.plan);
-        state.stackSourceNode.push(node);
-        state.stackSourceTable.push(sources.get(0).displayName);
-        state.targetOutputs.computeIfAbsent(state.stackTargetTable.peek(), k -> new ArrayList<String>());
-        if (state.metadataPass) {
-            learnBlockExplicitReferences(queryBlock, outerBlockLocals(false));
-        }
-
-        List<SQLSelectItem> selectItems = queryBlock.getSelectList();
-        int inferredUnknownWidth = -1;
-        int unknownItemIndex = -1;
-        int[] startOverride = new int[selectItems.size()];
-        for (int i = 0; i < startOverride.length; i++) {
-            startOverride[i] = -1;
-        }
-        List<String> declaredWidths = currentTargetColumnAliases(state.stackTargetTable.peek());
-        DbType dialect = currentDialect();
-        boolean declaredExact = declaredWidths != null
-                && (dialect == DbType.mysql || dialect == DbType.mariadb);
-        int positionalWidth = -1;
-        if (declaredExact) {
-            positionalWidth = declaredWidths.size();
-        } else {
-            Integer overrideWidth = state.targetWidthOverride.get(state.stackTargetTable.peek());
-            if (overrideWidth != null && overrideWidth > 0) {
-                positionalWidth = overrideWidth;
-            }
-        }
-        if (positionalWidth > 0) {
-            // The exact output width is known from the declaration or a UNION sibling;
-            // use it to anchor trailing fixed-width projections.
-            int minSum = 0;
-            int knownSum = 0;
-            int unknownCount = 0;
-            for (int i = 0; i < selectItems.size(); i++) {
-                SQLSelectItem item = selectItems.get(i);
-                minSum += minimumOutputColumns(item.getExpr());
-                if (outputWidthKnown(item)) {
-                    knownSum += outputColumnCount(item.getExpr());
-                } else {
-                    unknownCount++;
-                    unknownItemIndex = i;
-                }
-            }
-            if (unknownCount == 0) {
-                // Every projection width is already known; positional anchoring could
-                // only hide a genuine column-count conflict.
-                positionalWidth = -1;
-            } else if (positionalWidth >= minSum) {
-                int suffix = 0;
-                boolean suffixKnown = true;
-                for (int i = selectItems.size() - 1; i >= 0; i--) {
-                    SQLSelectItem item = selectItems.get(i);
-                    if (!outputWidthKnown(item)) {
-                        suffixKnown = false;
-                        continue;
-                    }
-                    int itemWidth = outputColumnCount(item.getExpr());
-                    if (suffixKnown) {
-                        startOverride[i] = positionalWidth - suffix - itemWidth;
-                    }
-                    suffix += itemWidth;
-                }
-                if (unknownCount == 1) {
-                    int inferred = positionalWidth - knownSum;
-                    int unknownMinimum = minimumOutputColumns(
-                            selectItems.get(unknownItemIndex).getExpr());
-                    if (inferred >= unknownMinimum) {
-                        inferredUnknownWidth = inferred;
-                    }
-                }
-            } else {
-                positionalWidth = -1;
-            }
-        }
-        state.currentStarBudget = inferredUnknownWidth;
-        if (!detachedMetadata() && inferredUnknownWidth > 0 && unknownItemIndex >= 0) {
-            SourceNode targetNode = node;
-            SQLExpr unknownExpr = selectItems.get(unknownItemIndex).getExpr();
-            if (isStarProperty(unknownExpr)) {
-                SQLExpr owner = ((SQLPropertyExpr) unknownExpr).getOwner();
-                SourceNode binding = joinBinding(owner);
-                if (binding != null) {
-                    targetNode = binding;
-                } else {
-                    SourceTable source = findByOwner(owner);
-                    if (source != null && !sourceColumnsKnown(source)) {
-                        SourceNode sourceNode = sourcePlanNode(source);
-                        state.currentExpandedSourceNodes.put(source, sourceNode);
-                        targetNode = sourceNode;
-                    }
-                }
-            }
-            List<StarOutput> plan = targetNode.plan;
-            if (!plan.isEmpty()) {
-                // The UNION sibling fixes the projection width; give the unknown-width
-                // JOIN side its missing slots so trailing known columns keep positions.
-                List<SourceTable> leftUnknown = targetNode.unknownLeftSources;
-                List<SourceTable> rightUnknown = targetNode.unknownRightSources;
-                // Two or more independent unknown relations leave the distribution
-                // of the missing width ambiguous.
-                boolean leftOnly = leftUnknown.size() == 1 && rightUnknown.isEmpty()
-                        && unknownRegionCount(leftUnknown.get(0)) <= 1;
-                boolean rightOnly = rightUnknown.size() == 1 && leftUnknown.isEmpty()
-                        && unknownRegionCount(rightUnknown.get(0)) <= 1;
-                boolean handledRepeated = false;
-                List<SourceTable> repeatedSide = leftUnknown.size() == 1
-                        && rightUnknown.isEmpty() ? leftUnknown
-                        : rightUnknown.size() == 1 && leftUnknown.isEmpty()
-                                ? rightUnknown : null;
-                if (repeatedSide != null
-                        && totalWildcardOccurrences(repeatedSide.get(0)) > 1) {
-                    SourceTable source = repeatedSide.get(0);
-                    int deficit = inferredUnknownWidth - plan.size();
-                    List<Integer> ends = unknownRegionEnds(source);
-                    List<Integer> runs = unknownRegionRuns(source);
-                    int occurrences = totalWildcardOccurrences(source);
-                    // Locate the source's own plan to translate region boundaries after
-                    // any USING reordering.
-                    SourceNode sideNode = null;
-                    int sideOffset = 0;
-                    if (targetNode.leftNode != null
-                            && containsSource(targetNode.leftNode.sources, source)) {
-                        sideNode = targetNode.leftNode;
-                    } else if (targetNode.rightNode != null
-                            && containsSource(targetNode.rightNode.sources, source)) {
-                        sideNode = targetNode.rightNode;
-                        sideOffset = Math.max(plan.size()
-                                - countRemaining(plan, targetNode.leftNode == null
-                                        ? new ArrayList<StarOutput>()
-                                        : targetNode.leftNode.plan)
-                                - countRemaining(plan, targetNode.rightNode.plan), 0);
-                    } else if (targetNode.sources.size() == 1
-                            && targetNode.sources.get(0) == source) {
-                        sideNode = targetNode;
-                    }
-                    int mergedPrefix = 0;
-                    if (targetNode.leftNode != null && targetNode.rightNode != null) {
-                        mergedPrefix = Math.max(plan.size()
-                                - countRemaining(plan, targetNode.leftNode.plan)
-                                - countRemaining(plan, targetNode.rightNode.plan), 0);
-                    }
-                    if (deficit >= 0 && sameUnknownGroup(source) && sideNode != null
-                            && sideNode.plan.size() == source.outputNameKnown.size()
-                            && occurrences > 0) {
-                        if (deficit % occurrences != 0) {
-                            throw new IllegalStateException(
-                                    "UNION column count mismatch: repeated wildcard "
-                                            + "widths cannot satisfy " + inferredUnknownWidth);
-                        }
-                        int perWildcard = deficit / occurrences;
-                        int offset = 0;
-                        for (int r = 0; r < ends.size(); r++) {
-                            int boundary = ends.get(r);
-                            int insertAt = mergedPrefix
-                                    + keptBefore(plan, sideNode.plan, boundary) + sideOffset
-                                    + offset;
-                            insertAt = Math.min(insertAt, plan.size());
-                            for (int k = 0; k < perWildcard * runs.get(r); k++) {
-                                List<StarColumn> columns = new ArrayList<>();
-                                String name = "col" + (insertAt + 1);
-                                columns.add(new StarColumn(source, name,
-                                        identifierKey(name), false, false));
-                                plan.add(insertAt++, new StarOutput(columns, false, true));
-                            }
-                            offset += perWildcard * runs.get(r);
-                        }
-                        for (int i = 0; i < plan.size(); i++) {
-                            plan.set(i, plan.get(i).withStable(true));
-                        }
-                        handledRepeated = true;
-                    }
-                }
-                List<SourceTable> expansion;
-                int insertAt;
-                if (handledRepeated) {
-                    expansion = new ArrayList<>();
-                    insertAt = plan.size();
-                } else if (leftOnly) {
-                    expansion = leftUnknown;
-                    insertAt = insertionPoint(plan, leftUnknown,
-                            Math.min(targetNode.rightBoundary, plan.size()),
-                            targetNode.unknownSectionEnd);
-                } else if (rightOnly) {
-                    expansion = rightUnknown;
-                    insertAt = insertionPoint(plan, rightUnknown, plan.size(),
-                            targetNode.unknownSectionEnd);
-                } else {
-                    expansion = new ArrayList<>(leftUnknown);
-                    expansion.addAll(rightUnknown);
-                    int maxEnd = -1;
-                    for (SourceTable source : expansion) {
-                        Integer end = targetNode.unknownSectionEnd.get(source);
-                        if (end != null) {
-                            maxEnd = Math.max(maxEnd, end);
-                        }
-                    }
-                    // Everything after the last unknown section keeps its position.
-                    insertAt = maxEnd >= 0 ? Math.min(maxEnd, plan.size()) : plan.size();
-                }
-                for (int i = plan.size(); i < inferredUnknownWidth
-                        && !expansion.isEmpty(); i++) {
-                    List<StarColumn> columns = new ArrayList<>();
-                    String name = "col" + (insertAt + 1);
-                    for (SourceTable source : expansion) {
-                        columns.add(new StarColumn(source, name, identifierKey(name),
-                                false, false));
-                    }
-                    plan.add(insertAt++, new StarOutput(columns, false, leftOnly || rightOnly));
-                }
-                if ((leftOnly || rightOnly) && inferredUnknownWidth >= plan.size()) {
-                    // A single unknown side means the total width fixes every trailing
-                    // position.
-                    for (int i = insertAt; i < plan.size(); i++) {
-                        plan.set(i, plan.get(i).withStable(true));
-                    }
-                } else {
-                    // Even when the distribution is ambiguous, a known-width suffix
-                    // after every unknown section keeps its positions.
-                    int maxEnd = -1;
-                    for (SourceTable source : expansion) {
-                        Integer end = targetNode.unknownSectionEnd.get(source);
-                        if (end != null) {
-                            maxEnd = Math.max(maxEnd, end);
-                        }
-                    }
-                    for (int i = Math.max(maxEnd, 0); i < plan.size(); i++) {
-                        if (plan.get(i).nameKnown) {
-                            plan.set(i, plan.get(i).withStable(true));
-                        }
-                    }
-                }
-            }
-        }
-
-        int position = 0;
-        int minWidth = 0;
-        boolean widthKnown = true;
-        boolean namesKnown = true;
-        boolean prefixCertain = true;
-        boolean unknownStarSeen = false;
-        for (int itemIndex = 0; itemIndex < selectItems.size(); itemIndex++) {
-            SQLSelectItem item = selectItems.get(itemIndex);
-            int start = startOverride[itemIndex] > position
-                    ? startOverride[itemIndex] : position;
-            boolean positionCertain = startOverride[itemIndex] >= 0 || prefixCertain;
-            SQLExpr itemExpr = item.getExpr();
-            boolean unknownStar = detachedMetadata()
-                    && (itemExpr instanceof SQLAllColumnExpr || isStarProperty(itemExpr))
-                    && hasUnknownStarSource(itemExpr);
-            // Contract: a projection that follows an unknown-width wildcard has an
-            // undetermined position, so no column-level edge may be guessed for it.
-            state.uncertainOrdinal = positionalWidth > 0 && !positionCertain
-                    || detachedMetadata() && unknownStarSeen ? start : -1;
-            boolean inferredWidth = itemIndex == unknownItemIndex
-                    && inferredUnknownWidth > 0;
-            if (unknownStar && !starOutputWidthKnown(itemExpr) && !inferredWidth) {
-                // Only an unknown-width wildcard leaves later positions undetermined.
-                unknownStarSeen = true;
-            }
-            state.currentOrdinal = start;
-            int advanced;
-            try {
-                advanced = processSelectItem(item);
-            } catch (RuntimeException e) {
-                if (!state.metadataPass) {
-                    throw e;
-                }
-                // Discovery keeps walking the statement so explicit references
-                // after an unresolvable projection are still observed.
-                advanced = Math.max(minimumOutputColumns(item.getExpr()), 1);
-            }
-            if (inferredWidth) {
-                // The UNION width pins this wildcard exactly once; it must not leak
-                // into the next projection's width.
-                advanced = Math.max(advanced, inferredUnknownWidth);
-                state.currentStarBudget = -1;
-            }
-            position = start + advanced;
-            minWidth += minimumOutputColumns(item.getExpr());
-            boolean itemWidthKnown = outputWidthKnown(item) || inferredWidth;
-            if (!itemWidthKnown) {
-                widthKnown = false;
-            }
-            prefixCertain = prefixCertain && itemWidthKnown;
-            if (!outputNamesKnown(item)) {
-                namesKnown = false;
-            }
-        }
-        state.uncertainOrdinal = -1;
-        state.currentOrdinal = -1;
-        state.lastQueryBlockWidth = position;
-        state.lastQueryBlockWidthKnown = widthKnown;
-        state.lastQueryBlockNamesKnown = namesKnown;
-        state.lastQueryBlockMinWidth = minWidth;
-
-        state.stackSourceTable.pop();
-        state.stackSourceNode.pop();
-        state.stackStarPlan.pop();
-        state.stackUsing.pop();
-        state.stackSources.pop();
-        state.lateralScopes.pop();
-        state.stackHiddenSources.pop();
-        state.stackJoinBindings.pop();
+    void processQueryBlock(SQLSelectQueryBlock queryBlock) {
+        selector.processQueryBlock(queryBlock);
     }
 
-    private int recordUncertainOuterStar(SQLPropertyExpr star, int position) {
-        String target = state.stackTargetTable.peek();
-        CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
-        if (correlated == null) {
-            throw new MetadataNotFoundException(star.getOwner() == null
-                    ? "*" : star.getOwner().toString());
-        }
-        if (correlated.source != null) {
-            addOuterWildcardOpen(correlated.source, target, position);
-            return sourceWidthKnown(correlated.source)
-                    ? Math.max(sourceKnownWidth(correlated.source), 1) : 1;
-        }
-        for (SourceTable candidate : correlated.binding.sources) {
-            addOuterWildcardOpen(candidate, target, position);
-        }
-        return correlated.binding.widthKnown
-                ? Math.max(correlated.binding.width, 1) : 1;
+    int recordUncertainOuterStar(SQLPropertyExpr star, int position) {
+        return selector.recordUncertainOuterStar(star, position);
     }
 
-    private void recordUncertainOuterMappings(SQLSelectItem item, int position) {
-        SQLExpr expr = item.getExpr();
-        if (expr == null) {
-            return;
-        }
-        String target = state.stackTargetTable.peek();
-        recordUncertainOuterExpression(expr, target, position);
+    void recordUncertainOuterMappings(SQLSelectItem item, int position) {
+        selector.recordUncertainOuterMappings(item, position);
     }
 
-    private void recordUncertainOuterExpression(SQLExpr expr, String target,
-            int position) {
-        if (expr == null) {
-            return;
-        }
-        if (expr instanceof SQLPropertyExpr) {
-            SQLPropertyExpr property = (SQLPropertyExpr) expr;
-            if (isStarProperty(property)) {
-                return;
-            }
-            CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
-            if (correlated == null) {
-                throw new MetadataNotFoundException(property.getOwner() == null
-                        ? "*" : property.getOwner().toString());
-            }
-            if (correlated.source != null) {
-                resolveOuterColumn(correlated.source, property.getName());
-                addOuterWildcardOpen(correlated.source, target, position);
-            } else {
-                String key = identifierKey(property.getName());
-                List<StarOutput> matched = new ArrayList<>();
-                for (StarOutput output : correlated.binding.plan) {
-                    for (StarColumn column : output.sources) {
-                        if (key != null && key.equals(column.key)) {
-                            matched.add(output);
-                            break;
-                        }
-                    }
-                }
-                if (matched.size() > 1) {
-                    List<SourceTable> owners = new ArrayList<>();
-                    for (StarOutput output : matched) {
-                        for (StarColumn column : output.sources) {
-                            if (!owners.contains(column.source)) {
-                                owners.add(column.source);
-                            }
-                        }
-                    }
-                    throw new AmbiguousColumnException(
-                            normalizeIdentifier(property.getName()),
-                            displayNames(owners));
-                }
-                if (matched.isEmpty() && nodeNamesKnown(correlated.binding)) {
-                    throw new ColumnNotFoundException(
-                            normalizeIdentifier(property.getName()),
-                            displayNames(correlated.binding.sources));
-                }
-                if (matched.size() == 1) {
-                    for (StarColumn column : matched.get(0).sources) {
-                        addOuterWildcardOpen(column.source, target, position);
-                    }
-                } else {
-                    for (SourceTable candidate : correlated.binding.sources) {
-                        addOuterWildcardOpen(candidate, target, position);
-                    }
-                }
-            }
-            return;
-        }
-        if (expr instanceof SQLIdentifierExpr) {
-            String raw = ((SQLIdentifierExpr) expr).getName();
-            List<SourceTable> owners;
-            try {
-                owners = resolveUnqualified(raw);
-            } catch (ColumnNotFoundException e) {
-                owners = hasLateralAncestorScope()
-                        ? resolveCorrelatedUnqualified(raw)
-                        : new ArrayList<SourceTable>();
-            }
-            if (owners.isEmpty() && hasLateralAncestorScope()) {
-                owners = resolveCorrelatedUnqualified(raw);
-            }
-            for (SourceTable source : owners) {
-                resolveOuterColumn(source, raw);
-                addOuterWildcardOpen(source, target, position);
-            }
-            return;
-        }
-        if (expr instanceof SQLBinaryOpExpr) {
-            recordUncertainOuterExpression(((SQLBinaryOpExpr) expr).getLeft(), target,
-                    position);
-            recordUncertainOuterExpression(((SQLBinaryOpExpr) expr).getRight(), target,
-                    position);
-        } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                recordUncertainOuterExpression(argument, target, position);
-            }
-        } else if (expr instanceof SQLCastExpr) {
-            recordUncertainOuterExpression(((SQLCastExpr) expr).getExpr(), target,
-                    position);
-        } else if (expr instanceof SQLNotExpr) {
-            recordUncertainOuterExpression(((SQLNotExpr) expr).getExpr(), target,
-                    position);
-        } else if (expr instanceof SQLUnaryExpr) {
-            recordUncertainOuterExpression(((SQLUnaryExpr) expr).getExpr(), target,
-                    position);
-        } else if (expr instanceof SQLBetweenExpr) {
-            SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            recordUncertainOuterExpression(between.getTestExpr(), target, position);
-            recordUncertainOuterExpression(between.getBeginExpr(), target, position);
-            recordUncertainOuterExpression(between.getEndExpr(), target, position);
-        } else if (expr instanceof SQLCaseExpr) {
-            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            recordUncertainOuterExpression(caseExpr.getValueExpr(), target, position);
-            if (caseExpr.getItems() != null) {
-                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
-                    recordUncertainOuterExpression(caseItem.getConditionExpr(),
-                            target, position);
-                    recordUncertainOuterExpression(caseItem.getValueExpr(), target,
-                            position);
-                }
-            }
-            recordUncertainOuterExpression(caseExpr.getElseExpr(), target, position);
-        } else if (expr instanceof SQLListExpr) {
-            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
-                recordUncertainOuterExpression(element, target, position);
-            }
-        } else if (expr instanceof SQLInListExpr) {
-            SQLInListExpr in = (SQLInListExpr) expr;
-            recordUncertainOuterExpression(in.getExpr(), target, position);
-            if (in.getTargetList() != null) {
-                for (SQLExpr element : in.getTargetList()) {
-                    recordUncertainOuterExpression(element, target, position);
-                }
-            }
-        } else if (expr instanceof SQLInSubQueryExpr) {
-            recordUncertainOuterExpression(((SQLInSubQueryExpr) expr).getExpr(),
-                    target, position);
-        } else if (expr instanceof SQLExtractExpr) {
-            recordUncertainOuterExpression(((SQLExtractExpr) expr).getValue(), target,
-                    position);
-        }
+    void recordUncertainOuterExpression(SQLExpr expr, String target, int position) {
+        selector.recordUncertainOuterExpression(expr, target, position);
     }
 
-    private void recordOuterExpressionMappings(SQLSelectItem item, int position) {
-        SQLExpr expr = item.getExpr();
-        if (expr == null) {
-            return;
-        }
-        String target = state.stackTargetTable.peek();
-        List<String> outputs = state.targetOutputs.get(target);
-        String name = outputs != null && position < outputs.size()
-                && outputs.get(position) != null
-                        ? outputs.get(position)
-                        : normalizeIdentifier(expr.toString());
-        recordOuterExpression(expr, target, name, position);
+    void recordOuterExpressionMappings(SQLSelectItem item, int position) {
+        selector.recordOuterExpressionMappings(item, position);
     }
 
-    private void recordOuterExpression(SQLExpr expr, String target, String targetName,
-            int position) {
-        if (expr == null) {
-            return;
-        }
-        if (expr instanceof SQLPropertyExpr) {
-            SQLPropertyExpr property = (SQLPropertyExpr) expr;
-            if (!isStarProperty(property)) {
-                recordOuterColumn(property, target, targetName, position);
-            }
-            return;
-        }
-        if (expr instanceof SQLBinaryOpExpr) {
-            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
-            recordOuterExpression(binary.getLeft(), target, targetName, position);
-            recordOuterExpression(binary.getRight(), target, targetName, position);
-        } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                recordOuterExpression(argument, target, targetName, position);
-            }
-        } else if (expr instanceof SQLCastExpr) {
-            recordOuterExpression(((SQLCastExpr) expr).getExpr(), target, targetName,
-                    position);
-        } else if (expr instanceof SQLNotExpr) {
-            recordOuterExpression(((SQLNotExpr) expr).getExpr(), target, targetName,
-                    position);
-        } else if (expr instanceof SQLUnaryExpr) {
-            recordOuterExpression(((SQLUnaryExpr) expr).getExpr(), target, targetName,
-                    position);
-        } else if (expr instanceof SQLBetweenExpr) {
-            SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            recordOuterExpression(between.getTestExpr(), target, targetName, position);
-            recordOuterExpression(between.getBeginExpr(), target, targetName, position);
-            recordOuterExpression(between.getEndExpr(), target, targetName, position);
-        } else if (expr instanceof SQLCaseExpr) {
-            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            recordOuterExpression(caseExpr.getValueExpr(), target, targetName,
-                    position);
-            if (caseExpr.getItems() != null) {
-                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
-                    recordOuterExpression(caseItem.getConditionExpr(), target,
-                            targetName, position);
-                    recordOuterExpression(caseItem.getValueExpr(), target, targetName,
-                            position);
-                }
-            }
-            recordOuterExpression(caseExpr.getElseExpr(), target, targetName, position);
-        } else if (expr instanceof SQLListExpr) {
-            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
-                recordOuterExpression(element, target, targetName, position);
-            }
-        } else if (expr instanceof SQLInListExpr) {
-            SQLInListExpr in = (SQLInListExpr) expr;
-            recordOuterExpression(in.getExpr(), target, targetName, position);
-            if (in.getTargetList() != null) {
-                for (SQLExpr element : in.getTargetList()) {
-                    recordOuterExpression(element, target, targetName, position);
-                }
-            }
-        } else if (expr instanceof SQLInSubQueryExpr) {
-            recordOuterExpression(((SQLInSubQueryExpr) expr).getExpr(), target,
-                    targetName, position);
-        } else if (expr instanceof SQLIdentifierExpr) {
-            recordOuterIdentifier(((SQLIdentifierExpr) expr).getName(), target,
-                    targetName, position);
-        } else if (expr instanceof SQLExtractExpr) {
-            recordOuterExpression(((SQLExtractExpr) expr).getValue(), target,
-                    targetName, position);
-        }
+    void recordOuterExpression(SQLExpr expr, String target, String targetName, int position) {
+        selector.recordOuterExpression(expr, target, targetName, position);
     }
 
-    private boolean outerStarNamesKnown(SQLPropertyExpr star) {
-        CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
-        if (correlated == null) {
-            return false;
-        }
-        if (correlated.source != null) {
-            return sourceColumnNamesKnown(correlated.source);
-        }
-        return nodeNamesKnown(correlated.binding);
+    boolean outerStarNamesKnown(SQLPropertyExpr star) {
+        return selector.outerStarNamesKnown(star);
     }
 
-    private static boolean coveredBySpan(List<WildcardSpan> spans, int relative) {
-        for (WildcardSpan span : spans) {
-            if (relative >= span.start && relative < span.end) {
-                return true;
-            }
-        }
-        return false;
+    static boolean coveredBySpan(List<WildcardSpan> spans, int relative) {
+        return SelectAnalyzer.coveredBySpan(spans, relative);
     }
 
-    private boolean hasDuplicateNamedOutputs(SourceTable source) {
-        Set<String> seen = new HashSet<>();
-        for (int i = 0; i < source.outputKeys.size(); i++) {
-            if (!sourceOutputNameKnown(source, i)) {
-                continue;
-            }
-            String key = source.outputKeys.get(i);
-            if (key != null && !seen.add(key)) {
-                return true;
-            }
-        }
-        return false;
+    boolean hasDuplicateNamedOutputs(SourceTable source) {
+        return selector.hasDuplicateNamedOutputs(source);
     }
 
-    private String effectiveOutputName(SourceTable source, int index) {
-        if (index < 0 || index >= source.outputColumns.size()) {
-            return index >= 0 && index < source.outputColumns.size()
-                    ? source.outputColumns.get(index) : null;
-        }
-        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
-        for (String name : source.outputColumns) {
-            counts.merge(name, 1, Integer::sum);
-        }
-        java.util.Set<String> usedNames = new java.util.HashSet<>(
-                source.outputColumns);
-        java.util.Set<String> duplicatesSeen = new java.util.HashSet<>();
-        java.util.Map<Integer, String> effective = new java.util.HashMap<>();
-        for (int position = 0; position < source.outputColumns.size(); position++) {
-            String name = source.outputColumns.get(position);
-            if (name != null && counts.get(name) > 1
-                    && !duplicatesSeen.add(name)) {
-                String candidate = "col" + (position + 1);
-                int suffix = 1;
-                while (usedNames.contains(candidate)
-                        || effective.containsValue(candidate)) {
-                    candidate = "col" + (position + 1) + "_" + suffix++;
-                }
-                name = candidate;
-            }
-            effective.put(position, name);
-        }
-        return effective.get(index);
+    String effectiveOutputName(SourceTable source, int index) {
+        return selector.effectiveOutputName(source, index);
     }
 
-    private List<WildcardRef> wildcardRefsAt(SourceTable source, int relative) {
-        List<WildcardRef> refs = new ArrayList<>();
-        for (WildcardSpan span : wildcardSpansOf(source.displayName)) {
-            if (relative >= span.start && relative < span.end) {
-                WildcardRef ref = new WildcardRef(span.source, span.temporary);
-                if (!refs.contains(ref)) {
-                    refs.add(ref);
-                }
-            }
-        }
-        return refs;
+    List<WildcardRef> wildcardRefsAt(SourceTable source, int relative) {
+        return selector.wildcardRefsAt(source, relative);
     }
 
-    private int recordOuterStar(SQLPropertyExpr star, int position) {
-        String target = state.stackTargetTable.peek();
-        CorrelatedOwner correlated = findCorrelatedOwner(star.getOwner());
-        SourceTable source = correlated == null ? null : correlated.source;
-        if (source != null) {
-            List<String> names = sourceColumnNames(source);
-            List<String> declared = currentTargetColumnAliases(target);
-            List<String> declaredKeys = currentDeclaredKeys(target);
-            if (source.temporary) {
-                int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
-                if (width > 0) {
-                    List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
-                    if (declared == null && hasDuplicateNamedOutputs(source)) {
-                        // Ambiguous repeated names cannot be expanded into columns
-                        // unless the target declares their order.
-                        Instruction wildcard = new Instruction(
-                                OperationType.COLUMNS_INJECT,
-                                lineageTableName(source), target, position,
-                                source.temporary, state.tempTables.contains(target));
-                        wildcard.setPositionalWildcard(true);
-                        wildcard.setWildcardWidthKnown(true);
-                        wildcard.setWildcardWidth(width);
-                        instructions.add(wildcard);
-                        recordWildcardSpan(target, position, position + width,
-                                lineageTableName(source), source.temporary);
-                        state.targetWildcardContribution.put(target, Boolean.TRUE);
-                        return width;
-                    }
-                    int limit = width;
-                    for (int i = 0; i < limit; i++) {
-                        boolean named = sourceOutputNameKnown(source, i)
-                                && i < names.size();
-                        if (named) {
-                            String displayName = names.get(i);
-                            String sourceColumn = effectiveOutputName(source, i);
-                            if (sourceColumn == null) {
-                                sourceColumn = displayName;
-                            }
-                            String outputName;
-                            String outputKey;
-                            Boolean quoted = null;
-                            String sourceKey = i < source.outputKeys.size()
-                                    && source.outputKeys.get(i) != null
-                                            ? source.outputKeys.get(i)
-                                            : identifierKey(displayName);
-                            quoted = !sourceKey.equals(identifierKey(displayName));
-                            if (declared != null && position + i < declared.size()) {
-                                outputName = declared.get(position + i);
-                                outputKey = declaredKeys != null
-                                        && position + i < declaredKeys.size()
-                                                ? declaredKeys.get(position + i)
-                                                : identifierKey(outputName);
-                            } else {
-                                outputName = displayName;
-                                outputKey = sourceKey;
-                            }
-                            setTargetOutput(target, position + i, outputName, outputKey);
-                            markOutputNameKnown(target, position + i, true);
-                            addOuterColumnMapping(source, sourceColumn, target,
-                                    outputName, position + i, quoted);
-                        }
-                        for (WildcardRef ref : wildcardRefsAt(source, i)) {
-                            Instruction wildcard = new Instruction(
-                                    OperationType.COLUMNS_INJECT, ref.name, target,
-                                    position + i, ref.temporary,
-                                    state.tempTables.contains(target));
-                            wildcard.setPositionalWildcard(true);
-                            wildcard.setWildcardWidthKnown(true);
-                            wildcard.setWildcardWidth(1);
-                            instructions.add(wildcard);
-                            recordWildcardSpan(target, position + i,
-                                    position + i + 1, ref.name, ref.temporary);
-                            state.targetWildcardContribution.put(target, Boolean.TRUE);
-                        }
-                    }
-                    return limit;
-                }
-                List<WildcardSpan> spans = wildcardSpansOf(source.displayName);
-                int knownPrefix = 0;
-                for (int i = 0; i < names.size() && sourceOutputNameKnown(source, i);
-                        i++) {
-                    String name = names.get(i);
-                    String outputName;
-                    String outputKey;
-                    Boolean quoted = Boolean.FALSE;
-                    if (declared != null && position + i < declared.size()) {
-                        outputName = declared.get(position + i);
-                        outputKey = declaredKeys != null
-                                && position + i < declaredKeys.size()
-                                        ? declaredKeys.get(position + i)
-                                        : identifierKey(outputName);
-                        quoted = !outputKey.equals(identifierKey(outputName));
-                    } else {
-                        outputName = name;
-                        outputKey = i < source.outputKeys.size()
-                                && source.outputKeys.get(i) != null
-                                        ? source.outputKeys.get(i)
-                                        : identifierKey(name);
-                        quoted = !outputKey.equals(identifierKey(name));
-                    }
-                    String sourceColumn = effectiveOutputName(source, i);
-                    if (sourceColumn == null) {
-                        sourceColumn = name;
-                    }
-                    setTargetOutput(target, position + i, outputName, outputKey);
-                    markOutputNameKnown(target, position + i, true);
-                    addOuterColumnMapping(source, sourceColumn, target, outputName,
-                            position + i, quoted);
-                    knownPrefix = i + 1;
-                }
-                if (!spans.isEmpty()) {
-                    for (WildcardSpan span : spans) {
-                        Instruction wildcard = new Instruction(
-                                OperationType.COLUMNS_INJECT, span.source, target,
-                                position + span.start, span.temporary,
-                                state.tempTables.contains(target));
-                        wildcard.setPositionalWildcard(true);
-                        if (span.end != Integer.MAX_VALUE) {
-                            wildcard.setWildcardWidthKnown(true);
-                            wildcard.setWildcardWidth(span.end - span.start);
-                        }
-                        instructions.add(wildcard);
-                        recordWildcardSpan(target, position + span.start,
-                                span.end == Integer.MAX_VALUE ? Integer.MAX_VALUE
-                                        : position + span.end,
-                                span.source, span.temporary);
-                        state.targetWildcardContribution.put(target, Boolean.TRUE);
-                    }
-                } else {
-                    Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                            lineageTableName(source), target, position,
-                            source.temporary, state.tempTables.contains(target));
-                    wildcard.setPositionalWildcard(true);
-                    recordWildcardSpan(target, position, Integer.MAX_VALUE,
-                            lineageTableName(source), source.temporary);
-                    instructions.add(wildcard);
-                    state.targetWildcardContribution.put(target, Boolean.TRUE);
-                }
-                int minimum = Math.max(Math.max(knownPrefix, source.minOutputColumns),
-                        maxSpanEnd(spans));
-                return -Math.max(minimum, 1);
-            }
-            int width = sourceWidthKnown(source) ? sourceKnownWidth(source) : -1;
-            if (width > 0 && sourceColumnNamesKnown(source)) {
-                for (int i = 0; i < Math.min(width, names.size()); i++) {
-                    String sourceColumn = names.get(i);
-                    String outputName;
-                    String outputKey;
-                    Boolean quoted = null;
-                    if (declared != null && position + i < declared.size()) {
-                        outputName = declared.get(position + i);
-                        outputKey = declaredKeys != null
-                                && position + i < declaredKeys.size()
-                                        ? declaredKeys.get(position + i)
-                                        : identifierKey(outputName);
-                    } else if (source.metadataTable != null
-                            && i < source.metadataTable.getFields().size()) {
-                        Column column = source.metadataTable.getFields().get(i);
-                        quoted = column.isQuoted();
-                        outputName = column.getColumnName();
-                        outputKey = quoted && currentDialect() != DbType.mysql
-                                && currentDialect() != DbType.mariadb
-                                        ? column.getColumnName()
-                                        : identifierKey(column.getColumnName());
-                    } else {
-                        outputName = sourceColumn;
-                        outputKey = i < source.outputKeys.size()
-                                && source.outputKeys.get(i) != null
-                                        ? source.outputKeys.get(i)
-                                        : identifierKey(sourceColumn);
-                        quoted = !outputKey.equals(identifierKey(sourceColumn));
-                    }
-                    setTargetOutput(target, position + i, outputName, outputKey);
-                    markOutputNameKnown(target, position + i, true);
-                    addOuterColumnMapping(source, sourceColumn, target, outputName,
-                            position + i, quoted);
-                }
-                return Math.max(width, 1);
-            }
-            Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                    lineageTableName(source), target, position,
-                    source.temporary, state.tempTables.contains(target));
-            wildcard.setPositionalWildcard(true);
-            if (width > 0) {
-                wildcard.setWildcardWidthKnown(true);
-                wildcard.setWildcardWidth(width);
-                recordWildcardSpan(target, position, position + width,
-                        lineageTableName(source), source.temporary);
-            } else {
-                recordWildcardSpan(target, position, Integer.MAX_VALUE,
-                        lineageTableName(source), source.temporary);
-            }
-            instructions.add(wildcard);
-            state.targetWildcardContribution.put(target, Boolean.TRUE);
-            return width > 0 ? width : -1;
-        }
-        SourceNode binding = correlated == null ? null : correlated.binding;
-        if (binding != null) {
-            if (!binding.widthKnown) {
-                for (SourceTable candidate : binding.sources) {
-                    addOuterWildcardOpen(candidate, target, position);
-                }
-                return -Math.max(binding.minWidth, 1);
-            }
-            if (hasAmbiguousOutput(binding.plan, binding.width)) {
-                for (SourceTable candidate : binding.sources) {
-                    Instruction wildcard = new Instruction(
-                            OperationType.COLUMNS_INJECT,
-                            lineageTableName(candidate), target, position,
-                            candidate.temporary, state.tempTables.contains(target));
-                    wildcard.setPositionalWildcard(true);
-                    wildcard.setWildcardWidthKnown(true);
-                    wildcard.setWildcardWidth(Math.max(binding.width, 1));
-                    instructions.add(wildcard);
-                    recordWildcardSpan(target, position,
-                            position + Math.max(binding.width, 1),
-                            lineageTableName(candidate), candidate.temporary);
-                    state.targetWildcardContribution.put(target, Boolean.TRUE);
-                }
-                return binding.width;
-            }
-            boolean allNamesKnown = nodeNamesKnown(binding);
-            List<String> declared = currentTargetColumnAliases(target);
-            List<String> declaredKeys = currentDeclaredKeys(target);
-            Set<SourceTable> represented = new HashSet<>();
-            int pos = position;
-            for (StarOutput output : binding.plan) {
-                if (output.sources.isEmpty()) {
-                    continue;
-                }
-                StarColumn first = output.sources.get(0);
-                boolean precise = allNamesKnown && output.nameKnown && output.stable;
-                for (StarColumn column : output.sources) {
-                    if (!column.nameKnown) {
-                        precise = false;
-                    }
-                }
-                String outputName;
-                String outputKey;
-                if (declared != null && pos < declared.size()) {
-                    outputName = declared.get(pos);
-                    outputKey = declaredKeys != null && pos < declaredKeys.size()
-                            ? declaredKeys.get(pos) : identifierKey(outputName);
-                    precise = precise && first.nameKnown;
-                } else if (precise) {
-                    outputName = first.column;
-                    outputKey = first.key != null ? first.key
-                            : identifierKey(first.column);
-                } else {
-                    outputName = "col" + (pos + 1);
-                    outputKey = identifierKey(outputName);
-                }
-                setTargetOutput(target, pos, outputName, outputKey);
-                if (precise || declared != null && pos < declared.size()) {
-                    markOutputNameKnown(target, pos, true);
-                }
-                for (StarColumn column : output.sources) {
-                    represented.add(column.source);
-                    String sourceColumn = column.column;
-                    if (declared != null && column.source.temporary
-                            && column.index >= 0) {
-                        String effective = effectiveOutputName(column.source,
-                                column.index);
-                        if (effective != null) {
-                            sourceColumn = effective;
-                        }
-                    }
-                    if (precise && column.nameKnown) {
-                        addOuterColumnMapping(column.source, sourceColumn, target,
-                                outputName, pos, column.quoted);
-                    } else if (column.source.temporary
-                            && !wildcardSpansOf(column.source.displayName).isEmpty()) {
-                        int rel = column.index >= 0 ? column.index : 0;
-                        for (WildcardRef ref : wildcardSourcesAt(column.source,
-                                column, rel)) {
-                            Instruction wildcard = new Instruction(
-                                    OperationType.COLUMNS_INJECT, ref.name, target,
-                                    pos, ref.temporary, state.tempTables.contains(target));
-                            wildcard.setPositionalWildcard(true);
-                            wildcard.setWildcardWidthKnown(true);
-                            wildcard.setWildcardWidth(1);
-                            instructions.add(wildcard);
-                            recordWildcardSpan(target, pos, pos + 1, ref.name,
-                                    ref.temporary);
-                            state.targetWildcardContribution.put(target, Boolean.TRUE);
-                        }
-                    } else {
-                        addOuterWildcard(column.source, target, pos);
-                    }
-                }
-                pos++;
-            }
-            if (!allNamesKnown) {
-                for (SourceTable candidate : binding.sources) {
-                    if (!represented.contains(candidate)) {
-                        addOuterWildcardOpen(candidate, target, pos);
-                    }
-                }
-            }
-            return Math.max(binding.width, pos - position);
-        }
-        throw new MetadataNotFoundException(star.getOwner() == null
-                ? "*" : star.getOwner().toString());
+    int recordOuterStar(SQLPropertyExpr star, int position) {
+        return selector.recordOuterStar(star, position);
     }
 
-    private void recordOuterColumn(SQLPropertyExpr property, String target,
-            String targetName, int position) {
-        String rawName = property.getName();
-        CorrelatedOwner correlated = findCorrelatedOwner(property.getOwner());
-        SourceTable source = correlated == null ? null : correlated.source;
-        if (source != null) {
-            String column = resolveOuterColumn(source, rawName);
-            Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
-                    : null;
-            addOuterColumnMapping(source, column, target, targetName, position,
-                    quoted);
-            return;
-        }
-        SourceNode binding = correlated == null ? null : correlated.binding;
-        if (binding != null) {
-            String key = identifierKey(rawName);
-            List<StarOutput> matchedOutputs = new ArrayList<>();
-            for (StarOutput output : binding.plan) {
-                for (StarColumn column : output.sources) {
-                    if (key != null && key.equals(column.key)) {
-                        matchedOutputs.add(output);
-                        break;
-                    }
-                }
-            }
-            if (matchedOutputs.size() > 1) {
-                List<SourceTable> owners = new ArrayList<>();
-                for (StarOutput output : matchedOutputs) {
-                    for (StarColumn column : output.sources) {
-                        if (!owners.contains(column.source)) {
-                            owners.add(column.source);
-                        }
-                    }
-                }
-                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                        displayNames(owners));
-            }
-            if (matchedOutputs.size() == 1) {
-                for (StarColumn column : matchedOutputs.get(0).sources) {
-                    addOuterColumnMapping(column.source, column.column, target,
-                            targetName, position, column.quoted);
-                }
-                return;
-            }
-            if (nodeNamesKnown(binding)) {
-                throw new ColumnNotFoundException(normalizeIdentifier(rawName),
-                        displayNames(binding.sources));
-            }
-            for (SourceTable candidate : binding.sources) {
-                addOuterWildcard(candidate, target, position);
-            }
-            return;
-        }
-        throw new MetadataNotFoundException(property.getOwner() == null
-                ? "*" : property.getOwner().toString());
+    void recordOuterColumn(SQLPropertyExpr property, String target, String targetName, int position) {
+        selector.recordOuterColumn(property, target, targetName, position);
     }
 
-    private void addOuterColumnMapping(SourceTable source, String column,
-            String target, String targetName, int position) {
-        addOuterColumnMapping(source, column, target, targetName, position, null);
+    void addOuterColumnMapping(SourceTable source, String column, String target, String targetName, int position) {
+        selector.addOuterColumnMapping(source, column, target, targetName, position);
     }
 
-    private void addOuterColumnMapping(SourceTable source, String column,
-            String target, String targetName, int position, Boolean quoted) {
-        if (source.metadataTable == null && !source.temporary) {
-            DbType dialect = currentDialect();
-            if (dialect == DbType.hive || dialect == DbType.antspark) {
-                // Planned columns are already logical; strip only a backtick
-                // layer, fold case, and let rendering re-quote special names.
-                column = hivePlannedColumn(column);
-                quoted = null;
-            } else if (quoted == null) {
-                column = uncatalogedColumnSpelling(column);
-            }
-        }
-        String rendered = quoted == null
-                ? renderIdentifier(column)
-                : quoted ? quoteIdentifierValue(column)
-                        : renderIdentifier(column);
-        instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                lineageTableName(source) + "." + rendered,
-                target + "." + renderIdentifier(targetName), position,
-                source.temporary, state.tempTables.contains(target)));
-        if (source.wildcardContribution && source.temporary) {
-            int relative = -1;
-            String key = quoted != null && quoted
-                    ? identifierKey(quoteIdentifierValue(column))
-                    : identifierKey(column);
-            for (int i = 0; i < source.outputKeys.size(); i++) {
-                if (key != null && key.equals(source.outputKeys.get(i))) {
-                    relative = i;
-                    break;
-                }
-            }
-            List<WildcardSpan> spans = relative < 0
-                    ? java.util.Collections.<WildcardSpan>emptyList()
-                    : wildcardSpansOf(source.displayName);
-            for (WildcardSpan span : spans) {
-                if (relative < span.start || relative >= span.end) {
-                    continue;
-                }
-                // Only the wildcard covering the selected column contributes.
-                addOuterWildcard(span.source, target, position, span.temporary);
-            }
-        }
+    void addOuterColumnMapping(SourceTable source, String column, String target, String targetName, int position, Boolean quoted) {
+        selector.addOuterColumnMapping(source, column, target, targetName, position, quoted);
     }
 
-    private void addOuterWildcard(String sourceName, String target, int position,
-            boolean temporary) {
-        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                sourceName, target, position, temporary,
-                state.tempTables.contains(target));
-        wildcard.setPositionalWildcard(true);
-        wildcard.setWildcardWidthKnown(true);
-        wildcard.setWildcardWidth(1);
-        instructions.add(wildcard);
-        recordWildcardSpan(target, position, position + 1, sourceName, temporary);
-        state.targetWildcardContribution.put(target, Boolean.TRUE);
+    void addOuterWildcard(String sourceName, String target, int position, boolean temporary) {
+        selector.addOuterWildcard(sourceName, target, position, temporary);
     }
 
-    private void addOuterWildcardOpen(SourceTable source, String target,
-            int position) {
-        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                lineageTableName(source), target, position,
-                source.temporary, state.tempTables.contains(target));
-        wildcard.setPositionalWildcard(true);
-        instructions.add(wildcard);
-        state.targetWildcardContribution.put(target, Boolean.TRUE);
-        recordWildcardSpan(target, position, Integer.MAX_VALUE,
-                lineageTableName(source), source.temporary);
+    void addOuterWildcardOpen(SourceTable source, String target, int position) {
+        selector.addOuterWildcardOpen(source, target, position);
     }
 
-    private void addOuterWildcard(SourceTable source, String target, int position) {
-        Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                lineageTableName(source), target, position,
-                source.temporary, state.tempTables.contains(target));
-        wildcard.setPositionalWildcard(true);
-        wildcard.setWildcardWidthKnown(true);
-        wildcard.setWildcardWidth(1);
-        instructions.add(wildcard);
-        state.targetWildcardContribution.put(target, Boolean.TRUE);
-        recordWildcardSpan(target, position, position + 1,
-                lineageTableName(source), source.temporary);
+    void addOuterWildcard(SourceTable source, String target, int position) {
+        selector.addOuterWildcard(source, target, position);
     }
 
-    private void recordOuterIdentifier(String rawName, String target,
-            String targetName, int position) {
-        String key = identifierKey(rawName);
-        Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
-                ? null : state.stackUsing.peek();
-        if (using != null && using.containsKey(key)) {
-            List<SourceTable> participants = using.get(key);
-            List<SourceTable> sides = participantsForCurrentUsing(key);
-            List<SourceTable> extras = new ArrayList<>();
-            for (SourceTable source : currentSources()) {
-                if (participants.contains(source) || sides.contains(source)) {
-                    continue;
-                }
-                if (ownsOuterColumn(source, key)
-                        || !sourceColumnNamesKnown(source)) {
-                    extras.add(source);
-                }
-            }
-            if (!extras.isEmpty()) {
-                List<SourceTable> all = new ArrayList<>(participants);
-                all.addAll(extras);
-                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                        displayNames(all));
-            }
-            for (SourceTable source : participants) {
-                String column = resolveOuterColumn(source, rawName);
-                addOuterColumnMapping(source, column, target, targetName, position);
-            }
-            return;
-        }
-        List<StarOutput> matchedOutputs = new ArrayList<>();
-        List<StarOutput> planned = state.stackStarPlan.isEmpty()
-                ? java.util.Collections.<StarOutput>emptyList()
-                : state.stackStarPlan.peek();
-        for (StarOutput output : planned) {
-            for (StarColumn column : output.sources) {
-                if (key != null && key.equals(column.key)) {
-                    matchedOutputs.add(output);
-                    break;
-                }
-            }
-        }
-        if (matchedOutputs.size() > 1) {
-            List<SourceTable> owners = new ArrayList<>();
-            for (StarOutput output : matchedOutputs) {
-                for (StarColumn column : output.sources) {
-                    if (!owners.contains(column.source)) {
-                        owners.add(column.source);
-                    }
-                }
-            }
-            throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                    displayNames(owners));
-        }
-        if (matchedOutputs.size() == 1) {
-            List<SourceTable> participants = currentUsingParticipants(key);
-            List<SourceTable> matchedSources = new ArrayList<>();
-            for (StarColumn column : matchedOutputs.get(0).sources) {
-                if (!matchedSources.contains(column.source)) {
-                    matchedSources.add(column.source);
-                }
-            }
-            List<SourceTable> owners = new ArrayList<>(matchedSources);
-            for (SourceTable source : currentSources()) {
-                if (participants.contains(source) || matchedSources.contains(source)) {
-                    continue;
-                }
-                if (ownsOuterColumn(source, key)
-                        || !sourceColumnNamesKnown(source)) {
-                    owners.add(source);
-                }
-            }
-            if (owners.size() > matchedSources.size()) {
-                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                        displayNames(owners));
-            }
-            for (StarColumn column : matchedOutputs.get(0).sources) {
-                addOuterColumnMapping(column.source, column.column, target,
-                        targetName, position, column.quoted);
-            }
-            return;
-        }
-        List<SourceTable> owners = new ArrayList<>();
-        List<SourceTable> unknown = new ArrayList<>();
-        for (SourceTable source : currentSources()) {
-            if (ownsOuterColumn(source, key)) {
-                owners.add(source);
-            } else if (!sourceColumnNamesKnown(source)) {
-                unknown.add(source);
-            }
-        }
-        if (owners.size() > 1) {
-            throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                    displayNames(owners));
-        }
-        if (owners.size() == 1) {
-            if (!unknown.isEmpty()) {
-                List<SourceTable> all = new ArrayList<>(owners);
-                all.addAll(unknown);
-                throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                        displayNames(all));
-            }
-            Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
-                    : null;
-            addOuterColumnMapping(owners.get(0),
-                    resolveOuterColumn(owners.get(0), rawName), target, targetName,
-                    position, quoted);
-            return;
-        }
-        if (unknown.size() == 1) {
-            addOuterWildcard(unknown.get(0), target, position);
-            return;
-        }
-        if (unknown.size() > 1) {
-            throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                    displayNames(unknown));
-        }
-        if (hasOuterScopeFallback()) {
-            List<SourceTable> ancestors = resolveCorrelatedUnqualified(rawName);
-            List<SourceTable> mapped = new ArrayList<>();
-            Boolean quoted = MetadataCatalog.isQuotedIdentifier(rawName) ? Boolean.TRUE
-                    : null;
-            for (SourceTable source : ancestors) {
-                String column = resolveOuterColumn(source, rawName);
-                addOuterColumnMapping(source, column, target, targetName, position,
-                        quoted);
-                mapped.add(source);
-            }
-            if (!mapped.isEmpty()) {
-                return;
-            }
-        }
-        throw new ColumnNotFoundException(normalizeIdentifier(rawName),
-                displayNames(currentSources()));
+    void recordOuterIdentifier(String rawName, String target, String targetName, int position) {
+        selector.recordOuterIdentifier(rawName, target, targetName, position);
     }
 
-    private List<SourceTable> participantsForCurrentUsing(String key) {
-        if (state.stackUsing.isEmpty() || state.usingParticipantsByIdentity.isEmpty()) {
-            return new ArrayList<>();
-        }
-        Map<String, List<SourceTable>> using = state.stackUsing.peek();
-        if (using == null) {
-            return new ArrayList<>();
-        }
-        Map<String, List<SourceTable>> sides = state.usingParticipantsByIdentity.get(using);
-        if (sides == null || !sides.containsKey(key)) {
-            return new ArrayList<>();
-        }
-        return new ArrayList<>(sides.get(key));
+    List<SourceTable> participantsForCurrentUsing(String key) {
+        return selector.participantsForCurrentUsing(key);
     }
 
-    private List<SourceTable> currentUsingParticipants(String key) {
-        if (state.stackUsing.isEmpty()) {
-            return new ArrayList<>();
-        }
-        Map<String, List<SourceTable>> using = state.stackUsing.peek();
-        if (using == null || state.usingParticipantsByIdentity.isEmpty()) {
-            return new ArrayList<>();
-        }
-        Map<String, List<SourceTable>> participants = state.usingParticipantsByIdentity.get(using);
-        if (participants == null || !participants.containsKey(key)) {
-            return new ArrayList<>();
-        }
-        return new ArrayList<>(participants.get(key));
+    List<SourceTable> currentUsingParticipants(String key) {
+        return selector.currentUsingParticipants(key);
     }
 
-    private boolean ownsOuterColumn(SourceTable source, String key) {
-        if (key == null) {
-            return false;
-        }
-        if (source.metadataTable != null) {
-            for (int i = 0; i < source.metadataTable.getFields().size(); i++) {
-                Column column = source.metadataTable.getFields().get(i);
-                String columnKey = column.isQuoted()
-                        && currentDialect() != DbType.mysql
-                        && currentDialect() != DbType.mariadb
-                                ? column.getColumnName()
-                                : identifierKey(column.getColumnName());
-                if (key.equals(columnKey)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (!source.outputNamesKnown) {
-            return false;
-        }
-        return source.outputKeys.contains(key);
+    boolean ownsOuterColumn(SourceTable source, String key) {
+        return selector.ownsOuterColumn(source, key);
     }
 
-    private boolean sourceColumnNamesKnown(SourceTable source) {
-        return source.metadataTable != null || source.outputNamesKnown;
+    boolean sourceColumnNamesKnown(SourceTable source) {
+        return selector.sourceColumnNamesKnown(source);
     }
 
-    private String resolveOuterColumn(SourceTable source, String rawName) {
-        if (source.metadataTable != null) {
-            String resolved = MetadataCatalog.resolveColumnName(source.metadataTable,
-                    rawName, currentDialect());
-            if (resolved == null) {
-                throw new ColumnNotFoundException(normalizeIdentifier(rawName),
-                        displayNames(visibleSources()));
-            }
-            return resolved;
-        }
-        String key = identifierKey(rawName);
-        int found = -1;
-        for (int i = 0; i < source.outputKeys.size(); i++) {
-            if (key != null && key.equals(source.outputKeys.get(i))) {
-                if (found >= 0) {
-                    throw new AmbiguousColumnException(normalizeIdentifier(rawName),
-                            displayNames(visibleSources()));
-                }
-                found = i;
-            }
-        }
-        if (source.outputNamesKnown) {
-            if (found >= 0) {
-                return found < source.outputColumns.size()
-                        ? source.outputColumns.get(found)
-                        : normalizeIdentifier(rawName);
-            }
-            throw new ColumnNotFoundException(normalizeIdentifier(rawName),
-                    displayNames(visibleSources()));
-        }
-        if (found >= 0) {
-            return found < source.outputColumns.size()
-                    ? source.outputColumns.get(found)
-                    : normalizeIdentifier(rawName);
-        }
-        return normalizeIdentifier(rawName);
+    String resolveOuterColumn(SourceTable source, String rawName) {
+        return selector.resolveOuterColumn(source, rawName);
     }
 
-    /**
-     * Record the tables an unnamed scalar subquery reads as a table-level claim on
-     * the target. When the written column is known (UPDATE/VALUES), the claim is
-     * bound to that column; otherwise it occupies one projection position.
-     */
-    void recordScalarTableLevel(ScalarSubquery inner, String targetTable,
-            int position, String targetColumn) {
-        Set<String> tables = new LinkedHashSet<>();
-        String prefix = inner.temp + ".";
-        for (Instruction instruction : instructions) {
-            String to = instruction.getTo();
-            if (to == null) {
-                continue;
-            }
-            String base = to.split("\\(")[0];
-            if (!inner.temp.equals(base) && !to.startsWith(prefix)) {
-                continue;
-            }
-            String from = instruction.getFrom();
-            if (from == null) {
-                continue;
-            }
-            String table;
-            if (instruction.getOperation() == OperationType.COLUMNS_INJECT
-                    || instruction.getOperation() == OperationType.TABLE_MAPPING) {
-                // The wildcard keeps the whole table identity (including schema).
-                table = from;
-            } else {
-                int dot = from.lastIndexOf('.');
-                table = dot >= 0 ? from.substring(0, dot) : from;
-            }
-            if (!table.isEmpty()) {
-                tables.add(table);
-            }
-        }
-        for (String table : tables) {
-            if (targetColumn != null && !state.tempTables.contains(targetTable)) {
-                String rendered = targetColumn;
-                Instruction edge = new Instruction(OperationType.COLUMNS_INJECT,
-                        table, targetTable + "(" + rendered + ")", -1, false, false);
-                edge.setPositionalWildcard(true);
-                edge.setWildcardTable(targetTable);
-                edge.setPopulatedColumns(rendered);
-                instructions.add(edge);
-            } else {
-                Instruction wildcard = new Instruction(OperationType.COLUMNS_INJECT,
-                        table, targetTable, position, false,
-                        state.tempTables.contains(targetTable));
-                wildcard.setPositionalWildcard(true);
-                wildcard.setWildcardWidthKnown(true);
-                wildcard.setWildcardWidth(1);
-                instructions.add(wildcard);
-                recordWildcardSpan(targetTable, position, position + 1, table, false);
-                state.targetWildcardContribution.put(targetTable, Boolean.TRUE);
-            }
-        }
+    void recordScalarTableLevel(ScalarSubquery inner, String targetTable, int position, String targetColumn) {
+        selector.recordScalarTableLevel(inner, targetTable, position, targetColumn);
     }
 
-    private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr,
-            int position) {
-        String targetTable = state.stackTargetTable.peek();
-        int savedOrdinal = state.currentOrdinal;
-        state.currentOrdinal = position;
-        try {
-            return processScalarSubqueryProjection(item, expr);
-        } finally {
-            state.currentOrdinal = savedOrdinal;
-        }
+    int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr, int position) {
+        return selector.processScalarSubqueryProjection(item, expr, position);
     }
 
-    private int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr) {
-        String targetTable = state.stackTargetTable.peek();
-        ScalarSubquery inner = analyzeScalarSubquery(expr);
-        if (inner == null) {
-            return 1;
-        }
-        if (inner.columns.isEmpty()) {
-            recordScalarTableLevel(inner, state.stackTargetTable.peek(), state.currentOrdinal, null);
-            return 1;
-        }
-        List<String> declaredColumns = currentTargetColumnAliases(targetTable);
-        String lockedName = lockedOutputName(targetTable, state.currentOrdinal);
-        String lockedKey = lockedOutputKey(targetTable, state.currentOrdinal);
-        String targetColumn;
-        String targetKey;
-        if (lockedName != null) {
-            targetColumn = lockedName;
-            targetKey = lockedKey != null ? lockedKey : identifierKey(lockedName);
-        } else if (declaredColumns != null && state.currentOrdinal >= 0
-                && state.currentOrdinal < declaredColumns.size()) {
-            targetColumn = declaredColumns.get(state.currentOrdinal);
-            targetKey = identifierKey(targetColumn);
-        } else if (item.getAlias() != null) {
-            targetColumn = normalizeIdentifier(item.getAlias());
-            targetKey = identifierKey(item.getAlias());
-        } else {
-            targetColumn = inner.columns.get(0);
-            targetKey = identifierKey(targetColumn);
-        }
-        setTargetOutput(targetTable, state.currentOrdinal, targetColumn, targetKey);
-        markOutputNameKnown(targetTable, state.currentOrdinal, true);
-        if (state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal) {
-            // The position follows an unknown-width wildcard, so no edge may be
-            // pinned to a column, exactly like an ordinary projection there.
-            return 1;
-        }
-        for (int i = 0; i < inner.columns.size(); i++) {
-            String source = inner.references.get(i);
-            instructions.add(new Instruction(OperationType.COLUMN_MAPPING, source,
-                    targetTable + "." + renderIdentifier(targetColumn), state.currentOrdinal,
-                    true, state.tempTables.contains(targetTable)));
-        }
-        return 1;
+    int processScalarSubqueryProjection(SQLSelectItem item, SQLQueryExpr expr) {
+        return selector.processScalarSubqueryProjection(item, expr);
     }
 
     boolean containsScalarSubquery(SQLExpr expr) {
-        if (expr == null) {
-            return false;
-        }
-        if (expr instanceof SQLQueryExpr) {
-            return true;
-        }
-        if (expr instanceof SQLBinaryOpExpr) {
-            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
-            return containsScalarSubquery(binary.getLeft())
-                    || containsScalarSubquery(binary.getRight());
-        }
-        if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                if (containsScalarSubquery(argument)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (expr instanceof SQLCastExpr) {
-            return containsScalarSubquery(((SQLCastExpr) expr).getExpr());
-        }
-        if (expr instanceof SQLNotExpr) {
-            return containsScalarSubquery(((SQLNotExpr) expr).getExpr());
-        }
-        if (expr instanceof SQLUnaryExpr) {
-            return containsScalarSubquery(((SQLUnaryExpr) expr).getExpr());
-        }
-        if (expr instanceof SQLBetweenExpr) {
-            SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            return containsScalarSubquery(between.getTestExpr())
-                    || containsScalarSubquery(between.getBeginExpr())
-                    || containsScalarSubquery(between.getEndExpr());
-        }
-        if (expr instanceof SQLCaseExpr) {
-            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            if (containsScalarSubquery(caseExpr.getValueExpr())
-                    || containsScalarSubquery(caseExpr.getElseExpr())) {
-                return true;
-            }
-            if (caseExpr.getItems() != null) {
-                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
-                    if (containsScalarSubquery(caseItem.getConditionExpr())
-                            || containsScalarSubquery(caseItem.getValueExpr())) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-        if (expr instanceof SQLListExpr) {
-            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
-                if (containsScalarSubquery(element)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (expr instanceof SQLInListExpr) {
-            SQLInListExpr in = (SQLInListExpr) expr;
-            if (containsScalarSubquery(in.getExpr())) {
-                return true;
-            }
-            if (in.getTargetList() != null) {
-                for (SQLExpr element : in.getTargetList()) {
-                    if (containsScalarSubquery(element)) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-        if (expr instanceof SQLInSubQueryExpr) {
-            return containsScalarSubquery(((SQLInSubQueryExpr) expr).getExpr());
-        }
-        if (expr instanceof SQLExtractExpr) {
-            return containsScalarSubquery(((SQLExtractExpr) expr).getValue());
-        }
-        return false;
+        return selector.containsScalarSubquery(expr);
     }
 
-    private void recordUnboundScalarMappings(SQLSelectItem item, int position) {
-        String targetTable = state.stackTargetTable.peek();
-        List<String> outputs = copyOutputs(state.targetOutputs.get(targetTable));
-        String name = outputs != null && position < outputs.size() && outputs.get(position) != null
-                ? outputs.get(position) : "col" + (position + 1);
-        recordUnboundScalarExpression(item.getExpr(), targetTable, name, position);
+    void recordUnboundScalarMappings(SQLSelectItem item, int position) {
+        selector.recordUnboundScalarMappings(item, position);
     }
 
-    private void recordUnboundScalarExpression(SQLExpr expr, String targetTable,
-            String targetName, int position) {
-        if (expr == null) {
-            return;
-        }
-        if (expr instanceof SQLQueryExpr) {
-            ScalarSubquery inner = analyzeScalarSubquery((SQLQueryExpr) expr);
-            if (inner == null) {
-                return;
-            }
-            if (inner.columns.isEmpty()) {
-                recordScalarTableLevel(inner, targetTable, position, null);
-                return;
-            }
-            instructions.add(new Instruction(OperationType.COLUMN_MAPPING,
-                    inner.references.get(0),
-                    targetTable + "." + renderIdentifier(targetName), position, true,
-                    state.tempTables.contains(targetTable)));
-            return;
-        }
-        if (expr instanceof SQLBinaryOpExpr) {
-            SQLBinaryOpExpr binary = (SQLBinaryOpExpr) expr;
-            recordUnboundScalarExpression(binary.getLeft(), targetTable, targetName,
-                    position);
-            recordUnboundScalarExpression(binary.getRight(), targetTable, targetName,
-                    position);
-        } else if (expr instanceof SQLMethodInvokeExpr) {
-            for (SQLExpr argument : ((SQLMethodInvokeExpr) expr).getArguments()) {
-                recordUnboundScalarExpression(argument, targetTable, targetName,
-                        position);
-            }
-        } else if (expr instanceof SQLCastExpr) {
-            recordUnboundScalarExpression(((SQLCastExpr) expr).getExpr(), targetTable,
-                    targetName, position);
-        } else if (expr instanceof SQLNotExpr) {
-            recordUnboundScalarExpression(((SQLNotExpr) expr).getExpr(), targetTable,
-                    targetName, position);
-        } else if (expr instanceof SQLUnaryExpr) {
-            recordUnboundScalarExpression(((SQLUnaryExpr) expr).getExpr(), targetTable,
-                    targetName, position);
-        } else if (expr instanceof SQLBetweenExpr) {
-            SQLBetweenExpr between = (SQLBetweenExpr) expr;
-            recordUnboundScalarExpression(between.getTestExpr(), targetTable, targetName,
-                    position);
-            recordUnboundScalarExpression(between.getBeginExpr(), targetTable,
-                    targetName, position);
-            recordUnboundScalarExpression(between.getEndExpr(), targetTable, targetName,
-                    position);
-        } else if (expr instanceof SQLCaseExpr) {
-            SQLCaseExpr caseExpr = (SQLCaseExpr) expr;
-            recordUnboundScalarExpression(caseExpr.getValueExpr(), targetTable,
-                    targetName, position);
-            if (caseExpr.getItems() != null) {
-                for (SQLCaseExpr.Item caseItem : caseExpr.getItems()) {
-                    recordUnboundScalarExpression(caseItem.getConditionExpr(),
-                            targetTable, targetName, position);
-                    recordUnboundScalarExpression(caseItem.getValueExpr(), targetTable,
-                            targetName, position);
-                }
-            }
-            recordUnboundScalarExpression(caseExpr.getElseExpr(), targetTable,
-                    targetName, position);
-        } else if (expr instanceof SQLListExpr) {
-            for (SQLExpr element : ((SQLListExpr) expr).getItems()) {
-                recordUnboundScalarExpression(element, targetTable, targetName,
-                        position);
-            }
-        } else if (expr instanceof SQLInListExpr) {
-            SQLInListExpr in = (SQLInListExpr) expr;
-            recordUnboundScalarExpression(in.getExpr(), targetTable, targetName,
-                    position);
-            if (in.getTargetList() != null) {
-                for (SQLExpr element : in.getTargetList()) {
-                    recordUnboundScalarExpression(element, targetTable, targetName,
-                            position);
-                }
-            }
-        } else if (expr instanceof SQLInSubQueryExpr) {
-            recordUnboundScalarExpression(((SQLInSubQueryExpr) expr).getExpr(),
-                    targetTable, targetName, position);
-        } else if (expr instanceof SQLExtractExpr) {
-            recordUnboundScalarExpression(((SQLExtractExpr) expr).getValue(),
-                    targetTable, targetName, position);
-        }
+    void recordUnboundScalarExpression(SQLExpr expr, String targetTable, String targetName, int position) {
+        selector.recordUnboundScalarExpression(expr, targetTable, targetName, position);
     }
 
-    private int recordUnboundSelectItem(SQLSelectItem item, int position) {
-        if (item.getExpr() == null) {
-            return 0;
-        }
-        SQLExpr base = item.getExpr();
-        while (base instanceof SQLCastExpr) {
-            base = ((SQLCastExpr) base).getExpr();
-        }
-        String targetTable = state.stackTargetTable.peek();
-        String lockedName = lockedOutputName(targetTable, position);
-        String lockedKey = lockedOutputKey(targetTable, position);
-        if (lockedName != null) {
-            setTargetOutput(targetTable, position, lockedName,
-                    lockedKey != null ? lockedKey : identifierKey(lockedName));
-            return 1;
-        }
-        List<String> declared = currentTargetColumnAliases(targetTable);
-        List<String> declaredKeys = currentDeclaredKeys(targetTable);
-        String name;
-        String key;
-        if (declared != null && position < declared.size()) {
-            name = declared.get(position);
-            key = declaredKeys != null && position < declaredKeys.size()
-                    ? declaredKeys.get(position) : identifierKey(name);
-            setTargetOutput(targetTable, position, name, key);
-            markOutputNameKnown(targetTable, position, true);
-            return 1;
-        }
-        if (item.getAlias() != null) {
-            name = normalizeIdentifier(item.getAlias());
-            key = identifierKey(item.getAlias());
-        } else if (base instanceof SQLIdentifierExpr) {
-            name = normalizeIdentifier(((SQLIdentifierExpr) base).getName());
-            key = identifierKey(((SQLIdentifierExpr) base).getName());
-        } else if (base instanceof SQLPropertyExpr && !isStarProperty(base)) {
-            name = normalizeIdentifier(((SQLPropertyExpr) base).getName());
-            key = identifierKey(((SQLPropertyExpr) base).getName());
-        } else {
-            name = item.getExpr().toString();
-            key = identifierKey(name);
-        }
-        setTargetOutput(state.stackTargetTable.peek(), position, name, key);
-        markOutputNameKnown(state.stackTargetTable.peek(), position, true);
-        return 1;
+    int recordUnboundSelectItem(SQLSelectItem item, int position) {
+        return selector.recordUnboundSelectItem(item, position);
     }
 
-    /**
-     * The output of an analyzed scalar subquery: the temporary that holds it and the
-     * names of its columns.
-     */
-/**
-     * Analyze a scalar subquery as a one-column derived table so its own lineage is
-     * kept instead of being folded into the enclosing expression.
-     */
     ScalarSubquery analyzeScalarSubquery(SQLQueryExpr expr) {
-        SQLSelect select = expr.getSubQuery();
-        if (select == null) {
-            return null;
-        }
-        String target = getTempTableName();
-        state.tempTables.add(target);
-        int savedOrdinal = state.currentOrdinal;
-        int savedUncertain = state.uncertainOrdinal;
-        int savedBudget = state.currentStarBudget;
-        boolean savedInTarget = state.inTargetExpression;
-        state.scalarSubqueryDepth++;
-        try {
-            state.stackTargetTable.push(target);
-            processSelect(select);
-            state.stackTargetTable.pop();
-        } finally {
-            state.scalarSubqueryDepth--;
-            state.currentOrdinal = savedOrdinal;
-            state.uncertainOrdinal = savedUncertain;
-            state.currentStarBudget = savedBudget;
-            state.inTargetExpression = savedInTarget;
-        }
-        recordTargetShape(target);
-        List<String> outputs = copyOutputs(state.targetOutputs.get(target));
-        boolean widthKnown = Boolean.TRUE.equals(state.targetWidthKnown.get(target));
-        int minimum = targetMinimumColumns(target, widthKnown, outputs.size());
-        int width = Math.max(outputs.size(), minimum);
-        if (width > 1) {
-            throw new IllegalStateException(
-                    "Scalar subquery must return one column: " + width);
-        }
-        List<String> columns = new ArrayList<>();
-        for (String output : outputs) {
-            columns.add(output);
-        }
-        // Reuse the inner instructions' own spelling of each column, so a quoted or
-        // dotted name keeps its boundaries on both sides.
-        List<String> references = new ArrayList<>();
-        String prefix = target + ".";
-        for (Instruction instruction : instructions) {
-            if (instruction.getOperation() != OperationType.COLUMN_MAPPING
-                    && instruction.getOperation() != OperationType.EXPR_MAPPING) {
-                continue;
-            }
-            String to = instruction.getTo();
-            if (to != null && to.startsWith(prefix)) {
-                references.add(to);
-            }
-        }
-        while (references.size() < columns.size()) {
-            references.add(prefix + columns.get(references.size()));
-        }
-        return new ScalarSubquery(target, columns, references);
+        return selector.analyzeScalarSubquery(expr);
     }
 
-    private int processSelectItem(SQLSelectItem item) {
-        if (item.getExpr() == null) {
-            return 0;
-        }
-        SQLExpr baseExpr = item.getExpr();
-        while (baseExpr instanceof SQLCastExpr) {
-            baseExpr = ((SQLCastExpr) baseExpr).getExpr();
-        }
-        if (baseExpr instanceof SQLQueryExpr) {
-            return processScalarSubqueryProjection(item, (SQLQueryExpr) baseExpr,
-                    state.currentOrdinal);
-        }
-
-        String targetTable = state.stackTargetTable.peek();
-        List<String> declaredColumns = currentTargetColumnAliases(targetTable);
-
-        String lockedName = lockedOutputName(targetTable, state.currentOrdinal);
-        String lockedKey = lockedOutputKey(targetTable, state.currentOrdinal);
-
-        String targetColumn;
-        boolean identifierTarget;
-        if (lockedName != null) {
-            targetColumn = lockedName;
-            identifierTarget = true;
-        } else if (declaredColumns != null && state.currentOrdinal >= 0
-                && state.currentOrdinal < declaredColumns.size()) {
-            targetColumn = declaredColumns.get(state.currentOrdinal);
-            identifierTarget = true;
-        } else if (item.getAlias() != null) {
-            targetColumn = normalizeIdentifier(item.getAlias());
-            identifierTarget = true;
-        } else if (baseExpr instanceof SQLIdentifierExpr) {
-            targetColumn = normalizeIdentifier(((SQLIdentifierExpr) baseExpr).getName());
-            identifierTarget = true;
-        } else if (baseExpr instanceof SQLPropertyExpr && !isStarProperty(baseExpr)) {
-            targetColumn = normalizeIdentifier(((SQLPropertyExpr) baseExpr).getName());
-            identifierTarget = true;
-        } else {
-            targetColumn = item.getExpr().toString();
-            identifierTarget = false;
-        }
-        if (identifierTarget) {
-            targetColumn = renderIdentifier(targetColumn);
-        }
-
-        if (item.getExpr() instanceof SQLAllColumnExpr) {
-            if (detachedMetadata()) {
-                int width = emitDetachedStar(targetTable, currentSources(), state.currentOrdinal);
-                return Math.max(width, 1);
-            }
-            Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
-                    ? null : state.stackUsing.peek();
-            SourceNode node = state.stackSourceNode.isEmpty() ? null : state.stackSourceNode.peek();
-            if (context == null && node != null && !node.plan.isEmpty()
-                    && (using != null && !using.isEmpty() || state.currentStarBudget > 0)) {
-                recordBindingStar(targetTable, node, state.currentOrdinal);
-            } else {
-                recordStarOutputs(targetTable, currentSources(), state.currentOrdinal);
-            }
-        } else if (isStarProperty(item.getExpr())) {
-            SQLExpr owner = ((SQLPropertyExpr) item.getExpr()).getOwner();
-            CorrelatedOwner correlated = findCorrelatedOwner(owner);
-            SourceTable source = correlated == null ? null : correlated.source;
-            SourceNode binding = correlated == null ? null : correlated.binding;
-            if (detachedMetadata()) {
-                List<StarOutput> plan;
-                if (source != null) {
-                    plan = planFromSource(source);
-                } else {
-                    if (binding == null) {
-                        throw new MetadataNotFoundException(owner == null
-                                ? "*" : owner.toString());
-                    }
-                    plan = binding.plan;
-                }
-                List<SourceTable> planSources = new ArrayList<>();
-                if (source != null) {
-                    planSources.add(source);
-                } else {
-                    planSources.addAll(binding.sources);
-                }
-                SourceNode planNode = source != null ? null : binding;
-                int width = emitDetachedPlan(targetTable, plan, planSources, planNode,
-                        state.currentOrdinal);
-                return Math.max(width, 1);
-            }
-            if (source != null) {
-                SourceNode expanded = state.currentExpandedSourceNodes.get(source);
-                SourceNode leafNode = state.stackSourceNode.isEmpty()
-                        ? null : state.stackSourceNode.peek();
-                if (expanded != null) {
-                    recordBindingStar(targetTable, expanded, state.currentOrdinal);
-                } else if (context == null && state.currentStarBudget > 0 && leafNode != null
-                        && leafNode.sources.size() == 1
-                        && leafNode.sources.get(0) == source
-                        && !sourceColumnsKnown(source)) {
-                    recordBindingStar(targetTable, leafNode, state.currentOrdinal);
-                } else {
-                    recordSourceStarOutputs(targetTable, source, state.currentOrdinal);
-                }
-            } else if (binding != null) {
-                recordBindingStar(targetTable, binding, state.currentOrdinal);
-            }
-        } else {
-            List<String> declaredKeys = currentDeclaredKeys(targetTable);
-            String targetKey;
-            if (lockedKey != null) {
-                targetKey = lockedKey;
-            } else if (declaredKeys != null && state.currentOrdinal < declaredKeys.size()) {
-                targetKey = declaredKeys.get(state.currentOrdinal);
-            } else if (item.getAlias() != null) {
-                targetKey = identifierKey(item.getAlias());
-            } else if (baseExpr instanceof SQLIdentifierExpr) {
-                targetKey = identifierKey(((SQLIdentifierExpr) baseExpr).getName());
-            } else if (baseExpr instanceof SQLPropertyExpr) {
-                targetKey = identifierKey(((SQLPropertyExpr) baseExpr).getName());
-            } else {
-                targetKey = identifierKey(item.getExpr().toString());
-            }
-            setTargetOutput(targetTable, state.currentOrdinal, normalizeIdentifier(targetColumn),
-                    targetKey);
-            if (lockedName == null) {
-                markOutputNameKnown(targetTable, state.currentOrdinal, true);
-            }
-        }
-
-        state.stackTargetColumn.push(targetColumn);
-        int before = instructions.size();
-        state.inTargetExpression = true;
-        visitExpr(item.getExpr());
-        state.inTargetExpression = false;
-        boolean uncertain = state.uncertainOrdinal >= 0 && state.currentOrdinal == state.uncertainOrdinal;
-        if (instructions.size() == before && !uncertain) {
-            instructions.add(new Instruction(OperationType.EXPR_MAPPING,
-                    item.getExpr().toString(), targetTable + "." + targetColumn,
-                    state.currentOrdinal, false, state.tempTables.contains(targetTable)));
-        }
-        state.stackTargetColumn.pop();
-
-        return outputColumnCount(item.getExpr());
+    int processSelectItem(SQLSelectItem item) {
+        return selector.processSelectItem(item);
     }
 
-    private int outputColumnCount(SQLExpr expr) {
-        if (expr instanceof SQLAllColumnExpr) {
-            Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
-                    ? null : state.stackUsing.peek();
-            if (!state.stackSourceNode.isEmpty()) {
-                SourceNode node = state.stackSourceNode.peek();
-                if (node.widthKnown) {
-                    return Math.max(node.width, 1);
-                }
-                // With USING the visible plan already merges keys, so its size is the
-                // best known position count even when names are incomplete.
-                if (using != null && !using.isEmpty() && !node.plan.isEmpty()) {
-                    return Math.max(node.plan.size(), 1);
-                }
-            }
-            if (useVisiblePlan(currentSources(), using)) {
-                return Math.max(currentStarPlan(currentSources()).size(), 1);
-            }
-            int count = 0;
-            for (SourceTable source : currentSources()) {
-                count += columnCount(source);
-            }
-            return Math.max(count, 1);
-        }
-        if (isStarProperty(expr)) {
-            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
-            SourceTable source = findByOwner(owner);
-            if (source != null) {
-                return Math.max(columnCount(source), 1);
-            }
-            SourceNode binding = joinBinding(owner);
-            if (binding != null) {
-                return binding.widthKnown
-                        ? Math.max(binding.width, 1) : Math.max(binding.plan.size(), 1);
-            }
-            return 1;
-        }
-        return 1;
+    int outputColumnCount(SQLExpr expr) {
+        return selector.outputColumnCount(expr);
     }
 
-    private int minimumOutputColumns(SQLExpr expr) {
-        if (expr instanceof SQLAllColumnExpr) {
-            if (!state.stackSourceNode.isEmpty()) {
-                SourceNode node = state.stackSourceNode.peek();
-                return node.widthKnown ? node.width : node.minWidth;
-            }
-            Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
-                    ? null : state.stackUsing.peek();
-            if (useVisiblePlan(currentSources(), using)) {
-                return currentStarPlan(currentSources()).size();
-            }
-            int minimum = 0;
-            for (SourceTable source : currentSources()) {
-                minimum += minimumColumns(source);
-            }
-            return minimum;
-        }
-        if (isStarProperty(expr)) {
-            SQLExpr owner = ((SQLPropertyExpr) expr).getOwner();
-            SourceTable source = findByOwner(owner);
-            if (source != null) {
-                return minimumColumns(source);
-            }
-            SourceNode binding = joinBinding(owner);
-            if (binding != null) {
-                return binding.widthKnown ? binding.width : binding.minWidth;
-            }
-            return 0;
-        }
-        return 1;
+    int minimumOutputColumns(SQLExpr expr) {
+        return selector.minimumOutputColumns(expr);
     }
 
     int minimumColumns(SourceTable source) {
-        if (source.metadataTable != null) {
-            return source.metadataTable.getFields().size();
-        }
-        if (sourceColumnsKnown(source)) {
-            return source.outputColumns.size();
-        }
-        return source.minOutputColumns;
+        return selector.minimumColumns(source);
     }
 
-    private boolean starOutputWidthKnown(SQLExpr expr) {
+    boolean starOutputWidthKnown(SQLExpr expr) {
         if (expr instanceof SQLAllColumnExpr) {
             if (!state.stackSourceNode.isEmpty()) {
                 return state.stackSourceNode.peek().widthKnown;
@@ -3180,7 +1294,7 @@ public class DmlLineage {
         return true;
     }
 
-    private boolean outputWidthKnown(SQLSelectItem item) {
+    boolean outputWidthKnown(SQLSelectItem item) {
         SQLExpr expr = item.getExpr();
         if (expr instanceof SQLAllColumnExpr || isStarProperty(expr)) {
             // A wildcard's width can be known even when its column names are not.
@@ -3189,7 +1303,7 @@ public class DmlLineage {
         return true;
     }
 
-    private boolean outputNamesKnown(SQLSelectItem item) {
+    boolean outputNamesKnown(SQLSelectItem item) {
         SQLExpr expr = item.getExpr();
         if (detachedMetadata() && hasUnknownStarSource(expr)) {
             return false;
@@ -3233,7 +1347,7 @@ public class DmlLineage {
         return source.metadataTable != null || source.outputWidthKnown;
     }
 
-    private boolean hasUnknownStarSource(SQLExpr expr) {
+    boolean hasUnknownStarSource(SQLExpr expr) {
         if (expr instanceof SQLAllColumnExpr) {
             for (SourceTable source : currentSources()) {
                 if (!sourceNamesKnown(source)) {
@@ -3271,7 +1385,7 @@ public class DmlLineage {
                 && Boolean.TRUE.equals(source.outputNameKnown.get(position));
     }
 
-    private int columnCount(SourceTable source) {
+    int columnCount(SourceTable source) {
         if (source.metadataTable != null) {
             return Math.max(source.metadataTable.getFields().size(), 1);
         }
@@ -3285,65 +1399,65 @@ public class DmlLineage {
     /* sources                                                            */
     /* ------------------------------------------------------------------ */
 
-    private final SourcePlanner planner = new SourcePlanner(this);
+    final SourcePlanner planner = new SourcePlanner(this);
 
     SourceNode buildSourceNode(SQLTableSource tableSource, Map<String, List<SourceTable>> using) {
         return planner.buildSourceNode(tableSource, using);
     }
 
-    private void processDerivedBody(String target, SQLSelect select, List<com.alibaba.druid.sql.ast.SQLName> columns) {
+    void processDerivedBody(String target, SQLSelect select, List<com.alibaba.druid.sql.ast.SQLName> columns) {
         planner.processDerivedBody(target, select, columns);
     }
 
-    private void processDerivedUnion(String target, SQLUnionQuery union, List<com.alibaba.druid.sql.ast.SQLName> columns) {
+    void processDerivedUnion(String target, SQLUnionQuery union, List<com.alibaba.druid.sql.ast.SQLName> columns) {
         planner.processDerivedUnion(target, union, columns);
     }
 
-    private void recordTargetShape(String target) {
+    void recordTargetShape(String target) {
         planner.recordTargetShape(target);
     }
 
-    private void fillDeclaredOutputs(String target, int width) {
+    void fillDeclaredOutputs(String target, int width) {
         planner.fillDeclaredOutputs(target, width);
     }
 
-    private void pushDerivedAliases(String target, List<com.alibaba.druid.sql.ast.SQLName> columns) {
+    void pushDerivedAliases(String target, List<com.alibaba.druid.sql.ast.SQLName> columns) {
         planner.pushDerivedAliases(target, columns);
     }
 
-    private List<StarOutput> planFromSource(SourceTable source) {
+    List<StarOutput> planFromSource(SourceTable source) {
         return planner.planFromSource(source);
     }
 
-    private List<String> sourceColumnKeys(SourceTable source) {
+    List<String> sourceColumnKeys(SourceTable source) {
         return planner.sourceColumnKeys(source);
     }
 
-    private List<StarOutput> mergeStarPlan(List<StarOutput> left, List<StarOutput> right, SQLJoinTableSource.JoinType type, List<SQLExpr> using, boolean leftKnown, boolean rightKnown, List<SourceTable> leftSources, List<SourceTable> rightSources, boolean leftWidthKnown) {
+    List<StarOutput> mergeStarPlan(List<StarOutput> left, List<StarOutput> right, SQLJoinTableSource.JoinType type, List<SQLExpr> using, boolean leftKnown, boolean rightKnown, List<SourceTable> leftSources, List<SourceTable> rightSources, boolean leftWidthKnown) {
         return planner.mergeStarPlan(left, right, type, using, leftKnown, rightKnown, leftSources, rightSources, leftWidthKnown);
     }
 
-    private static boolean hasUniqueUsingColumn(List<StarOutput> plan, String key) {
+    static boolean hasUniqueUsingColumn(List<StarOutput> plan, String key) {
         return SourcePlanner.hasUniqueUsingColumn(plan, key);
     }
 
-    private static boolean sameUnknownGroup(SourceTable source) {
+    static boolean sameUnknownGroup(SourceTable source) {
         return SourcePlanner.sameUnknownGroup(source);
     }
 
-    private static boolean containsSource(List<SourceTable> sources, SourceTable source) {
+    static boolean containsSource(List<SourceTable> sources, SourceTable source) {
         return SourcePlanner.containsSource(sources, source);
     }
 
-    private static int totalWildcardOccurrences(SourceTable source) {
+    static int totalWildcardOccurrences(SourceTable source) {
         return SourcePlanner.totalWildcardOccurrences(source);
     }
 
-    private static List<Integer> unknownRegionRuns(SourceTable source) {
+    static List<Integer> unknownRegionRuns(SourceTable source) {
         return SourcePlanner.unknownRegionRuns(source);
     }
 
-    private static List<Integer> unknownRegionEnds(SourceTable source) {
+    static List<Integer> unknownRegionEnds(SourceTable source) {
         return SourcePlanner.unknownRegionEnds(source);
     }
 
@@ -3351,107 +1465,107 @@ public class DmlLineage {
         return SourcePlanner.firstUnknownIndex(source);
     }
 
-    private static int unknownRegionCount(SourceTable source) {
+    static int unknownRegionCount(SourceTable source) {
         return SourcePlanner.unknownRegionCount(source);
     }
 
-    private int planSizeFor(SourceTable source) {
+    int planSizeFor(SourceTable source) {
         return planner.planSizeFor(source);
     }
 
-    private SourceNode sourcePlanNode(SourceTable source) {
+    SourceNode sourcePlanNode(SourceTable source) {
         return planner.sourcePlanNode(source);
     }
 
-    private static Map<SourceTable, Integer> unknownSectionEndFor(SourceTable source, boolean widthKnown, int planSize) {
+    static Map<SourceTable, Integer> unknownSectionEndFor(SourceTable source, boolean widthKnown, int planSize) {
         return SourcePlanner.unknownSectionEndFor(source, widthKnown, planSize);
     }
 
-    private static boolean singleSourceCertain(List<SourceTable> sources, String key) {
+    static boolean singleSourceCertain(List<SourceTable> sources, String key) {
         return SourcePlanner.singleSourceCertain(sources, key);
     }
 
-    private static StarOutput unknownColumn(List<SourceTable> sources, SQLExpr expr, String key, boolean certain) {
+    static StarOutput unknownColumn(List<SourceTable> sources, SQLExpr expr, String key, boolean certain) {
         return SourcePlanner.unknownColumn(sources, expr, key, certain);
     }
 
-    private static StarOutput removeFirstUnknown(List<StarOutput> plan, SQLExpr expr, String key, boolean certain) {
+    static StarOutput removeFirstUnknown(List<StarOutput> plan, SQLExpr expr, String key, boolean certain) {
         return SourcePlanner.removeFirstUnknown(plan, expr, key, certain);
     }
 
-    private static StarOutput positionalColumn(StarOutput output, SQLExpr expr, String key, boolean certain) {
+    static StarOutput positionalColumn(StarOutput output, SQLExpr expr, String key, boolean certain) {
         return SourcePlanner.positionalColumn(output, expr, key, certain);
     }
 
-    private static int planKeyCount(List<StarOutput> plan, String key) {
+    static int planKeyCount(List<StarOutput> plan, String key) {
         return SourcePlanner.planKeyCount(plan, key);
     }
 
-    private static void addSources(List<SourceTable> target, List<SourceTable> extra) {
+    static void addSources(List<SourceTable> target, List<SourceTable> extra) {
         SourcePlanner.addSources(target, extra);
     }
 
-    private void addUnknownSources(List<SourceTable> target, List<SourceTable> candidates) {
+    void addUnknownSources(List<SourceTable> target, List<SourceTable> candidates) {
         planner.addUnknownSources(target, candidates);
     }
 
-    private static List<SourceTable> planAllSourcesForKey(List<StarOutput> plan, String key) {
+    static List<SourceTable> planAllSourcesForKey(List<StarOutput> plan, String key) {
         return SourcePlanner.planAllSourcesForKey(plan, key);
     }
 
-    private static List<SourceTable> planSourcesForKey(List<StarOutput> plan, String key) {
+    static List<SourceTable> planSourcesForKey(List<StarOutput> plan, String key) {
         return SourcePlanner.planSourcesForKey(plan, key);
     }
 
-    private static int insertionPoint(List<StarOutput> plan, List<SourceTable> sources, int fallback, Map<SourceTable, Integer> sectionEnd) {
+    static int insertionPoint(List<StarOutput> plan, List<SourceTable> sources, int fallback, Map<SourceTable, Integer> sectionEnd) {
         return SourcePlanner.insertionPoint(plan, sources, fallback, sectionEnd);
     }
 
-    private static int lastIndexOfUncertainSource(List<StarOutput> plan, List<SourceTable> sources) {
+    static int lastIndexOfUncertainSource(List<StarOutput> plan, List<SourceTable> sources) {
         return SourcePlanner.lastIndexOfUncertainSource(plan, sources);
     }
 
-    private static int countRemaining(List<StarOutput> plan, List<StarOutput> originals) {
+    static int countRemaining(List<StarOutput> plan, List<StarOutput> originals) {
         return SourcePlanner.countRemaining(plan, originals);
     }
 
-    private static boolean containsIdentity(List<StarOutput> plan, StarOutput output) {
+    static boolean containsIdentity(List<StarOutput> plan, StarOutput output) {
         return SourcePlanner.containsIdentity(plan, output);
     }
 
-    private static int keptBefore(List<StarOutput> plan, List<StarOutput> originals, int boundary) {
+    static int keptBefore(List<StarOutput> plan, List<StarOutput> originals, int boundary) {
         return SourcePlanner.keptBefore(plan, originals, boundary);
     }
 
-    private static int lastIndexOfSource(List<StarOutput> plan, List<SourceTable> sources) {
+    static int lastIndexOfSource(List<StarOutput> plan, List<SourceTable> sources) {
         return SourcePlanner.lastIndexOfSource(plan, sources);
     }
 
-    private static int knownOutputPositionCount(SourceNode node) {
+    static int knownOutputPositionCount(SourceNode node) {
         return SourcePlanner.knownOutputPositionCount(node);
     }
 
-    private static Set<String> knownOutputKeys(SourceNode node) {
+    static Set<String> knownOutputKeys(SourceNode node) {
         return SourcePlanner.knownOutputKeys(node);
     }
 
-    private boolean nodeNamesKnown(SourceNode node) {
+    boolean nodeNamesKnown(SourceNode node) {
         return planner.nodeNamesKnown(node);
     }
 
-    private static int planKnownKeyCount(List<StarOutput> plan, String key) {
+    static int planKnownKeyCount(List<StarOutput> plan, String key) {
         return SourcePlanner.planKnownKeyCount(plan, key);
     }
 
-    private StarOutput removeFirstMatching(List<StarOutput> plan, String key) {
+    StarOutput removeFirstMatching(List<StarOutput> plan, String key) {
         return planner.removeFirstMatching(plan, key);
     }
 
-    private static List<SourceTable> mergedSources(SQLJoinTableSource.JoinType type, List<SourceTable> left, List<SourceTable> right) {
+    static List<SourceTable> mergedSources(SQLJoinTableSource.JoinType type, List<SourceTable> left, List<SourceTable> right) {
         return SourcePlanner.mergedSources(type, left, right);
     }
 
-    private SourceTable resolveSource(SQLExprTableSource table) {
+    SourceTable resolveSource(SQLExprTableSource table) {
         return planner.resolveSource(table);
     }
 
@@ -3463,7 +1577,7 @@ public class DmlLineage {
         return minimum == null ? 0 : minimum;
     }
 
-    private void recordWildcardSpan(String target, int start, int end, String source,
+    void recordWildcardSpan(String target, int start, int end, String source,
             boolean temporary) {
         if (target == null || start < 0) {
             return;
@@ -3473,7 +1587,7 @@ public class DmlLineage {
                 .add(new WildcardSpan(start, end, source, temporary));
     }
 
-    private List<WildcardSpan> wildcardSpansOf(String target) {
+    List<WildcardSpan> wildcardSpansOf(String target) {
         List<WildcardSpan> spans = state.targetWildcardSpans.get(target);
         return spans == null ? java.util.Collections.<WildcardSpan>emptyList()
                 : new ArrayList<>(spans);
@@ -3488,7 +1602,7 @@ public class DmlLineage {
         return Math.max(sum, 1);
     }
 
-    private static boolean hasAmbiguousOutput(List<StarOutput> plan, int limit) {
+    static boolean hasAmbiguousOutput(List<StarOutput> plan, int limit) {
         int position = 0;
         for (StarOutput output : plan) {
             if (position >= limit) {
@@ -3502,7 +1616,7 @@ public class DmlLineage {
         return false;
     }
 
-    private static int maxSpanEnd(List<WildcardSpan> spans) {
+    static int maxSpanEnd(List<WildcardSpan> spans) {
         int max = 0;
         for (WildcardSpan span : spans) {
             if (span.end != Integer.MAX_VALUE) {
@@ -3545,7 +1659,7 @@ public class DmlLineage {
         return found;
     }
 
-    private List<WildcardRef> wildcardSourcesAt(SourceTable source, StarColumn column,
+    List<WildcardRef> wildcardSourcesAt(SourceTable source, StarColumn column,
             int fallbackRelative) {
         List<WildcardRef> refs = new ArrayList<>();
         if (!source.temporary) {
@@ -3650,7 +1764,7 @@ boolean hasWildcardContribution(String target) {
         return named;
     }
 
-    private String lockedOutputName(String target, int position) {
+    String lockedOutputName(String target, int position) {
         if (!state.unionTargets.contains(target)) {
             return null;
         }
@@ -3658,7 +1772,7 @@ boolean hasWildcardContribution(String target) {
         return outputs != null && position < outputs.size() ? outputs.get(position) : null;
     }
 
-    private String lockedOutputKey(String target, int position) {
+    String lockedOutputKey(String target, int position) {
         if (!state.unionTargets.contains(target)) {
             return null;
         }
@@ -3726,7 +1840,7 @@ boolean hasWildcardContribution(String target) {
         keys.set(position, key);
     }
 
-    private void recordStarOutputs(String target, List<SourceTable> sources, int startPosition) {
+    void recordStarOutputs(String target, List<SourceTable> sources, int startPosition) {
         Map<String, List<SourceTable>> using = state.stackUsing.isEmpty()
                 ? null : state.stackUsing.peek();
         if (useVisiblePlan(sources, using)) {
@@ -3768,7 +1882,7 @@ boolean hasWildcardContribution(String target) {
         }
     }
 
-    private void recordSourceStarOutputs(String target, SourceTable source, int startPosition) {
+    void recordSourceStarOutputs(String target, SourceTable source, int startPosition) {
         List<OutputName> entries = starColumnEntries(target,
                 java.util.Collections.singletonList(source), startPosition);
         for (int i = 0; i < entries.size(); i++) {
@@ -3862,7 +1976,7 @@ boolean hasWildcardContribution(String target) {
         return java.util.Collections.singletonList("col1");
     }
 
-    private List<StarOutput> currentStarPlan(List<SourceTable> sources) {
+    List<StarOutput> currentStarPlan(List<SourceTable> sources) {
         if (!state.stackStarPlan.isEmpty() && !state.stackStarPlan.peek().isEmpty()) {
             return state.stackStarPlan.peek();
         }
@@ -3935,7 +2049,7 @@ boolean hasWildcardContribution(String target) {
     /* expressions                                                        */
     /* ------------------------------------------------------------------ */
 
-    private void validateUnboundQualified(SQLExpr expr) {
+    void validateUnboundQualified(SQLExpr expr) {
         if (expr == null) {
             return;
         }
@@ -3983,17 +2097,17 @@ boolean hasWildcardContribution(String target) {
     static final String ANSI_IDENTIFIER_ATTRIBUTE =
             "com.laotie.ansiQuotedIdentifier";
 
-    private void learnBlockExplicitReferences(SQLSelectQueryBlock block,
+    void learnBlockExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
         learning.learnBlockExplicitReferences(block, inherited);
     }
 
-    private void learnNoFromExplicitReferences(SQLSelectQueryBlock block,
+    void learnNoFromExplicitReferences(SQLSelectQueryBlock block,
             Map<String, String> inherited) {
         learning.learnNoFromExplicitReferences(block, inherited);
     }
 
-    private Map<String, String> outerBlockLocals(boolean includeCurrentFrame) {
+    Map<String, String> outerBlockLocals(boolean includeCurrentFrame) {
         return learning.outerBlockLocals(includeCurrentFrame);
     }
 
@@ -4145,11 +2259,11 @@ boolean hasWildcardContribution(String target) {
                 || hasLateralAncestorScope();
     }
 
-    private boolean hasOuterScopeFallback() {
+    boolean hasOuterScopeFallback() {
         return hasLateralAncestorScope() || state.scalarSubqueryDepth > 0;
     }
 
-    private boolean hasLateralAncestorScope() {
+    boolean hasLateralAncestorScope() {
         for (int frame = 0; frame < state.stackSources.size() - 1; frame++) {
             if (frame < state.lateralScopes.size()
                     && Boolean.TRUE.equals(state.lateralScopes.get(frame))) {
@@ -4159,7 +2273,7 @@ boolean hasWildcardContribution(String target) {
         return false;
     }
 
-    private List<SourceTable> resolveCorrelatedUnqualified(String rawName) {
+    List<SourceTable> resolveCorrelatedUnqualified(String rawName) {
         String key = identifierKey(rawName);
         boolean lateralScope = false;
         for (int frame = state.stackSources.size() - 2; frame >= 0; frame--) {
@@ -4287,7 +2401,7 @@ boolean hasWildcardContribution(String target) {
                 displayNames(currentSources()));
     }
 
-private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
+CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         if (owner == null) {
             return null;
         }
@@ -4791,7 +2905,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return renderIdentifier(column.column);
     }
 
-    private void recordBindingStar(String target, SourceNode binding, int startPosition) {
+    void recordBindingStar(String target, SourceNode binding, int startPosition) {
         List<String> declared = currentTargetColumnAliases(target);
         List<String> declaredKeys = currentDeclaredKeys(target);
         int position = startPosition;
@@ -4886,14 +3000,14 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return false;
     }
 
-    private int emitDetachedStar(String targetTable, List<SourceTable> sources,
+    int emitDetachedStar(String targetTable, List<SourceTable> sources,
             int startPosition) {
         SourceNode node = state.stackSourceNode.isEmpty() ? null : state.stackSourceNode.peek();
         return emitDetachedPlan(targetTable, currentStarPlan(sources), sources, node,
                 startPosition);
     }
 
-    private int emitDetachedPlan(String targetTable, List<StarOutput> template,
+    int emitDetachedPlan(String targetTable, List<StarOutput> template,
             List<SourceTable> sources, SourceNode node, int startPosition) {
         List<String> declared = currentTargetColumnAliases(targetTable);
         boolean targetTemporary = state.tempTables.contains(targetTable);
@@ -5219,7 +3333,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
      * A canonical column identity: PostgreSQL folds unquoted column names to lower
      * case, quoted names keep their case.
      */
-    private String uncatalogedColumnSpelling(String raw) {
+    String uncatalogedColumnSpelling(String raw) {
         DbType dialect = currentDialect();
         return dialect == DbType.hive || dialect == DbType.antspark
                 ? hiveColumnIdentity(raw) : canonicalColumnName(raw);
@@ -5237,7 +3351,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return name.toLowerCase(Locale.ROOT);
     }
 
-    private String lineageTableName(SourceTable source) {
+    String lineageTableName(SourceTable source) {
         if (source.temporary || source.metadataTable != null) {
             return source.displayName;
         }
@@ -5351,7 +3465,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         }
     }
 
-    private List<SourceTable> resolveUnqualified(String rawColumn) {
+    List<SourceTable> resolveUnqualified(String rawColumn) {
         List<SourceTable> sources = currentSources();
         if (sources.isEmpty()) {
             return sources;
@@ -5577,7 +3691,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         throw new ColumnNotFoundException(columnName, displayNames(sources));
     }
 
-    private boolean useVisiblePlan(List<SourceTable> sources,
+    boolean useVisiblePlan(List<SourceTable> sources,
             Map<String, List<SourceTable>> using) {
         if (using == null || using.isEmpty()) {
             return false;
@@ -5585,7 +3699,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return context != null || allSourceNamesKnown(sources);
     }
 
-    private SourceNode joinBinding(SQLExpr owner) {
+    SourceNode joinBinding(SQLExpr owner) {
         if (owner == null || state.stackJoinBindings.isEmpty()) {
             return null;
         }
@@ -5718,7 +3832,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return names;
     }
 
-    private SourceTable findByOwner(SQLExpr owner) {
+    SourceTable findByOwner(SQLExpr owner) {
         if (owner == null) {
             return null;
         }
@@ -5958,11 +4072,11 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         return Identifiers.render(name);
     }
 
-    private List<SourceTable> currentSources() {
+    List<SourceTable> currentSources() {
         return state.stackSources.isEmpty() ? new ArrayList<SourceTable>() : state.stackSources.peek();
     }
 
-    private List<SourceTable> visibleSources() {
+    List<SourceTable> visibleSources() {
         List<SourceTable> sources = currentSources();
         if (state.stackHiddenSources.isEmpty() || state.stackHiddenSources.peek().isEmpty()) {
             return sources;
@@ -6007,7 +4121,7 @@ private CorrelatedOwner findCorrelatedOwner(SQLExpr owner) {
         dml.processDelete(delete);
     }
 
-    private static String hivePlannedColumn(String column) {
+    static String hivePlannedColumn(String column) {
         return DmlStatementAnalyzer.hivePlannedColumn(column);
     }
 

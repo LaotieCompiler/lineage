@@ -5229,4 +5229,29 @@ public class MetadataFreeAnalysisTest {
         assertNull(result.getResults().get(2).getError());
     }
 
+    @Test
+    public void catalogTableNamedLikeFunctionCallDoesNotHijackTableFunction() {
+        ScanResult result = LineageScanner.withMetadata(
+                catalog("CREATE TABLE \"generate_series(1, 3)\" (y INT);"), optional())
+                .scan("SELECT generate_series.generate_series FROM generate_series(1, 3);");
+
+        assertNull(result.getResults().get(0).getError());
+        Set<Column> sources = result.getGraph().getSources(
+                Column.temporary("stmt0.temp0.generate_series"));
+        assertTrue(sources.contains(
+                new Column("generate_series(1, 3).generate_series")));
+    }
+
+    @Test
+    public void unusedCteNamedLikeFunctionCallDoesNotSetUnionWidth() {
+        ScanResult result = LineageScanner.withoutMetadata(
+                DbType.postgresql, optional()).scan(
+                "WITH \"generate_series(1, 3)\" AS (SELECT 1 AS x, 2 AS y)"
+                        + " SELECT * FROM generate_series(0, 5)"
+                        + " UNION ALL SELECT * FROM generate_series(1, 3)"
+                        + " UNION ALL SELECT 1;");
+
+        assertNull(result.getResults().get(0).getError());
+    }
+
 }

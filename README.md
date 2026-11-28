@@ -52,7 +52,7 @@ state and model types (`analysis`).
 
 ## Tests
 
-Run the full unit suite with `mvn test` (currently 908 tests, 2 skipped).
+Run the full unit suite with `mvn test` (currently 910 tests, 2 skipped).
 
 The Docker-backed JDBC integration tests start local MySQL and PostgreSQL containers and
 run `JdbcMetadataScannerDockerTest`:
@@ -165,23 +165,20 @@ derived unambiguously the analyzer keeps table-level edges instead of inventing 
 These combinations are covered by regression tests for the cases listed above, but are not
 guaranteed to resolve every further nesting of the same features to column level.
 
-#### Known limitations
+#### Table-function identity
 
-The following table-function edge cases remain open after the metadata-learning review
-batch exceeded 30 failed review rounds. They are recorded here instead of continuing an
-open-ended fuzz loop:
+A table function is identified by its call only; its rendered call text is never treated as
+a relation name. It is therefore never resolved through the catalog or the CTE scope, and
+it never contributes a static width or output names. Two edge cases that used to violate
+this rule are now covered by regression tests:
 
-- `resolveSource` still passes a table function's rendered call text to the catalog
-  lookup. With `OPTIONAL` mode and a catalog table literally named
-  `"generate_series(1, 3)"`, `SELECT generate_series.generate_series FROM
-  generate_series(1, 3)` reports `ColumnNotFoundException`; it should resolve to the
-  function output.
-- `staticSourceWidth` still looks a rendered call text up in the CTE scope. An unused CTE
-  named `"generate_series(1, 3)"` can impose its two-column width on a one-column table
-  function in a `UNION`, producing `UNION column count mismatch: 2 vs 1`.
+- a catalog table literally named `"generate_series(1, 3)"` no longer hijacks
+  `SELECT generate_series.generate_series FROM generate_series(1, 3)`;
+- an unused CTE with the same name no longer imposes its width on a `UNION` of table
+  functions.
 
 All other table-function learning and owner-resolution cases in this area are covered by
-regression tests.
+regression tests as well.
 
 #### Review status
 

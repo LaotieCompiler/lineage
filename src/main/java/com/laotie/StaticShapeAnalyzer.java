@@ -412,6 +412,11 @@ final class StaticShapeAnalyzer {
         if (inline != null) {
             return staticOutputNames(inline, scope);
         }
+        if (!DmlLineage.isPhysicalTableExpression(table)) {
+            // A table function's call text is not a relation name and its output
+            // names are unknown.
+            return null;
+        }
         String name = host.extractTableName(table);
         if (name == null) {
             return null;
@@ -511,6 +516,10 @@ final class StaticShapeAnalyzer {
             if (table.getAlias() != null) {
                 // An alias hides the original table name, and a qualified owner can
                 // never refer to an alias.
+                return null;
+            }
+            if (!DmlLineage.isPhysicalTableExpression(table)) {
+                // A qualified owner never refers to a table function.
                 return null;
             }
             String name = host.extractTableName(table);
@@ -677,6 +686,11 @@ final class StaticShapeAnalyzer {
         SQLSelect inline = queryExpressionSelect(table.getExpr());
         if (inline != null) {
             return staticSelectWidth(inline, scope);
+        }
+        if (!DmlLineage.isPhysicalTableExpression(table)) {
+            // A table function's call text is not a relation name and its width is
+            // unknown.
+            return -1;
         }
         String rawName = host.extractTableName(table);
         if (rawName == null) {

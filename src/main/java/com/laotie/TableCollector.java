@@ -131,11 +131,13 @@ final class TableCollector {
                 collectTablesFromSelect(inline);
                 return;
             }
-            String name = host.extractTableName(exprTable);
-            if (name != null && DmlLineage.isSingleSegmentName(name)
-                    && (collectCteNameVisible(host.identifierKey(name))
-                            || host.findCteTarget(host.identifierKey(name)) != null)) {
-                return;
+            if (DmlLineage.isPhysicalTableExpression(exprTable)) {
+                String name = host.extractTableName(exprTable);
+                if (name != null && DmlLineage.isSingleSegmentName(name)
+                        && (collectCteNameVisible(host.identifierKey(name))
+                                || host.findCteTarget(host.identifierKey(name)) != null)) {
+                    return;
+                }
             }
             host.resolveSource(exprTable);
         }

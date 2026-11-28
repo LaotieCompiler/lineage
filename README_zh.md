@@ -56,7 +56,7 @@ SQL 由 [Alibaba Druid](https://github.com/alibaba/druid) 解析为抽象语法�
 mvn test
 ```
 
-当前为 908 个测试通过、2 个跳过。
+当前为 910 个测试通过、2 个跳过。
 
 Docker JDBC 集成测试会启动本地 MySQL 与 PostgreSQL 容器并运行
 `JdbcMetadataScannerDockerTest`：
@@ -157,20 +157,17 @@ AST，把转义调用的参数替换为等价普通调用的参数，二者无�
 未知宽度通配与显式投影混合的 `UNION`，按尽力而为分析：当位置无法唯一确定时保留表级边，
 不编造列名。上述已列出的组合有回归测试覆盖，但不对同一特性的无限嵌套承诺逐列解析。
 
-#### 已知限制
+#### 表函数身份
 
-以下表函数（table function）的边界情况在元数据学习批次的审核失败超过 30 轮后仍然存在，
-记录于此，不再进行无界的模糊测试循环：
+表函数只通过其调用本身识别；渲染出的调用文本永远不会被当作关系名。因此它不会参与
+catalog 或 CTE 作用域解析，也不会贡献静态宽度或输出名。以下两个曾经违反该规则的边界
+情况现在都有回归测试覆盖：
 
-- `resolveSource` 仍会把表函数的调用文本交给 catalog 查找。在 `OPTIONAL` 模式且 catalog
-  中存在名为 `"generate_series(1, 3)"` 的表时，
-  `SELECT generate_series.generate_series FROM generate_series(1, 3)` 会报告
-  `ColumnNotFoundException`；正确行为是解析到函数输出。
-- `staticSourceWidth` 仍会用调用文本在 CTE 作用域中查找宽度。一个未使用的、名为
-  `"generate_series(1, 3)"` 的 CTE 可能把两列宽度施加到 `UNION` 中的单列表函数上，
-  产生 `UNION column count mismatch: 2 vs 1`。
+- catalog 中存在字面名为 `"generate_series(1, 3)"` 的表时，不会再劫持
+  `SELECT generate_series.generate_series FROM generate_series(1, 3)` 的解析；
+- 未使用的同名 CTE 不会再把自己的宽度强加到表函数的 `UNION` 上。
 
-该区域的其他表函数学习与 owner 解析场景均有回归测试覆盖。
+该区域的其他表函数学习与 owner 解析场景也均有回归测试覆盖。
 
 #### 审核状态
 

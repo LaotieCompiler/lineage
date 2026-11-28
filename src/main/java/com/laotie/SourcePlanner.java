@@ -1011,13 +1011,15 @@ final class SourcePlanner {
         String rawName = host.extractTableName(table);
         String written = host.normalizeQualifiedName(rawName);
         String alias = table.getAlias();
+        // A table function's rendered call is not a relation name: it must never be
+        // looked up as a CTE or catalog table.
+        boolean physical = host.isPhysicalTableExpression(table);
         Table metadataTable = null;
         String display = alias != null ? alias
                 : host.detachedMetadata() && rawName != null
                         ? host.sessionPhysicalReference(rawName)
                         : host.lastIdentifier(written);
-        String cteTarget = host.isPhysicalTableExpression(table)
-                && host.isSingleSegmentName(rawName)
+        String cteTarget = physical && host.isSingleSegmentName(rawName)
                 ? host.findCteTarget(host.identifierKey(rawName)) : null;
         boolean temporary = cteTarget != null;
         String sourceAlias = alias;
@@ -1029,7 +1031,7 @@ final class SourcePlanner {
             }
         }
 
-        if (host.analysisContext() != null && !temporary) {
+        if (host.analysisContext() != null && !temporary && physical) {
             TableLocation location = host.resolveMetadataTable(rawName);
             if (location != null) {
                 metadataTable = location.getTable();
@@ -1059,8 +1061,7 @@ final class SourcePlanner {
                 metadataTable != null ? java.util.Collections.<SourceTable>emptyList()
                         : host.copyUnknownGroups(cteTarget, outputColumns.size()),
                 false, host.hasWildcardContribution(cteTarget),
-                host.isPhysicalTableExpression(table),
-                host.isPhysicalTableExpression(table) ? null : host.implicitRelationName(table));
+                physical, physical ? null : host.implicitRelationName(table));
     }
 
 }

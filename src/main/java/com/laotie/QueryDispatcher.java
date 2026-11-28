@@ -183,7 +183,8 @@ final class QueryDispatcher {
                 return;
             }
             String name = host.extractTableName(exprTable);
-            if (name != null && DmlLineage.isSingleSegmentName(name)) {
+            if (name != null && DmlLineage.isSingleSegmentName(name)
+                    && DmlLineage.isPhysicalTableExpression(exprTable)) {
                 String key = host.identifierKey(name);
                 if (!shadowed.contains(key)) {
                     refs.add(key);

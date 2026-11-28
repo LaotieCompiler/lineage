@@ -8,8 +8,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -50,6 +52,62 @@ public class GoldenLineageTest {
 
     @Test
     public void goldenCorpus() throws Exception {
+        List<Path> files = corpusFiles();
+        boolean update = Boolean.getBoolean("golden.update");
+        int cases = 0;
+        for (Path file : files) {
+            List<JsonObject> group = casesOf(file);
+            for (JsonObject testCase : group) {
+                runCase(testCase, update);
+                cases++;
+            }
+            if (update) {
+                write(file, GSON.toJson(toArray(group)));
+            }
+        }
+        if (update) {
+            System.out.println("Regenerated expectations for " + cases + " golden cases");
+            return;
+        }
+        assertTrue("golden corpus failures:\n" + String.join("\n", failures),
+                failures.isEmpty());
+    }
+
+    /**
+     * Malformed SQL must never escape the scanner: every input still produces a result,
+     * and a broken statement does not abort the rest of the script.
+     */
+    @Test
+    public void mutatedScriptsDoNotEscapeTheScanner() throws Exception {
+        int mutations = 0;
+        for (Path file : corpusFiles()) {
+            for (JsonObject testCase : casesOf(file)) {
+                String name = string(testCase, "name", "<unnamed>");
+                String script = string(testCase, "script", "");
+                Random random = new Random(script.hashCode());
+                for (int i = 0; i < 5; i++) {
+                    String mutated = mutate(script, random);
+                    if (mutated.trim().isEmpty()) {
+                        continue;
+                    }
+                    try {
+                        ScanResult result = scannerFor(testCase).scan(mutated);
+                        assertTrue(name + " mutation produced no result: " + mutated,
+                                !result.getResults().isEmpty());
+                    } catch (Throwable error) {
+                        failures.add(name + " mutation escaped the scanner: " + mutated
+                                + "\n  " + error);
+                    }
+                    mutations++;
+                }
+            }
+        }
+        assertTrue("no mutations were exercised", mutations > 0);
+        assertTrue("robustness failures:\n" + String.join("\n", failures),
+                failures.isEmpty());
+    }
+
+    private static List<Path> corpusFiles() throws Exception {
         // Prefer the source tree so -Dgolden.update=true writes the files under review
         // instead of the copy in target/test-classes.
         Path root = Paths.get("src/test/resources/golden");
@@ -64,34 +122,32 @@ public class GoldenLineageTest {
                     .collect(Collectors.toList());
         }
         assertTrue("no golden corpus files under " + root, !files.isEmpty());
-
-        boolean update = Boolean.getBoolean("golden.update");
-        int cases = 0;
-        for (Path file : files) {
-            JsonElement parsed = JsonParser.parseString(
-                    new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
-            JsonArray group = parsed.isJsonArray() ? parsed.getAsJsonArray() : new JsonArray();
-            if (!parsed.isJsonArray()) {
-                group.add(parsed);
-            }
-            for (JsonElement element : group) {
-                runCase(element.getAsJsonObject(), update);
-                cases++;
-            }
-            if (update) {
-                write(file, GSON.toJson(group));
-            }
-        }
-        if (update) {
-            System.out.println("Regenerated expectations for " + cases + " golden cases");
-            return;
-        }
-        assertTrue("golden corpus failures:\n" + String.join("\n", failures),
-                failures.isEmpty());
+        return files;
     }
 
-    private void runCase(JsonObject testCase, boolean update) {
-        String name = string(testCase, "name", "<unnamed>");
+    private static List<JsonObject> casesOf(Path file) throws IOException {
+        JsonElement parsed = JsonParser.parseString(
+                new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
+        JsonArray group = parsed.isJsonArray() ? parsed.getAsJsonArray() : new JsonArray();
+        if (!parsed.isJsonArray()) {
+            group.add(parsed);
+        }
+        List<JsonObject> cases = new ArrayList<>();
+        for (JsonElement element : group) {
+            cases.add(element.getAsJsonObject());
+        }
+        return cases;
+    }
+
+    private static JsonArray toArray(List<JsonObject> cases) {
+        JsonArray array = new JsonArray();
+        for (JsonObject testCase : cases) {
+            array.add(testCase);
+        }
+        return array;
+    }
+
+    private static LineageScanner scannerFor(JsonObject testCase) {
         DbType dialect = DbType.valueOf(string(testCase, "dialect", "postgresql"));
         String catalogDdl = string(testCase, "catalog", null);
         MetadataMode mode = "optional".equals(string(testCase, "mode",
@@ -99,16 +155,42 @@ public class GoldenLineageTest {
                 ? MetadataMode.OPTIONAL : MetadataMode.STRICT;
         LineageOptions options = LineageOptions.of(mode,
                 bool(testCase, "infer", false), bool(testCase, "strictQuoting", false));
-
-        LineageScanner scanner;
         if (catalogDdl == null) {
-            scanner = LineageScanner.withoutMetadata(dialect, options);
-        } else {
-            MetadataCatalog catalog = new MetadataCatalog(dialect);
-            catalog.loadDdl(catalogDdl);
-            scanner = LineageScanner.withMetadata(MetadataContext.of(catalog), options);
+            return LineageScanner.withoutMetadata(dialect, options);
         }
-        ScanResult result = scanner.scan(string(testCase, "script", ""));
+        MetadataCatalog catalog = new MetadataCatalog(dialect);
+        catalog.loadDdl(catalogDdl);
+        return LineageScanner.withMetadata(MetadataContext.of(catalog), options);
+    }
+
+    private static String mutate(String sql, Random random) {
+        List<String> tokens = new ArrayList<>(Arrays.asList(sql.split("(?<=\\s)|(?=\\s)")));
+        if (tokens.isEmpty()) {
+            return sql;
+        }
+        String[] replacements = {"SELECT", "FROM", "WHERE", "JOIN", "ON", "UNION",
+            "WITH", "GROUP BY", "*", "(", ")", ",", "'", "--", "?"};
+        int index = random.nextInt(tokens.size());
+        switch (random.nextInt(4)) {
+            case 0:
+                tokens.remove(index);
+                break;
+            case 1:
+                tokens.add(index, tokens.get(index));
+                break;
+            case 2:
+                tokens.set(index, replacements[random.nextInt(replacements.length)]);
+                break;
+            default:
+                tokens.add(index, "(");
+                break;
+        }
+        return String.join("", tokens);
+    }
+
+    private void runCase(JsonObject testCase, boolean update) {
+        String name = string(testCase, "name", "<unnamed>");
+        ScanResult result = scannerFor(testCase).scan(string(testCase, "script", ""));
 
         if (update) {
             testCase.add("expect", expectationsOf(result));

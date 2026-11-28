@@ -1,0 +1,40 @@
+[
+  {
+    "name": "failure-isolation-after-ddl",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "CREATE TABLE x (c1 INT); SELECT missing FROM a; INSERT INTO x(c1) SELECT c1 FROM a;",
+    "expect": [
+      {
+        "instructions": []
+      },
+      {
+        "error": "ColumnNotFoundException",
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "a.c1 -> temp1.c1",
+          "temp1.* -> x(c1)"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "comments-and-semicolon-literals",
+    "dialect": "postgresql",
+    "mode": "optional",
+    "script": "SELECT ';' AS c; -- trailing; comment\nSELECT c1 FROM t;",
+    "expect": [
+      {
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "t.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,112 @@
+[
+  {
+    "name": "metadata-not-found",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "SELECT * FROM missing;",
+    "expect": [
+      {
+        "error": "MetadataNotFoundException",
+        "instructions": []
+      }
+    ]
+  },
+  {
+    "name": "column-not-found",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "SELECT c9 FROM a;",
+    "expect": [
+      {
+        "error": "ColumnNotFoundException",
+        "instructions": []
+      }
+    ]
+  },
+  {
+    "name": "unsupported-statement-continues",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "GRANT SELECT ON a TO u; SELECT c1 FROM a;",
+    "expect": [
+      {
+        "error": "UnsupportedOperationException",
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "using-key-missing",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c2 INT); CREATE TABLE b (c1 INT);",
+    "script": "SELECT c2 FROM a LEFT JOIN b USING(c2); SELECT c1 FROM b;",
+    "expect": [
+      {
+        "error": "ColumnNotFoundException",
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "b.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "qualified-star-without-from",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT);",
+    "script": "SELECT a.*; SELECT c1 FROM a;",
+    "expect": [
+      {
+        "error": "MetadataNotFoundException",
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "duplicate-using-key",
+    "dialect": "postgresql",
+    "mode": "strict",
+    "catalog": "CREATE TABLE a (c1 INT); CREATE TABLE b (c1 INT);",
+    "script": "SELECT c1 FROM a JOIN b USING(c1,c1);",
+    "expect": [
+      {
+        "error": "ColumnNotFoundException",
+        "instructions": []
+      }
+    ]
+  },
+  {
+    "name": "mysql-too-few-cte-column-aliases",
+    "dialect": "mysql",
+    "mode": "optional",
+    "script": "WITH q(x) AS (SELECT c1, c2 FROM a) SELECT q.x FROM q; SELECT c1 FROM a;",
+    "expect": [
+      {
+        "error": "IllegalStateException",
+        "instructions": []
+      },
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  }
+]

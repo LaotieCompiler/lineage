@@ -1,0 +1,57 @@
+[
+  {
+    "name": "learned-explicit-reference",
+    "dialect": "postgresql",
+    "mode": "optional",
+    "infer": true,
+    "script": "SELECT A.c1, B.c2 FROM A, B; SELECT c1 FROM A, B;",
+    "expect": [
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1",
+          "b.c2 -> temp0.c2"
+        ]
+      },
+      {
+        "instructions": [
+          "a.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "inferred-ctas-read",
+    "dialect": "postgresql",
+    "mode": "optional",
+    "infer": true,
+    "script": "CREATE TABLE x AS SELECT c FROM s; INSERT INTO t(c) SELECT c FROM x;",
+    "expect": [
+      {
+        "instructions": [
+          "s.c -> temp1.c",
+          "temp1.* -> x"
+        ]
+      },
+      {
+        "instructions": [
+          "x.c -> temp1.c",
+          "temp1.* -> t(c)"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "metadata-free-union-wildcard",
+    "dialect": "postgresql",
+    "mode": "optional",
+    "script": "SELECT * FROM m1 UNION ALL SELECT * FROM m2;",
+    "expect": [
+      {
+        "instructions": [
+          "m1.* -> temp0",
+          "m2.* -> temp0"
+        ]
+      }
+    ]
+  }
+]

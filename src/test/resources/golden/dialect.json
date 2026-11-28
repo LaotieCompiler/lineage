@@ -1,0 +1,98 @@
+[
+  {
+    "name": "mysql-backtick-identifiers",
+    "dialect": "mysql",
+    "mode": "optional",
+    "script": "SELECT `c1` FROM `t`;",
+    "expect": [
+      {
+        "instructions": [
+          "t.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "hive-partition-insert",
+    "dialect": "hive",
+    "mode": "strict",
+    "catalog": "CREATE TABLE s (c1 INT); CREATE TABLE t (c1 INT, dt STRING);",
+    "script": "INSERT OVERWRITE TABLE t PARTITION (dt='2020-01-01') SELECT c1 FROM s;",
+    "expect": [
+      {
+        "instructions": [
+          "s.c1 -> temp1.c1",
+          "temp1.* -> t(c1)"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "spark-insert-overwrite",
+    "dialect": "antspark",
+    "mode": "strict",
+    "catalog": "CREATE TABLE s (c1 INT); CREATE TABLE t (c1 INT);",
+    "script": "INSERT OVERWRITE TABLE t SELECT c1 FROM s;",
+    "expect": [
+      {
+        "instructions": [
+          "s.c1 -> temp1.c1",
+          "temp1.* -> t"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "hive-backtick-qualified-name",
+    "dialect": "hive",
+    "mode": "strict",
+    "catalog": "CREATE TABLE db1.t (c1 INT);",
+    "script": "SELECT `c1` FROM `db1`.`t`;",
+    "expect": [
+      {
+        "instructions": [
+          "db1.t.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "sqlserver-bracket-identifiers",
+    "dialect": "sqlserver",
+    "mode": "optional",
+    "script": "SELECT [c1] FROM [t];",
+    "expect": [
+      {
+        "instructions": [
+          "[t].c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "oracle-quoted-identifiers",
+    "dialect": "oracle",
+    "mode": "optional",
+    "script": "SELECT \"c1\" FROM \"t\";",
+    "expect": [
+      {
+        "instructions": [
+          "\"t\".c1 -> temp0.c1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "sqlite-basic-select",
+    "dialect": "sqlite",
+    "mode": "optional",
+    "script": "SELECT c1 FROM t WHERE c1 IN (SELECT c2 FROM s);",
+    "expect": [
+      {
+        "instructions": [
+          "t.c1 -> temp0.c1"
+        ]
+      }
+    ]
+  }
+]
